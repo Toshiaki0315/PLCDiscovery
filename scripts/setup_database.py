@@ -1,0 +1,299 @@
+#!/usr/bin/env python3
+"""
+PLC Discovery - SQLite Database Setup Script (Python version)
+
+Usage:
+    python scripts/setup_database.py [database_path]
+
+Examples:
+    python scripts/setup_database.py                    # Creates ./plc_data.db
+    python scripts/setup_database.py /path/to/data.db  # Creates specified path
+
+Description:
+    Creates SQLite database with all required tables and indexes
+    for the PLC Discovery tool.
+"""
+
+import argparse
+import os
+import sqlite3
+import sys
+from datetime import datetime
+from pathlib import Path
+
+# Add parent directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+# Schema version
+SCHEMA_VERSION = 1
+
+# SQL statements for schema creation
+CREATE_TABLES_SQL = """
+-- Schema version tracking
+CREATE TABLE IF NOT EXISTS schema_info (
+    version INTEGER PRIMARY KEY,
+    created_at TEXT NOT NULL
+);
+
+-- Discovered PLCs
+CREATE TABLE IF NOT EXISTS plcs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ip_address TEXT NOT NULL,
+    mac_address TEXT,
+    manufacturer TEXT,
+    model TEXT,
+    protocol TEXT,
+    port INTEGER,
+    cpu_type TEXT,
+    firmware_version TEXT,
+    first_seen TEXT NOT NULL,
+    last_seen TEXT NOT NULL,
+    UNIQUE(ip_address)
+);
+
+-- Scan sessions
+CREATE TABLE IF NOT EXISTS scan_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at TEXT NOT NULL,
+    completed_at TEXT,
+    mode TEXT NOT NULL,
+    plc_count INTEGER DEFAULT 0,
+    success_count INTEGER DEFAULT 0,
+    error_count INTEGER DEFAULT 0,
+    status TEXT DEFAULT 'running'
+);
+
+-- Data points (main data storage)
+CREATE TABLE IF NOT EXISTS data_points (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER,
+    plc_ip TEXT NOT NULL,
+    address TEXT NOT NULL,
+    value INTEGER,
+    raw_hex TEXT,
+    data_type TEXT,
+    converted_value TEXT,
+    display_value TEXT,
+    status TEXT NOT NULL,
+    timestamp TEXT NOT NULL,
+    FOREIGN KEY (session_id) REFERENCES scan_sessions(id)
+);
+
+-- Denied addresses log
+CREATE TABLE IF NOT EXISTS denied_addresses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER,
+    plc_ip TEXT NOT NULL,
+    address TEXT NOT NULL,
+    status TEXT NOT NULL,
+    timestamp TEXT NOT NULL,
+    FOREIGN KEY (session_id) REFERENCES scan_sessions(id)
+);
+
+-- Data change history (for tracking changes)
+CREATE TABLE IF NOT EXISTS data_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    plc_ip TEXT NOT NULL,
+    address TEXT NOT NULL,
+    old_value INTEGER,
+    new_value INTEGER,
+    changed_at TEXT NOT NULL
+);
+
+-- Indexes for performance
+CREATE INDEX IF NOT EXISTS idx_data_points_plc_ip ON data_points(plc_ip);
+CREATE INDEX IF NOT EXISTS idx_data_points_address ON data_points(address);
+CREATE INDEX IF NOT EXISTS idx_data_points_timestamp ON data_points(timestamp);
+CREATE INDEX IF NOT EXISTS idx_data_points_session ON data_points(session_id);
+CREATE INDEX IF NOT EXISTS idx_denied_plc_ip ON denied_addresses(plc_ip);
+CREATE INDEX IF NOT EXISTS idx_plcs_ip ON plcs(ip_address);
+CREATE INDEX IF NOT EXISTS idx_history_plc_ip ON data_history(plc_ip);
+CREATE INDEX IF NOT EXISTS idx_history_address ON data_history(address);
+CREATE INDEX IF NOT EXISTS idx_history_changed_at ON data_history(changed_at);
+"""
+
+
+def setup_database(db_path: str, force: bool = False) -> bool:
+    """
+    Set up the SQLite database with required schema.
+    
+    Args:
+        db_path: Path to database file
+        force: Force recreation if database exists
+    
+    Returns:
+        True if successful
+    """
+    db_path = Path(db_path)
+    
+    print("=" * 50)
+    print("  PLC Discovery - Database Setup")
+    print("=" * 50)
+    print()
+    
+    # Create directory if needed
+    if db_path.parent and not db_path.parent.exists():
+        print(f"Creating directory: {db_path.parent}")
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Check if database exists
+    if db_path.exists():
+        if not force:
+            print(f"Warning: Database already exists at {db_path}")
+            response = input("Do you want to recreate it? (y/N): ").strip().lower()
+            if response != 'y':
+                print("Keeping existing database.")
+                return True
+        
+        print("Removing existing database...")
+        db_path.unlink()
+    
+    print(f"Creating database: {db_path}")
+    
+    try:
+        # Create database
+        conn = sqlite3.connect(str(db_path))
+        cursor = conn.cursor()
+        
+        # Create tables
+        cursor.executescript(CREATE_TABLES_SQL)
+        
+        # Insert schema version
+        cursor.execute(
+            "INSERT INTO schema_info (version, created_at) VALUES (?, ?)",
+            (SCHEMA_VERSION, datetime.now().isoformat())
+        )
+        
+        conn.commit()
+        
+        # Get table list
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+        tables = [row[0] for row in cursor.fetchall()]
+        
+        # Get schema version
+        cursor.execute("SELECT version, created_at FROM schema_info")
+        version, created_at = cursor.fetchone()
+        
+        conn.close()
+        
+        print()
+        print("✓ Database created successfully!")
+        print()
+        print("Database Information:")
+        print(f"  Path: {db_path}")
+        print(f"  Size: {db_path.stat().st_size / 1024:.1f} KB")
+        print()
+        print("Tables created:")
+        for table in tables:
+            print(f"  - {table}")
+        print()
+        print(f"Schema version: {version} (created: {created_at})")
+        print()
+        print("Usage examples:")
+        print(f"  python plc_scanner.py --mode full --target 192.168.1.10 --database {db_path}")
+        print()
+        
+        return True
+        
+    except Exception as e:
+        print(f"Error: {e}")
+        return False
+
+
+def show_status(db_path: str):
+    """Show database status and statistics."""
+    db_path = Path(db_path)
+    
+    if not db_path.exists():
+        print(f"Error: Database not found at {db_path}")
+        return
+    
+    conn = sqlite3.connect(str(db_path))
+    cursor = conn.cursor()
+    
+    print("=" * 50)
+    print("  Database Status")
+    print("=" * 50)
+    print()
+    
+    print("File Information:")
+    print(f"  Path: {db_path}")
+    print(f"  Size: {db_path.stat().st_size / 1024:.1f} KB")
+    print()
+    
+    # Schema version
+    cursor.execute("SELECT version, created_at FROM schema_info")
+    row = cursor.fetchone()
+    if row:
+        print(f"Schema Version: {row[0]} (created: {row[1]})")
+    print()
+    
+    # Statistics
+    print("Statistics:")
+    tables = ['plcs', 'data_points', 'scan_sessions', 'denied_addresses', 'data_history']
+    for table in tables:
+        cursor.execute(f"SELECT COUNT(*) FROM {table}")
+        count = cursor.fetchone()[0]
+        print(f"  {table}: {count:,} rows")
+    
+    print()
+    
+    # Recent PLCs
+    cursor.execute("""
+        SELECT ip_address, protocol, manufacturer, last_seen 
+        FROM plcs ORDER BY last_seen DESC LIMIT 5
+    """)
+    rows = cursor.fetchall()
+    if rows:
+        print("Recent PLCs:")
+        for row in rows:
+            print(f"  {row[0]} | {row[1]} | {row[2]} | {row[3]}")
+    
+    conn.close()
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="PLC Discovery - SQLite Database Setup",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python setup_database.py                      # Create default database
+  python setup_database.py /path/to/data.db   # Create at specified path
+  python setup_database.py --force             # Force recreation
+  python setup_database.py --status            # Show database status
+        """
+    )
+    
+    parser.add_argument(
+        "database",
+        nargs="?",
+        default="./plc_data.db",
+        help="Database file path (default: ./plc_data.db)"
+    )
+    
+    parser.add_argument(
+        "--force", "-f",
+        action="store_true",
+        help="Force recreation of database"
+    )
+    
+    parser.add_argument(
+        "--status", "-s",
+        action="store_true",
+        help="Show database status instead of creating"
+    )
+    
+    args = parser.parse_args()
+    
+    if args.status:
+        show_status(args.database)
+    else:
+        success = setup_database(args.database, args.force)
+        sys.exit(0 if success else 1)
+
+
+if __name__ == "__main__":
+    main()
+
+

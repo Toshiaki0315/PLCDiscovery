@@ -1,0 +1,392 @@
+"""
+Configuration File Loader
+
+Supports loading configuration from YAML or JSON files.
+Provides validation and default values for all settings.
+"""
+
+import json
+import os
+from dataclasses import asdict
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Union
+import logging
+
+logger = logging.getLogger(__name__)
+
+# Try to import YAML support
+try:
+    import yaml
+    YAML_AVAILABLE = True
+except ImportError:
+    YAML_AVAILABLE = False
+    logger.debug("PyYAML not installed, YAML config files not supported")
+
+from .config import (
+    Protocol, DeviceType, DeviceRange, NetworkConfig, PLCInfo, ScanMode
+)
+from .data_types import DataType, ByteOrder, DataTypeManager, DataTypeMapping
+
+
+# Default configuration template
+DEFAULT_CONFIG = {
+    "version": "1.0",
+    
+    # Network settings
+    "network": {
+        "discovery_timeout_ms": 1000,
+        "discovery_retry_count": 3,
+        "packet_interval_ms": 50,
+        "retry_interval_ms": 200,
+        "request_timeout_ms": 5000,
+        "max_concurrent": 1,
+    },
+    
+    # Discovery settings
+    "discovery": {
+        "enabled": True,
+        "ip_ranges": [],  # List of IP ranges to scan
+        "scan_same_segment": True,
+        "protocols": ["slmp", "ethernet_ip", "modbus", "s7"],
+    },
+    
+    # Target PLCs (for direct connection without discovery)
+    "targets": [
+        # Example:
+        # {
+        #     "ip": "192.168.1.10",
+        #     "protocol": "slmp",
+        #     "port": 5001,
+        #     "name": "Main PLC",
+        # }
+    ],
+    
+    # Scan settings
+    "scan": {
+        "mode": "full",  # "full", "range", or "discover"
+        "device_ranges": [
+            # Example:
+            # {"device": "D", "start": 0, "end": 8191},
+            # {"device": "M", "start": 0, "end": 8191},
+        ],
+        "interval_seconds": 0,  # 0 = single scan, >0 = continuous
+    },
+    
+    # Output settings
+    "output": {
+        "directory": "./plc_scan_results",
+        "encoding": "utf-8",  # "utf-8" or "shift-jis"
+        "format": "csv",  # "csv" or "json"
+        "include_timestamp": True,
+    },
+    
+    # Logging settings
+    "logging": {
+        "level": "INFO",
+        "file": None,  # Log file path (optional)
+        "audit_log": None,  # Audit log file path (optional)
+        "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    },
+    
+    # Data type conversion settings
+    "data_types": {
+        "default_type": "WORD",
+        "default_byte_order": "little",
+        "mappings": [],
+    },
+}
+
+
+class ConfigLoader:
+    """
+    Configuration file loader and validator.
+    
+    Supports YAML and JSON configuration files.
+    """
+    
+    def __init__(self, config_path: Optional[str] = None):
+        self.config_path = config_path
+        self.config: Dict[str, Any] = {}
+        self._load_defaults()
+    
+    def _load_defaults(self):
+        """Load default configuration"""
+        import copy
+        self.config = copy.deepcopy(DEFAULT_CONFIG)
+    
+    def load(self, config_path: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Load configuration from file.
+        
+        Args:
+            config_path: Path to configuration file (YAML or JSON)
+        
+        Returns:
+            Merged configuration dictionary
+        """
+        path = config_path or self.config_path
+        
+        if not path:
+            logger.debug("No config file specified, using defaults")
+            return self.config
+        
+        path = Path(path)
+        
+        if not path.exists():
+            logger.warning(f"Config file not found: {path}, using defaults")
+            return self.config
+        
+        # Load based on file extension
+        suffix = path.suffix.lower()
+        
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                if suffix in ['.yaml', '.yml']:
+                    if not YAML_AVAILABLE:
+                        raise ImportError("PyYAML is required for YAML config files. Install with: pip install pyyaml")
+                    file_config = yaml.safe_load(f)
+                elif suffix == '.json':
+                    file_config = json.load(f)
+                else:
+                    raise ValueError(f"Unsupported config file format: {suffix}")
+            
+            # Merge with defaults
+            self._merge_config(file_config)
+            logger.info(f"Configuration loaded from: {path}")
+            
+        except Exception as e:
+            logger.error(f"Error loading config file: {e}")
+            raise
+        
+        return self.config
+    
+    def _merge_config(self, file_config: Dict[str, Any]):
+        """Recursively merge file config with defaults"""
+        if not file_config:
+            return
+        
+        def merge_dict(base: Dict, override: Dict) -> Dict:
+            result = base.copy()
+            for key, value in override.items():
+                if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+                    result[key] = merge_dict(result[key], value)
+                else:
+                    result[key] = value
+            return result
+        
+        self.config = merge_dict(self.config, file_config)
+    
+    def get_network_config(self) -> NetworkConfig:
+        """Get NetworkConfig from loaded configuration"""
+        net = self.config.get("network", {})
+        return NetworkConfig(
+            discovery_timeout_ms=net.get("discovery_timeout_ms", 1000),
+            discovery_retry_count=net.get("discovery_retry_count", 3),
+            packet_interval_ms=net.get("packet_interval_ms", 50),
+            retry_interval_ms=net.get("retry_interval_ms", 200),
+            request_timeout_ms=net.get("request_timeout_ms", 5000),
+            max_concurrent=net.get("max_concurrent", 1),
+        )
+    
+    def get_targets(self) -> List[PLCInfo]:
+        """Get list of target PLCs from configuration"""
+        targets = []
+        
+        for target in self.config.get("targets", []):
+            protocol = self._parse_protocol(target.get("protocol"))
+            
+            plc = PLCInfo(
+                ip_address=target.get("ip", ""),
+                protocol=protocol,
+                port=target.get("port"),
+                manufacturer=target.get("manufacturer"),
+                model=target.get("model"),
+            )
+            targets.append(plc)
+        
+        return targets
+    
+    def get_device_ranges(self) -> List[DeviceRange]:
+        """Get device ranges from configuration"""
+        ranges = []
+        
+        for range_def in self.config.get("scan", {}).get("device_ranges", []):
+            device_type = self._parse_device_type(range_def.get("device", "D"))
+            
+            if device_type:
+                ranges.append(DeviceRange(
+                    device_type=device_type,
+                    start_address=range_def.get("start", 0),
+                    end_address=range_def.get("end", 999),
+                ))
+        
+        return ranges
+    
+    def get_scan_mode(self) -> ScanMode:
+        """Get scan mode from configuration"""
+        mode_str = self.config.get("scan", {}).get("mode", "full").lower()
+        
+        mode_map = {
+            "discover": ScanMode.DISCOVER,
+            "full": ScanMode.FULL,
+            "range": ScanMode.RANGE,
+        }
+        return mode_map.get(mode_str, ScanMode.FULL)
+    
+    def get_ip_ranges(self) -> List[str]:
+        """Get IP ranges for discovery"""
+        return self.config.get("discovery", {}).get("ip_ranges", [])
+    
+    def get_output_settings(self) -> Dict[str, Any]:
+        """Get output settings"""
+        return self.config.get("output", {})
+    
+    def get_logging_settings(self) -> Dict[str, Any]:
+        """Get logging settings"""
+        return self.config.get("logging", {})
+    
+    def _parse_protocol(self, protocol_str: Optional[str]) -> Optional[Protocol]:
+        """Parse protocol string to Protocol enum"""
+        if not protocol_str:
+            return None
+        
+        mapping = {
+            "slmp": Protocol.SLMP,
+            "mc": Protocol.SLMP,
+            "ethernet_ip": Protocol.ETHERNET_IP,
+            "eip": Protocol.ETHERNET_IP,
+            "cip": Protocol.ETHERNET_IP,
+            "modbus": Protocol.MODBUS_TCP,
+            "modbus_tcp": Protocol.MODBUS_TCP,
+            "s7": Protocol.S7,
+            "s7comm": Protocol.S7,
+            "fins": Protocol.FINS,
+        }
+        return mapping.get(protocol_str.lower())
+    
+    def _parse_device_type(self, device_str: Optional[str]) -> Optional[DeviceType]:
+        """Parse device type string to DeviceType enum"""
+        if not device_str:
+            return None
+        
+        mapping = {
+            "D": DeviceType.D,
+            "M": DeviceType.M,
+            "W": DeviceType.W,
+            "R": DeviceType.R,
+            "DM": DeviceType.DM,
+            "HR": DeviceType.HR,
+            "IR": DeviceType.IR,
+            "DB": DeviceType.DB,
+            "X": DeviceType.X,
+            "Y": DeviceType.Y,
+        }
+        return mapping.get(device_str.upper())
+    
+    def get_data_type_manager(self) -> Optional[DataTypeManager]:
+        """
+        Get DataTypeManager from configuration.
+        
+        Returns:
+            DataTypeManager instance or None if not configured
+        """
+        dt_config = self.config.get("data_types")
+        if not dt_config:
+            return None
+        
+        if not dt_config.get("mappings"):
+            return None
+        
+        return DataTypeManager.from_config(dt_config)
+    
+    def get_default_data_type(self) -> Optional[DataType]:
+        """Get default data type from configuration"""
+        dt_config = self.config.get("data_types", {})
+        type_str = dt_config.get("default_type")
+        
+        if not type_str:
+            return None
+        
+        try:
+            return DataType(type_str.upper())
+        except ValueError:
+            return None
+    
+    def get_default_byte_order(self) -> ByteOrder:
+        """Get default byte order from configuration"""
+        dt_config = self.config.get("data_types", {})
+        order_str = dt_config.get("default_byte_order", "little")
+        
+        mapping = {
+            "little": ByteOrder.LITTLE_ENDIAN,
+            "big": ByteOrder.BIG_ENDIAN,
+            "little_swap": ByteOrder.LITTLE_ENDIAN_WORD_SWAP,
+            "big_swap": ByteOrder.BIG_ENDIAN_WORD_SWAP,
+        }
+        return mapping.get(order_str.lower(), ByteOrder.LITTLE_ENDIAN)
+    
+    def save_template(self, path: str):
+        """Save configuration template to file"""
+        path = Path(path)
+        suffix = path.suffix.lower()
+        
+        with open(path, 'w', encoding='utf-8') as f:
+            if suffix in ['.yaml', '.yml']:
+                if not YAML_AVAILABLE:
+                    raise ImportError("PyYAML is required for YAML files")
+                yaml.dump(DEFAULT_CONFIG, f, default_flow_style=False, allow_unicode=True)
+            else:
+                json.dump(DEFAULT_CONFIG, f, indent=2, ensure_ascii=False)
+        
+        logger.info(f"Configuration template saved to: {path}")
+    
+    def validate(self) -> List[str]:
+        """
+        Validate configuration and return list of errors.
+        
+        Returns:
+            List of validation error messages (empty if valid)
+        """
+        errors = []
+        
+        # Validate network settings
+        net = self.config.get("network", {})
+        if net.get("max_concurrent", 1) < 1:
+            errors.append("network.max_concurrent must be >= 1")
+        if net.get("packet_interval_ms", 50) < 0:
+            errors.append("network.packet_interval_ms must be >= 0")
+        
+        # Validate targets
+        for i, target in enumerate(self.config.get("targets", [])):
+            if not target.get("ip"):
+                errors.append(f"targets[{i}].ip is required")
+        
+        # Validate device ranges
+        for i, range_def in enumerate(self.config.get("scan", {}).get("device_ranges", [])):
+            if range_def.get("start", 0) > range_def.get("end", 0):
+                errors.append(f"scan.device_ranges[{i}]: start must be <= end")
+        
+        return errors
+
+
+def load_config(config_path: Optional[str] = None) -> ConfigLoader:
+    """
+    Convenience function to load configuration.
+    
+    Args:
+        config_path: Path to configuration file
+    
+    Returns:
+        ConfigLoader instance with loaded configuration
+    """
+    loader = ConfigLoader(config_path)
+    loader.load()
+    return loader
+
+
+def generate_config_template(path: str = "plc_config.yaml"):
+    """Generate a configuration template file"""
+    loader = ConfigLoader()
+    loader.save_template(path)
+    print(f"Configuration template saved to: {path}")
+

@@ -1,0 +1,193 @@
+# PLC Discovery Tool - Configuration File Example
+# Copy this file to plc_config.yaml and customize for your environment
+
+version: "1.0"
+
+# Network communication settings
+network:
+  # Timeout for discovery responses (milliseconds)
+  discovery_timeout_ms: 1000
+  
+  # Number of retries for discovery
+  discovery_retry_count: 3
+  
+  # Interval between packets to avoid network overload (milliseconds)
+  packet_interval_ms: 50
+  
+  # Interval before retry on error (milliseconds)
+  retry_interval_ms: 200
+  
+  # Single request timeout (milliseconds)
+  request_timeout_ms: 5000
+  
+  # Maximum concurrent PLC connections
+  max_concurrent: 3
+
+# Discovery settings
+discovery:
+  enabled: true
+  
+  # Scan the same network segment automatically
+  scan_same_segment: true
+  
+  # Additional IP ranges to scan (CIDR or hyphen notation)
+  ip_ranges:
+    # - "192.168.1.0/24"
+    # - "10.0.0.1-100"
+  
+  # Protocols to scan for
+  protocols:
+    - slmp
+    - ethernet_ip
+    - modbus
+    - s7
+
+# Target PLCs for direct connection (skip discovery)
+targets:
+  # Example: Mitsubishi PLC
+  # - ip: "192.168.1.10"
+  #   protocol: slmp
+  #   port: 5001
+  #   name: "Main PLC"
+  #   manufacturer: "三菱電機"
+  
+  # Example: Omron PLC
+  # - ip: "192.168.1.20"
+  #   protocol: ethernet_ip
+  #   port: 44818
+  #   name: "Sub PLC"
+  #   manufacturer: "オムロン"
+  
+  # Example: Modbus device
+  # - ip: "192.168.1.30"
+  #   protocol: modbus
+  #   port: 502
+  #   name: "Sensor Unit"
+
+# Scan settings
+scan:
+  # Mode: "discover", "full", or "range"
+  mode: full
+  
+  # Device ranges to scan (for range mode)
+  device_ranges:
+    - device: D
+      start: 0
+      end: 8191
+    - device: M
+      start: 0
+      end: 8191
+    # - device: W
+    #   start: 0
+    #   end: 2047
+  
+  # Interval for continuous scanning (0 = single scan)
+  interval_seconds: 0
+
+# Output settings
+output:
+  # Output directory for result files
+  directory: "./plc_scan_results"
+  
+  # File encoding: "utf-8" or "shift-jis"
+  encoding: utf-8
+  
+  # Output format: "csv" or "json"
+  format: csv
+  
+  # Include timestamp in filenames
+  include_timestamp: true
+  
+  # SQLite database output (optional)
+  database:
+    # Enable/disable database output
+    enabled: false
+    
+    # Database file path
+    path: "./plc_data.db"
+    
+    # Track value changes
+    track_history: true
+    
+    # Days to keep history (for cleanup)
+    max_history_days: 30
+
+# Logging settings
+logging:
+  # Log level: DEBUG, INFO, WARNING, ERROR
+  level: INFO
+  
+  # Log file path (optional, null for console only)
+  file: null
+  
+  # Audit log file path (for compliance/tracking)
+  audit_log: "./plc_scan_results/audit.log"
+  
+  # Log format
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+# Data type conversion settings
+data_types:
+  # Default data type for addresses without specific mapping
+  default_type: WORD
+  
+  # Default byte order: little, big, little_swap, big_swap
+  default_byte_order: little
+  
+  # Address-specific type mappings
+  mappings:
+    # Temperature sensors (D100-D199) as FLOAT
+    - start: 100
+      end: 199
+      type: FLOAT
+      byte_order: little
+      description: "Temperature sensors"
+    
+    # Pressure sensors (D200-D299) as FLOAT
+    - start: 200
+      end: 299
+      type: FLOAT
+      description: "Pressure sensors"
+    
+    # Production counters (D300-D399) as DWORD
+    - start: 300
+      end: 399
+      type: DWORD
+      description: "Production counters"
+    
+    # Signed values (D400-D499) as INT16
+    - start: 400
+      end: 499
+      type: INT16
+      description: "Signed integer values"
+
+# Notification settings
+notifications:
+  # Webhook notification
+  - name: main_webhook
+    type: webhook
+    url: "https://your-server.com/api/plc-notifications"
+    enabled: false  # Set to true to enable
+    events:
+      - scan_complete
+      - scan_error
+    headers:
+      Authorization: "Bearer your-token"
+  
+  # Slack notification
+  - name: slack_alerts
+    type: slack
+    url: "https://hooks.slack.com/services/YOUR/WEBHOOK/URL"
+    enabled: false
+    events:
+      - scan_error
+      - discovery_complete
+  
+  # Microsoft Teams notification
+  - name: teams_alerts
+    type: teams
+    url: "https://outlook.office.com/webhook/YOUR/WEBHOOK/URL"
+    enabled: false
+    events:
+      - scan_complete
+

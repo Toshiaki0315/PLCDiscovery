@@ -1,0 +1,892 @@
+"""
+PLC Discovery - レポート生成モジュール
+
+HTML/PDFレポートを生成するための機能を提供します。
+"""
+
+import json
+import os
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Union
+from enum import Enum
+import html
+
+from .config import PLCInfo, DataPoint, StatusCode
+
+
+class ReportFormat(Enum):
+    """レポート出力形式"""
+    HTML = "html"
+    PDF = "pdf"
+    JSON = "json"
+
+
+@dataclass
+class ReportConfig:
+    """レポート設定"""
+    format: ReportFormat = ReportFormat.HTML
+    output_path: Optional[str] = None
+    title: str = "PLC Discovery レポート"
+    company_name: str = ""
+    logo_path: Optional[str] = None
+    include_raw_data: bool = True
+    include_charts: bool = True
+    include_denied_addresses: bool = True
+    language: str = "ja"
+    theme: str = "default"  # default, dark, light
+
+
+@dataclass
+class ScanSummary:
+    """スキャン結果サマリー"""
+    scan_mode: str
+    started_at: datetime
+    completed_at: Optional[datetime] = None
+    total_plcs: int = 0
+    successful_reads: int = 0
+    failed_reads: int = 0
+    denied_addresses: int = 0
+    duration_seconds: float = 0.0
+    
+    @property
+    def success_rate(self) -> float:
+        """成功率を計算"""
+        total = self.successful_reads + self.failed_reads
+        if total == 0:
+            return 0.0
+        return (self.successful_reads / total) * 100
+
+
+@dataclass
+class ReportData:
+    """レポートデータ"""
+    summary: ScanSummary
+    plcs: List[PLCInfo] = field(default_factory=list)
+    data_points: Dict[str, List[DataPoint]] = field(default_factory=dict)
+    denied_addresses: Dict[str, List[str]] = field(default_factory=dict)
+    errors: List[str] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+class ReportGenerator:
+    """レポート生成クラス"""
+    
+    def __init__(self, config: Optional[ReportConfig] = None):
+        """
+        レポートジェネレータを初期化
+        
+        Args:
+            config: レポート設定
+        """
+        self.config = config or ReportConfig()
+    
+    def generate(self, data: ReportData) -> Union[str, bytes]:
+        """
+        レポートを生成
+        
+        Args:
+            data: レポートデータ
+        
+        Returns:
+            生成されたレポートの内容（HTML/JSONはstr、PDFはbytes）
+        """
+        if self.config.format == ReportFormat.HTML:
+            return self._generate_html(data)
+        elif self.config.format == ReportFormat.PDF:
+            return self._generate_pdf(data)
+        elif self.config.format == ReportFormat.JSON:
+            return self._generate_json(data)
+        else:
+            raise ValueError(f"Unsupported format: {self.config.format}")
+    
+    def save(self, data: ReportData, output_path: Optional[str] = None) -> str:
+        """
+        レポートをファイルに保存
+        
+        Args:
+            data: レポートデータ
+            output_path: 出力パス（指定しない場合は自動生成）
+        
+        Returns:
+            保存されたファイルパス
+        """
+        content = self.generate(data)
+        
+        if output_path is None:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            ext = self.config.format.value
+            output_path = f"plc_report_{timestamp}.{ext}"
+        
+        if self.config.output_path:
+            output_path = os.path.join(self.config.output_path, output_path)
+        
+        # ディレクトリ作成
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        
+        # ファイル保存
+        mode = 'w' if self.config.format != ReportFormat.PDF else 'wb'
+        encoding = 'utf-8' if self.config.format != ReportFormat.PDF else None
+        
+        with open(output_path, mode, encoding=encoding) as f:
+            if self.config.format == ReportFormat.PDF:
+                f.write(content.encode('utf-8') if isinstance(content, str) else content)
+            else:
+                f.write(content)
+        
+        return output_path
+    
+    def _generate_html(self, data: ReportData) -> str:
+        """HTML形式のレポートを生成"""
+        theme_css = self._get_theme_css()
+        chart_js = self._get_chart_js(data) if self.config.include_charts else ""
+        
+        html_content = f"""<!DOCTYPE html>
+<html lang="{self.config.language}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{html.escape(self.config.title)}</title>
+    <style>
+{theme_css}
+    </style>
+    {self._get_chart_library() if self.config.include_charts else ""}
+</head>
+<body>
+    <div class="container">
+        {self._generate_header(data)}
+        {self._generate_summary_section(data)}
+        {self._generate_plc_section(data)}
+        {self._generate_data_section(data) if self.config.include_raw_data else ""}
+        {self._generate_denied_section(data) if self.config.include_denied_addresses else ""}
+        {self._generate_errors_section(data)}
+        {self._generate_footer()}
+    </div>
+    {chart_js}
+</body>
+</html>"""
+        return html_content
+    
+    def _generate_pdf(self, data: ReportData) -> bytes:
+        """PDF形式のレポートを生成"""
+        # まずHTMLを生成
+        html_content = self._generate_html(data)
+        
+        try:
+            # weasyprint を試す
+            from weasyprint import HTML
+            pdf_bytes = HTML(string=html_content).write_pdf()
+            return pdf_bytes
+        except ImportError:
+            try:
+                # pdfkit を試す
+                import pdfkit
+                pdf_bytes = pdfkit.from_string(html_content, False)
+                return pdf_bytes
+            except ImportError:
+                # PDFライブラリがない場合はHTMLを返す
+                raise ImportError(
+                    "PDF generation requires 'weasyprint' or 'pdfkit'. "
+                    "Install with: pip install weasyprint or pip install pdfkit"
+                )
+    
+    def _generate_json(self, data: ReportData) -> str:
+        """JSON形式のレポートを生成"""
+        report_dict = {
+            "title": self.config.title,
+            "generated_at": datetime.now().isoformat(),
+            "summary": {
+                "scan_mode": data.summary.scan_mode,
+                "started_at": data.summary.started_at.isoformat(),
+                "completed_at": data.summary.completed_at.isoformat() if data.summary.completed_at else None,
+                "total_plcs": data.summary.total_plcs,
+                "successful_reads": data.summary.successful_reads,
+                "failed_reads": data.summary.failed_reads,
+                "denied_addresses": data.summary.denied_addresses,
+                "duration_seconds": data.summary.duration_seconds,
+                "success_rate": data.summary.success_rate
+            },
+            "plcs": [
+                {
+                    "ip_address": plc.ip_address,
+                    "manufacturer": plc.manufacturer,
+                    "model": plc.model,
+                    "protocol": plc.protocol.name if plc.protocol else None,
+                    "port": plc.port
+                }
+                for plc in data.plcs
+            ],
+            "data_points": {
+                ip: [
+                    {
+                        "address": dp.address,
+                        "value": dp.value,
+                        "raw_hex": dp.raw_hex,
+                        "status": dp.status.value if dp.status else None,
+                        "data_type": getattr(dp, 'data_type', None),
+                        "converted_value": getattr(dp, 'converted_value', None)
+                    }
+                    for dp in points
+                ]
+                for ip, points in data.data_points.items()
+            },
+            "denied_addresses": data.denied_addresses,
+            "errors": data.errors,
+            "metadata": data.metadata
+        }
+        return json.dumps(report_dict, indent=2, ensure_ascii=False)
+    
+    def _get_theme_css(self) -> str:
+        """テーマCSSを取得"""
+        if self.config.theme == "dark":
+            return self._get_dark_theme_css()
+        elif self.config.theme == "light":
+            return self._get_light_theme_css()
+        else:
+            return self._get_default_theme_css()
+    
+    def _get_default_theme_css(self) -> str:
+        """デフォルトテーマCSS"""
+        return """
+        :root {
+            --primary-color: #2563eb;
+            --secondary-color: #64748b;
+            --success-color: #22c55e;
+            --warning-color: #f59e0b;
+            --danger-color: #ef4444;
+            --bg-color: #f8fafc;
+            --card-bg: #ffffff;
+            --text-color: #1e293b;
+            --text-secondary: #64748b;
+            --border-color: #e2e8f0;
+        }
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', 'Hiragino Kaku Gothic ProN', 'Yu Gothic UI', sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            line-height: 1.6;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+        
+        header {
+            text-align: center;
+            margin-bottom: 2rem;
+            padding-bottom: 1rem;
+            border-bottom: 2px solid var(--primary-color);
+        }
+        
+        header h1 {
+            font-size: 2rem;
+            color: var(--primary-color);
+            margin-bottom: 0.5rem;
+        }
+        
+        header .meta {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+        }
+        
+        .section {
+            background: var(--card-bg);
+            border-radius: 8px;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        
+        .section h2 {
+            font-size: 1.25rem;
+            color: var(--primary-color);
+            margin-bottom: 1rem;
+            padding-bottom: 0.5rem;
+            border-bottom: 1px solid var(--border-color);
+        }
+        
+        .summary-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+        }
+        
+        .stat-card {
+            background: var(--bg-color);
+            padding: 1rem;
+            border-radius: 6px;
+            text-align: center;
+        }
+        
+        .stat-card .value {
+            font-size: 2rem;
+            font-weight: bold;
+            color: var(--primary-color);
+        }
+        
+        .stat-card .label {
+            font-size: 0.875rem;
+            color: var(--text-secondary);
+        }
+        
+        .stat-card.success .value { color: var(--success-color); }
+        .stat-card.warning .value { color: var(--warning-color); }
+        .stat-card.danger .value { color: var(--danger-color); }
+        
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 1rem;
+        }
+        
+        th, td {
+            padding: 0.75rem;
+            text-align: left;
+            border-bottom: 1px solid var(--border-color);
+        }
+        
+        th {
+            background: var(--bg-color);
+            font-weight: 600;
+            color: var(--text-secondary);
+        }
+        
+        tr:hover {
+            background: var(--bg-color);
+        }
+        
+        .badge {
+            display: inline-block;
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+        
+        .badge-success { background: #dcfce7; color: #166534; }
+        .badge-warning { background: #fef3c7; color: #92400e; }
+        .badge-danger { background: #fee2e2; color: #991b1b; }
+        .badge-info { background: #dbeafe; color: #1e40af; }
+        
+        .chart-container {
+            height: 300px;
+            margin: 1rem 0;
+        }
+        
+        .error-list {
+            list-style: none;
+        }
+        
+        .error-list li {
+            padding: 0.5rem;
+            margin-bottom: 0.5rem;
+            background: #fee2e2;
+            border-left: 3px solid var(--danger-color);
+            border-radius: 4px;
+        }
+        
+        footer {
+            text-align: center;
+            padding: 1rem;
+            color: var(--text-secondary);
+            font-size: 0.875rem;
+        }
+        
+        @media print {
+            body { background: white; }
+            .container { max-width: 100%; padding: 0; }
+            .section { box-shadow: none; border: 1px solid #ddd; }
+        }
+        """
+    
+    def _get_dark_theme_css(self) -> str:
+        """ダークテーマCSS"""
+        base_css = self._get_default_theme_css()
+        dark_overrides = """
+        :root {
+            --primary-color: #60a5fa;
+            --bg-color: #0f172a;
+            --card-bg: #1e293b;
+            --text-color: #f1f5f9;
+            --text-secondary: #94a3b8;
+            --border-color: #334155;
+        }
+        
+        .stat-card { background: #0f172a; }
+        th { background: #0f172a; }
+        tr:hover { background: #0f172a; }
+        """
+        return base_css + dark_overrides
+    
+    def _get_light_theme_css(self) -> str:
+        """ライトテーマCSS"""
+        return self._get_default_theme_css()
+    
+    def _get_chart_library(self) -> str:
+        """Chart.js ライブラリを取得"""
+        return '<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>'
+    
+    def _get_chart_js(self, data: ReportData) -> str:
+        """チャート用JavaScriptを生成"""
+        # データ集計
+        success = data.summary.successful_reads
+        failed = data.summary.failed_reads
+        denied = data.summary.denied_addresses
+        
+        return f"""
+    <script>
+        // ステータス分布チャート
+        const statusCtx = document.getElementById('statusChart');
+        if (statusCtx) {{
+            new Chart(statusCtx, {{
+                type: 'doughnut',
+                data: {{
+                    labels: ['成功', '失敗', 'アクセス拒否'],
+                    datasets: [{{
+                        data: [{success}, {failed}, {denied}],
+                        backgroundColor: ['#22c55e', '#ef4444', '#f59e0b'],
+                        borderWidth: 0
+                    }}]
+                }},
+                options: {{
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {{
+                        legend: {{
+                            position: 'bottom'
+                        }}
+                    }}
+                }}
+            }});
+        }}
+        
+        // PLC別データ件数チャート
+        const plcCtx = document.getElementById('plcChart');
+        if (plcCtx) {{
+            const plcData = {json.dumps({ip: len(points) for ip, points in data.data_points.items()})};
+            new Chart(plcCtx, {{
+                type: 'bar',
+                data: {{
+                    labels: Object.keys(plcData),
+                    datasets: [{{
+                        label: 'データポイント数',
+                        data: Object.values(plcData),
+                        backgroundColor: '#2563eb'
+                    }}]
+                }},
+                options: {{
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {{
+                        legend: {{
+                            display: false
+                        }}
+                    }},
+                    scales: {{
+                        y: {{
+                            beginAtZero: true
+                        }}
+                    }}
+                }}
+            }});
+        }}
+    </script>
+        """
+    
+    def _generate_header(self, data: ReportData) -> str:
+        """ヘッダーセクションを生成"""
+        logo_html = ""
+        if self.config.logo_path and os.path.exists(self.config.logo_path):
+            logo_html = f'<img src="{self.config.logo_path}" alt="Logo" style="max-height: 60px; margin-bottom: 1rem;">'
+        
+        company_html = ""
+        if self.config.company_name:
+            company_html = f'<div class="company">{html.escape(self.config.company_name)}</div>'
+        
+        return f"""
+        <header>
+            {logo_html}
+            {company_html}
+            <h1>{html.escape(self.config.title)}</h1>
+            <div class="meta">
+                生成日時: {datetime.now().strftime("%Y年%m月%d日 %H:%M:%S")}
+            </div>
+        </header>
+        """
+    
+    def _generate_summary_section(self, data: ReportData) -> str:
+        """サマリーセクションを生成"""
+        summary = data.summary
+        duration = f"{summary.duration_seconds:.1f}秒" if summary.duration_seconds else "計測中"
+        
+        return f"""
+        <section class="section">
+            <h2>📊 スキャン概要</h2>
+            <div class="summary-grid">
+                <div class="stat-card">
+                    <div class="value">{summary.scan_mode}</div>
+                    <div class="label">スキャンモード</div>
+                </div>
+                <div class="stat-card">
+                    <div class="value">{summary.total_plcs}</div>
+                    <div class="label">検出PLC数</div>
+                </div>
+                <div class="stat-card success">
+                    <div class="value">{summary.successful_reads:,}</div>
+                    <div class="label">成功読み取り</div>
+                </div>
+                <div class="stat-card danger">
+                    <div class="value">{summary.failed_reads:,}</div>
+                    <div class="label">失敗</div>
+                </div>
+                <div class="stat-card warning">
+                    <div class="value">{summary.denied_addresses:,}</div>
+                    <div class="label">アクセス拒否</div>
+                </div>
+                <div class="stat-card">
+                    <div class="value">{summary.success_rate:.1f}%</div>
+                    <div class="label">成功率</div>
+                </div>
+            </div>
+            <div style="margin-top: 1rem; color: var(--text-secondary); font-size: 0.875rem;">
+                開始: {summary.started_at.strftime("%Y-%m-%d %H:%M:%S")} | 
+                完了: {summary.completed_at.strftime("%Y-%m-%d %H:%M:%S") if summary.completed_at else "進行中"} | 
+                所要時間: {duration}
+            </div>
+            {self._generate_charts_html() if self.config.include_charts else ""}
+        </section>
+        """
+    
+    def _generate_charts_html(self) -> str:
+        """チャートHTMLを生成"""
+        return """
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1rem;">
+            <div class="chart-container">
+                <canvas id="statusChart"></canvas>
+            </div>
+            <div class="chart-container">
+                <canvas id="plcChart"></canvas>
+            </div>
+        </div>
+        """
+    
+    def _generate_plc_section(self, data: ReportData) -> str:
+        """PLC一覧セクションを生成"""
+        if not data.plcs:
+            return ""
+        
+        rows = ""
+        for i, plc in enumerate(data.plcs, 1):
+            protocol = plc.protocol.name if plc.protocol else "不明"
+            rows += f"""
+            <tr>
+                <td>{i}</td>
+                <td>{html.escape(plc.ip_address)}</td>
+                <td>{html.escape(plc.manufacturer or '不明')}</td>
+                <td>{html.escape(plc.model or '不明')}</td>
+                <td><span class="badge badge-info">{html.escape(protocol)}</span></td>
+                <td>{plc.port or '-'}</td>
+            </tr>
+            """
+        
+        return f"""
+        <section class="section">
+            <h2>🔌 検出されたPLC</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>IPアドレス</th>
+                        <th>メーカー</th>
+                        <th>機種</th>
+                        <th>プロトコル</th>
+                        <th>ポート</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {rows}
+                </tbody>
+            </table>
+        </section>
+        """
+    
+    def _generate_data_section(self, data: ReportData) -> str:
+        """データセクションを生成"""
+        if not data.data_points:
+            return ""
+        
+        sections = ""
+        for ip, points in data.data_points.items():
+            rows = ""
+            for point in points[:100]:  # 最大100件表示
+                status_class = "success" if point.status == StatusCode.OK else "danger"
+                status_text = "OK" if point.status == StatusCode.OK else str(point.status.value) if point.status else "不明"
+                
+                converted = getattr(point, 'converted_value', None)
+                converted_html = f"<td>{html.escape(str(converted))}</td>" if converted is not None else "<td>-</td>"
+                
+                rows += f"""
+                <tr>
+                    <td>{html.escape(point.address)}</td>
+                    <td>{point.value if point.value is not None else '-'}</td>
+                    <td><code>{html.escape(point.raw_hex or '-')}</code></td>
+                    {converted_html}
+                    <td><span class="badge badge-{status_class}">{status_text}</span></td>
+                </tr>
+                """
+            
+            remaining = len(points) - 100
+            if remaining > 0:
+                rows += f'<tr><td colspan="5" style="text-align: center; color: var(--text-secondary);">...他 {remaining} 件</td></tr>'
+            
+            sections += f"""
+            <section class="section">
+                <h2>📋 データ: {html.escape(ip)}</h2>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>アドレス</th>
+                            <th>値</th>
+                            <th>RAW (HEX)</th>
+                            <th>変換値</th>
+                            <th>ステータス</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {rows}
+                    </tbody>
+                </table>
+            </section>
+            """
+        
+        return sections
+    
+    def _generate_denied_section(self, data: ReportData) -> str:
+        """アクセス拒否セクションを生成"""
+        if not data.denied_addresses:
+            return ""
+        
+        sections = ""
+        for ip, addresses in data.denied_addresses.items():
+            addr_list = ", ".join(addresses[:50])
+            remaining = len(addresses) - 50
+            if remaining > 0:
+                addr_list += f" ...他 {remaining} 件"
+            
+            sections += f"""
+            <div style="margin-bottom: 1rem;">
+                <strong>{html.escape(ip)}</strong>: 
+                <span style="color: var(--text-secondary);">{html.escape(addr_list)}</span>
+            </div>
+            """
+        
+        return f"""
+        <section class="section">
+            <h2>⚠️ アクセス拒否アドレス</h2>
+            {sections}
+        </section>
+        """
+    
+    def _generate_errors_section(self, data: ReportData) -> str:
+        """エラーセクションを生成"""
+        if not data.errors:
+            return ""
+        
+        error_items = ""
+        for error in data.errors[:20]:
+            error_items += f"<li>{html.escape(error)}</li>"
+        
+        remaining = len(data.errors) - 20
+        if remaining > 0:
+            error_items += f"<li>...他 {remaining} 件のエラー</li>"
+        
+        return f"""
+        <section class="section">
+            <h2>❌ エラー</h2>
+            <ul class="error-list">
+                {error_items}
+            </ul>
+        </section>
+        """
+    
+    def _generate_footer(self) -> str:
+        """フッターを生成"""
+        return f"""
+        <footer>
+            <p>Generated by PLC Discovery Tool</p>
+            <p>© {datetime.now().year} All rights reserved.</p>
+        </footer>
+        """
+
+
+def create_report(
+    plcs: List[PLCInfo],
+    data_points: Dict[str, List[DataPoint]],
+    denied_addresses: Optional[Dict[str, List[str]]] = None,
+    scan_mode: str = "full",
+    started_at: Optional[datetime] = None,
+    completed_at: Optional[datetime] = None,
+    config: Optional[ReportConfig] = None
+) -> tuple[ReportGenerator, ReportData]:
+    """
+    レポートを作成するコンビニエンス関数
+    
+    Args:
+        plcs: PLCリスト
+        data_points: PLCごとのデータポイント
+        denied_addresses: アクセス拒否アドレス
+        scan_mode: スキャンモード
+        started_at: 開始日時
+        completed_at: 完了日時
+        config: レポート設定
+    
+    Returns:
+        設定済みのReportGenerator
+    """
+    generator = ReportGenerator(config)
+    
+    # サマリー計算
+    total_success = sum(
+        1 for points in data_points.values() 
+        for p in points 
+        if p.status == StatusCode.OK
+    )
+    total_failed = sum(
+        1 for points in data_points.values() 
+        for p in points 
+        if p.status != StatusCode.OK
+    )
+    total_denied = sum(len(addrs) for addrs in (denied_addresses or {}).values())
+    
+    duration = 0.0
+    if started_at and completed_at:
+        duration = (completed_at - started_at).total_seconds()
+    
+    summary = ScanSummary(
+        scan_mode=scan_mode,
+        started_at=started_at or datetime.now(),
+        completed_at=completed_at,
+        total_plcs=len(plcs),
+        successful_reads=total_success,
+        failed_reads=total_failed,
+        denied_addresses=total_denied,
+        duration_seconds=duration
+    )
+    
+    report_data = ReportData(
+        summary=summary,
+        plcs=plcs,
+        data_points=data_points,
+        denied_addresses=denied_addresses or {}
+    )
+    
+    return generator, report_data
+
+
+def generate_html_report(
+    plcs: List[PLCInfo],
+    data_points: Dict[str, List[DataPoint]],
+    output_path: str,
+    denied_addresses: Optional[Dict[str, List[str]]] = None,
+    scan_mode: str = "full",
+    started_at: Optional[datetime] = None,
+    completed_at: Optional[datetime] = None,
+    title: str = "PLC Discovery レポート",
+    company_name: str = "",
+    theme: str = "default",
+    include_charts: bool = True,
+    include_raw_data: bool = True,
+) -> str:
+    """
+    HTMLレポートを生成して保存
+    
+    Args:
+        plcs: PLCリスト
+        data_points: データポイント
+        output_path: 出力パス
+        denied_addresses: アクセス拒否アドレス
+        scan_mode: スキャンモード
+        started_at: 開始日時
+        completed_at: 完了日時
+        title: レポートタイトル
+        company_name: 会社名
+        theme: テーマ
+        include_charts: チャートを含める
+        include_raw_data: 生データを含める
+    
+    Returns:
+        保存されたファイルパス
+    """
+    config = ReportConfig(
+        format=ReportFormat.HTML,
+        title=title,
+        company_name=company_name,
+        theme=theme,
+        include_charts=include_charts,
+        include_raw_data=include_raw_data,
+    )
+    generator, data = create_report(
+        plcs, data_points, denied_addresses,
+        scan_mode, started_at, completed_at, config
+    )
+    return generator.save(data, output_path)
+
+
+def generate_pdf_report(
+    plcs: List[PLCInfo],
+    data_points: Dict[str, List[DataPoint]],
+    output_path: str,
+    denied_addresses: Optional[Dict[str, List[str]]] = None,
+    scan_mode: str = "full",
+    started_at: Optional[datetime] = None,
+    completed_at: Optional[datetime] = None,
+    title: str = "PLC Discovery レポート",
+    company_name: str = "",
+    theme: str = "default",
+    include_charts: bool = True,
+    include_raw_data: bool = True,
+) -> str:
+    """
+    PDFレポートを生成して保存
+    
+    Args:
+        plcs: PLCリスト
+        data_points: データポイント
+        output_path: 出力パス
+        denied_addresses: アクセス拒否アドレス
+        scan_mode: スキャンモード
+        started_at: 開始日時
+        completed_at: 完了日時
+        title: レポートタイトル
+        company_name: 会社名
+        theme: テーマ
+        include_charts: チャートを含める
+        include_raw_data: 生データを含める
+    
+    Returns:
+        保存されたファイルパス
+    """
+    config = ReportConfig(
+        format=ReportFormat.PDF,
+        title=title,
+        company_name=company_name,
+        theme=theme,
+        include_charts=include_charts,
+        include_raw_data=include_raw_data,
+    )
+    generator, data = create_report(
+        plcs, data_points, denied_addresses,
+        scan_mode, started_at, completed_at, config
+    )
+    return generator.save(data, output_path)
+

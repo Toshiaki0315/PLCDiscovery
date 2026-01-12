@@ -1,0 +1,423 @@
+#!/usr/bin/env python3
+"""
+Siemens S7 Communication Simulator
+
+Simulates a Siemens S7 PLC for testing PLC Discovery tool.
+Implements basic S7comm protocol for data block and memory access.
+
+Usage:
+    python s7_simulator.py [--host 0.0.0.0] [--port 102]
+"""
+
+import argparse
+import asyncio
+import struct
+import logging
+from typing import Dict, List, Optional, Tuple
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger("S7-Simulator")
+
+# S7comm constants
+S7_PROTOCOL_ID = 0x32
+S7_PDU_TYPE_JOB = 0x01
+S7_PDU_TYPE_ACK = 0x02
+S7_PDU_TYPE_ACK_DATA = 0x03
+S7_PDU_TYPE_USERDATA = 0x07
+
+# S7 Function codes
+S7_FUNC_READ_VAR = 0x04
+S7_FUNC_WRITE_VAR = 0x05
+S7_FUNC_SETUP_COMM = 0xF0
+
+# S7 Area IDs
+S7_AREA_PE = 0x81    # Process inputs
+S7_AREA_PA = 0x82    # Process outputs
+S7_AREA_MK = 0x83    # Merkers (flags)
+S7_AREA_DB = 0x84    # Data blocks
+S7_AREA_CT = 0x1C    # Counters
+S7_AREA_TM = 0x1D    # Timers
+
+# Return codes
+S7_RET_OK = 0xFF
+S7_RET_ITEM_NOT_AVAILABLE = 0x0A
+
+
+class S7Device:
+    """Simulated S7 device memory"""
+    
+    def __init__(self, denied_ranges: Optional[List[Tuple[int, int]]] = None):
+        self.denied_ranges = denied_ranges or []
+        
+        # CPU Information
+        self.cpu_info = {
+            "module_type": b"CPU 1515-2 PN\x00" + b"\x00" * 18,  # 32 bytes
+            "serial_number": b"S C-12345678\x00" + b"\x00" * 12,  # 24 bytes
+            "as_name": b"S7-1500\x00" + b"\x00" * 16,  # 24 bytes
+            "module_name": b"PLC_SIM\x00" + b"\x00" * 16,  # 24 bytes
+            "order_code": b"6ES7 515-2AM02-0AB0\x00" + b"\x00" * 4,  # 24 bytes
+        }
+        
+        # Memory areas
+        self.data_blocks: Dict[int, Dict[int, int]] = {}  # DB -> {offset: byte}
+        self.merkers: Dict[int, int] = {}  # Offset -> byte
+        self.inputs: Dict[int, int] = {}   # Offset -> byte
+        self.outputs: Dict[int, int] = {}  # Offset -> byte
+        
+        self._initialize_data()
+    
+    def _initialize_data(self):
+        """Initialize sample data"""
+        # DB1 - Sample data
+        self.data_blocks[1] = {}
+        for i in range(1000):
+            # Fill with test pattern (big-endian words)
+            self.data_blocks[1][i * 2] = (i >> 8) & 0xFF
+            self.data_blocks[1][i * 2 + 1] = i & 0xFF
+        
+        # Some specific values
+        self.data_blocks[1][0] = 0x12
+        self.data_blocks[1][1] = 0x34
+        self.data_blocks[1][2] = 0xAB
+        self.data_blocks[1][3] = 0xCD
+        
+        # DB2 - More sample data
+        self.data_blocks[2] = {}
+        for i in range(500):
+            self.data_blocks[2][i] = i & 0xFF
+        
+        # Merkers
+        for i in range(100):
+            self.merkers[i] = i & 0xFF
+        
+        logger.info("Sample data initialized")
+    
+    def is_address_denied(self, address: int) -> bool:
+        """Check if address is in denied range"""
+        for start, end in self.denied_ranges:
+            if start <= address <= end:
+                return True
+        return False
+    
+    def read_db(self, db_number: int, start: int, size: int) -> Tuple[Optional[bytes], int]:
+        """Read from data block"""
+        if db_number not in self.data_blocks:
+            logger.debug(f"DB{db_number} not found")
+            return None, S7_RET_ITEM_NOT_AVAILABLE
+        
+        # Check denied addresses
+        for offset in range(start, start + size):
+            if self.is_address_denied(offset):
+                logger.debug(f"Access denied: DB{db_number}.{offset}")
+                return None, S7_RET_ITEM_NOT_AVAILABLE
+        
+        db = self.data_blocks[db_number]
+        data = bytearray()
+        for offset in range(start, start + size):
+            data.append(db.get(offset, 0))
+        
+        return bytes(data), S7_RET_OK
+    
+    def read_merkers(self, start: int, size: int) -> Tuple[Optional[bytes], int]:
+        """Read from merker memory"""
+        for offset in range(start, start + size):
+            if self.is_address_denied(offset):
+                return None, S7_RET_ITEM_NOT_AVAILABLE
+        
+        data = bytearray()
+        for offset in range(start, start + size):
+            data.append(self.merkers.get(offset, 0))
+        
+        return bytes(data), S7_RET_OK
+
+
+class COTPProtocol(asyncio.Protocol):
+    """COTP (Connection-Oriented Transport Protocol) for S7"""
+    
+    def __init__(self, device: S7Device):
+        self.device = device
+        self.transport = None
+        self.buffer = b""
+        self.connected = False
+    
+    def connection_made(self, transport):
+        self.transport = transport
+        peername = transport.get_extra_info('peername')
+        logger.info(f"Connection from {peername}")
+    
+    def connection_lost(self, exc):
+        logger.info("Connection closed")
+    
+    def data_received(self, data: bytes):
+        """Process received TPKT/COTP/S7comm data"""
+        self.buffer += data
+        
+        # TPKT header is 4 bytes
+        while len(self.buffer) >= 4:
+            # Parse TPKT header
+            version = self.buffer[0]
+            reserved = self.buffer[1]
+            length = struct.unpack(">H", self.buffer[2:4])[0]
+            
+            if version != 0x03:
+                logger.warning(f"Invalid TPKT version: {version}")
+                self.buffer = b""
+                continue
+            
+            if len(self.buffer) < length:
+                break
+            
+            # Extract TPKT payload
+            payload = self.buffer[4:length]
+            self.buffer = self.buffer[length:]
+            
+            try:
+                response = self._process_cotp(payload)
+                if response:
+                    self.transport.write(response)
+            except Exception as e:
+                logger.error(f"Error processing packet: {e}")
+    
+    def _process_cotp(self, data: bytes) -> Optional[bytes]:
+        """Process COTP packet"""
+        if len(data) < 2:
+            return None
+        
+        cotp_length = data[0]
+        cotp_type = data[1]
+        
+        logger.debug(f"COTP type: {cotp_type:02X}")
+        
+        if cotp_type == 0xE0:  # Connection Request
+            return self._handle_connect_request(data)
+        elif cotp_type == 0xF0:  # Data Transfer
+            return self._handle_data_transfer(data)
+        else:
+            logger.warning(f"Unsupported COTP type: {cotp_type:02X}")
+            return None
+    
+    def _handle_connect_request(self, data: bytes) -> bytes:
+        """Handle COTP connection request"""
+        logger.info("COTP Connection Request received")
+        self.connected = True
+        
+        # COTP Connection Confirm (CC)
+        cotp = bytes([
+            0x11,  # Length
+            0xD0,  # CC PDU type
+            0x00, 0x01,  # DST-REF
+            0x00, 0x01,  # SRC-REF
+            0x00,  # Class/options
+            # Parameters
+            0xC0, 0x01, 0x0A,  # TPDU size
+            0xC1, 0x02, 0x01, 0x00,  # Source TSAP
+            0xC2, 0x02, 0x01, 0x02,  # Destination TSAP
+        ])
+        
+        return self._make_tpkt(cotp)
+    
+    def _handle_data_transfer(self, data: bytes) -> Optional[bytes]:
+        """Handle COTP data transfer (contains S7comm)"""
+        if len(data) < 3:
+            return None
+        
+        # COTP DT header
+        cotp_header = data[0:3]
+        s7_data = data[3:]
+        
+        if len(s7_data) < 10:
+            return None
+        
+        # Parse S7comm header
+        if s7_data[0] != S7_PROTOCOL_ID:
+            logger.warning("Invalid S7 protocol ID")
+            return None
+        
+        pdu_type = s7_data[1]
+        
+        if pdu_type == S7_PDU_TYPE_JOB:
+            return self._handle_s7_job(s7_data)
+        else:
+            logger.warning(f"Unsupported PDU type: {pdu_type:02X}")
+            return None
+    
+    def _handle_s7_job(self, data: bytes) -> Optional[bytes]:
+        """Handle S7comm Job request"""
+        if len(data) < 12:
+            return None
+        
+        # Parse S7 header
+        reserved = struct.unpack(">H", data[2:4])[0]
+        pdu_ref = struct.unpack(">H", data[4:6])[0]
+        param_len = struct.unpack(">H", data[6:8])[0]
+        data_len = struct.unpack(">H", data[8:10])[0]
+        
+        params = data[10:10 + param_len]
+        s7_data = data[10 + param_len:10 + param_len + data_len]
+        
+        if len(params) < 1:
+            return None
+        
+        function = params[0]
+        logger.debug(f"S7 Function: {function:02X}")
+        
+        if function == S7_FUNC_SETUP_COMM:
+            return self._handle_setup_comm(pdu_ref, params)
+        elif function == S7_FUNC_READ_VAR:
+            return self._handle_read_var(pdu_ref, params)
+        else:
+            logger.warning(f"Unsupported S7 function: {function:02X}")
+            return None
+    
+    def _handle_setup_comm(self, pdu_ref: int, params: bytes) -> bytes:
+        """Handle Setup Communication request"""
+        logger.info("S7 Setup Communication")
+        
+        # Response parameters
+        resp_params = bytes([
+            S7_FUNC_SETUP_COMM,
+            0x00,  # Reserved
+            0x00, 0x03,  # Max calling
+            0x00, 0x03,  # Max called
+            0x03, 0xC0,  # PDU size (960)
+        ])
+        
+        return self._make_s7_response(pdu_ref, resp_params, b"")
+    
+    def _handle_read_var(self, pdu_ref: int, params: bytes) -> bytes:
+        """Handle Read Var request"""
+        if len(params) < 2:
+            return self._make_s7_error_response(pdu_ref)
+        
+        item_count = params[1]
+        logger.info(f"S7 Read Var: {item_count} items")
+        
+        # Parse items and read data
+        offset = 2
+        responses = []
+        
+        for i in range(item_count):
+            if offset + 12 > len(params):
+                break
+            
+            # Parse item specification
+            var_spec = params[offset]
+            addr_len = params[offset + 1]
+            syntax_id = params[offset + 2]
+            transport_size = params[offset + 3]
+            length = struct.unpack(">H", params[offset + 4:offset + 6])[0]
+            db_number = struct.unpack(">H", params[offset + 6:offset + 8])[0]
+            area = params[offset + 8]
+            address_bytes = params[offset + 9:offset + 12]
+            address = (address_bytes[0] << 16) | (address_bytes[1] << 8) | address_bytes[2]
+            byte_offset = address >> 3
+            
+            logger.debug(f"  Item {i}: Area={area:02X}, DB={db_number}, Offset={byte_offset}, Len={length}")
+            
+            # Read data based on area
+            if area == S7_AREA_DB:
+                data, ret_code = self.device.read_db(db_number, byte_offset, length)
+            elif area == S7_AREA_MK:
+                data, ret_code = self.device.read_merkers(byte_offset, length)
+            else:
+                data, ret_code = None, S7_RET_ITEM_NOT_AVAILABLE
+            
+            if ret_code == S7_RET_OK:
+                responses.append((ret_code, data))
+            else:
+                responses.append((ret_code, None))
+            
+            offset += 12
+        
+        return self._make_read_response(pdu_ref, responses)
+    
+    def _make_read_response(self, pdu_ref: int, responses: List[Tuple[int, Optional[bytes]]]) -> bytes:
+        """Create Read Var response"""
+        # Response parameters
+        resp_params = bytes([S7_FUNC_READ_VAR, len(responses)])
+        
+        # Response data
+        resp_data = b""
+        for ret_code, data in responses:
+            if ret_code == S7_RET_OK and data:
+                resp_data += bytes([ret_code, 0x04])  # Return code + Transport size (byte)
+                resp_data += struct.pack(">H", len(data) * 8)  # Length in bits
+                resp_data += data
+                # Padding to even length
+                if len(data) % 2 == 1:
+                    resp_data += b"\x00"
+            else:
+                resp_data += bytes([ret_code])
+        
+        return self._make_s7_response(pdu_ref, resp_params, resp_data)
+    
+    def _make_s7_response(self, pdu_ref: int, params: bytes, data: bytes) -> bytes:
+        """Create S7comm response"""
+        # S7 header
+        s7_header = bytes([S7_PROTOCOL_ID, S7_PDU_TYPE_ACK_DATA])
+        s7_header += struct.pack(">H", 0)  # Reserved
+        s7_header += struct.pack(">H", pdu_ref)
+        s7_header += struct.pack(">H", len(params))
+        s7_header += struct.pack(">H", len(data))
+        s7_header += bytes([0x00, 0x00])  # Error class/code
+        
+        s7_packet = s7_header + params + data
+        
+        # COTP DT header
+        cotp = bytes([0x02, 0xF0, 0x80]) + s7_packet
+        
+        return self._make_tpkt(cotp)
+    
+    def _make_s7_error_response(self, pdu_ref: int) -> bytes:
+        """Create S7 error response"""
+        return self._make_s7_response(pdu_ref, b"", b"")
+    
+    def _make_tpkt(self, data: bytes) -> bytes:
+        """Wrap data in TPKT"""
+        length = len(data) + 4
+        return bytes([0x03, 0x00]) + struct.pack(">H", length) + data
+
+
+async def run_server(host: str, port: int, denied_ranges: List[Tuple[int, int]]):
+    """Run S7 simulator server"""
+    device = S7Device(denied_ranges)
+    
+    loop = asyncio.get_event_loop()
+    server = await loop.create_server(
+        lambda: COTPProtocol(device),
+        host, port
+    )
+    
+    addr = server.sockets[0].getsockname()
+    logger.info(f"S7 Simulator running on {addr[0]}:{addr[1]}")
+    logger.info(f"Denied address ranges: {denied_ranges}")
+    
+    async with server:
+        await server.serve_forever()
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Siemens S7 PLC Simulator")
+    parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
+    parser.add_argument("--port", type=int, default=102, help="Port to listen on")
+    parser.add_argument("--denied", default="500-550",
+                       help="Denied address ranges")
+    args = parser.parse_args()
+    
+    denied_ranges = []
+    if args.denied:
+        for range_str in args.denied.split(","):
+            if "-" in range_str:
+                start, end = range_str.split("-")
+                denied_ranges.append((int(start), int(end)))
+    
+    try:
+        asyncio.run(run_server(args.host, args.port, denied_ranges))
+    except KeyboardInterrupt:
+        logger.info("Simulator stopped")
+
+
+if __name__ == "__main__":
+    main()
+
+

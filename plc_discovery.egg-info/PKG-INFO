@@ -1,0 +1,194 @@
+Metadata-Version: 2.4
+Name: plc-discovery
+Version: 1.0.0
+Summary: Multi-vendor PLC auto-detection and data collection tool
+Author: PLC Discovery Team
+License: MIT
+Project-URL: Homepage, https://github.com/your-org/plc-discovery
+Project-URL: Bug Tracker, https://github.com/your-org/plc-discovery/issues
+Keywords: plc,factory,automation,slmp,modbus,ethernet/ip,s7
+Classifier: Development Status :: 4 - Beta
+Classifier: Intended Audience :: Developers
+Classifier: Intended Audience :: Manufacturing
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Operating System :: OS Independent
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Topic :: System :: Networking
+Classifier: Topic :: Scientific/Engineering :: Interface Engine/Protocol Translator
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: pymcprotocol>=0.4.0
+Requires-Dist: pycomm3>=0.32.0
+Requires-Dist: pymodbus>=3.0.0
+Requires-Dist: python-snap7>=1.4.0
+Requires-Dist: scapy>=2.5.0
+Requires-Dist: netifaces>=0.11.0
+Provides-Extra: dev
+Requires-Dist: pytest>=7.4.0; extra == "dev"
+Requires-Dist: pytest-asyncio>=0.21.0; extra == "dev"
+Requires-Dist: pytest-cov>=4.1.0; extra == "dev"
+Requires-Dist: pytest-mock>=3.11.0; extra == "dev"
+Requires-Dist: flake8>=6.1.0; extra == "dev"
+Requires-Dist: black>=23.0.0; extra == "dev"
+Requires-Dist: isort>=5.12.0; extra == "dev"
+Requires-Dist: mypy>=1.5.0; extra == "dev"
+
+# PLC Discovery Tool
+
+工場ネットワーク内のマルチベンダーPLCを自動検出し、デバイスデータを読み取り専用で収集するツールです。
+
+## 特徴
+
+- **マルチベンダー対応**: 三菱電機、キーエンス、オムロン、シーメンス、ロックウェル等
+- **マルチプロトコル対応**: SLMP、EtherNet/IP、Modbus/TCP、S7通信
+- **安全設計**: 読み取り専用、PLCを停止させない
+- **エラー耐性**: 通信エラーが発生しても継続、二分探索による不正アドレス特定
+- **CSV出力**: 後でデータ解析しやすい形式で保存
+
+## 要件
+
+- Python 3.10以上
+- 対応OS: Windows, macOS, Linux
+
+## インストール
+
+```bash
+# リポジトリのクローン
+git clone <repository-url>
+cd PLCDiscovery
+
+# 依存ライブラリのインストール
+pip install -r requirements.txt
+```
+
+## 使い方
+
+### 探索モード (Discovery)
+
+同一ネットワークセグメント内のPLCを自動検出:
+
+```bash
+python plc_scanner.py --mode discover
+```
+
+指定IPレンジ内のPLCを検出:
+
+```bash
+python plc_scanner.py --mode discover --ip-range "192.168.1.0/24"
+```
+
+### フルスキャンモード (Full Scan)
+
+工場停止時用。PLCの主要デバイス範囲を一括取得:
+
+```bash
+python plc_scanner.py --mode full --target 192.168.1.10
+```
+
+プロトコルを明示的に指定:
+
+```bash
+python plc_scanner.py --mode full --target 192.168.1.10 --protocol slmp
+```
+
+### 範囲指定モード (Range Mode)
+
+稼働時用。指定範囲のみを取得:
+
+```bash
+python plc_scanner.py --mode range --target 192.168.1.10 --device D --range 0-1000
+```
+
+定期実行（60秒間隔）:
+
+```bash
+python plc_scanner.py --mode range --target 192.168.1.10 --device D --range 0-100 --interval 60
+```
+
+## コマンドラインオプション
+
+| オプション | 説明 | デフォルト |
+|------------|------|------------|
+| `--mode`, `-m` | 動作モード (discover/full/range) | discover |
+| `--target`, `-t` | 対象PLC IPアドレス | - |
+| `--ip-range`, `-r` | スキャン対象IPレンジ | - |
+| `--protocol`, `-p` | プロトコル指定 (slmp/eip/modbus/s7) | 自動検出 |
+| `--port` | ポート番号 | プロトコルデフォルト |
+| `--device`, `-d` | デバイス種別 (D/M/W/R等) | D |
+| `--range` | アドレス範囲 (例: 0-1000) | 0-999 |
+| `--interval`, `-i` | スキャン間隔（秒） | 0 (単発) |
+| `--packet-interval` | パケット間隔(ms) | 50 |
+| `--retry-interval` | リトライ間隔(ms) | 200 |
+| `--request-timeout` | タイムアウト(ms) | 5000 |
+| `--output-dir`, `-o` | 出力ディレクトリ | ./plc_scan_results |
+| `--encoding` | 出力エンコーディング | utf-8 |
+| `--verbose`, `-v` | 詳細出力 | - |
+| `--quiet`, `-q` | 進捗出力抑制 | - |
+
+## 出力ファイル
+
+| ファイル名 | 内容 |
+|------------|------|
+| `discovery_result_YYYYMMDD_HHMMSS.csv` | 検出されたPLC一覧 |
+| `plc_data_<IP>_YYYYMMDD_HHMMSS.csv` | PLCデバイスデータ |
+| `access_denied_log.csv` | アクセス不可アドレス一覧 |
+| `scan_summary_YYYYMMDD_HHMMSS.csv` | スキャン統計サマリー |
+
+## 対応プロトコルとメーカー
+
+| プロトコル | 対応メーカー | デフォルトポート |
+|------------|--------------|------------------|
+| SLMP (3Eフレーム) | 三菱電機、キーエンス、パナソニック、東芝、日立産機 | 5001 |
+| EtherNet/IP | オムロン、ロックウェル、キーエンス、安川電機 | 44818 |
+| Modbus/TCP | 横河電機、富士電機、IDEC、デルタ電子 | 502 |
+| S7通信 | シーメンス | 102 |
+
+## 安全上の注意
+
+- **本ツールは読み取り専用です**。PLCへの書き込み機能は一切ありません。
+- ネットワーク負荷軽減のため、適切な`--packet-interval`を設定してください。
+- 工場稼働中は`--mode range`で必要な範囲のみを取得することを推奨します。
+- フルスキャンは工場停止時に実施してください。
+
+## プロジェクト構造
+
+```
+PLCDiscovery/
+├── plc_scanner.py              # メインCLI
+├── requirements.txt            # 依存ライブラリ
+├── README.md                   # このファイル
+└── plc_discovery/
+    ├── __init__.py
+    ├── config.py               # 設定・定数
+    ├── utils.py                # ユーティリティ
+    ├── discovery.py            # 探索モジュール
+    ├── collector.py            # データ収集モジュール
+    ├── output.py               # CSV出力モジュール
+    └── protocols/
+        ├── __init__.py
+        ├── base.py             # 基底ハンドラー
+        ├── slmp.py             # SLMP プロトコル
+        ├── ethernet_ip.py      # EtherNet/IP プロトコル
+        ├── modbus.py           # Modbus/TCP プロトコル
+        └── s7.py               # S7 プロトコル
+```
+
+## 二分探索エラー回避アルゴリズム
+
+本ツールの重要な特徴は、アクセス不可アドレスを自動特定する二分探索アルゴリズムです：
+
+1. 指定範囲を一括で読み出し試行
+2. エラー発生時、範囲を半分に分割して再試行
+3. さらにエラーが出る場合は再分割（最大12段階）
+4. 1点単位まで分割してアクセス可否を判定
+5. 判定されたアクセス不可アドレスは以降スキップ
+
+これにより、一部のアドレスがアクセス不可でも全体のスキャンが中断することなく継続されます。
+
+## ライセンス
+
+MIT License
+

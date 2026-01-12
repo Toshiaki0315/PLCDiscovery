@@ -1,0 +1,28 @@
+# PLC Discovery Tool - Dependencies
+# Python 3.10+ required
+
+# SLMP Protocol (Mitsubishi/Keyence/Panasonic)
+pymcprotocol>=0.4.0
+
+# EtherNet/IP Protocol (Omron/Rockwell)
+pycomm3>=0.32.0
+
+# Modbus/TCP Protocol (Yokogawa/Fuji/IDEC)
+pymodbus>=3.0.0
+
+# S7 Protocol (Siemens)
+python-snap7>=1.4.0
+
+# Network Discovery (ARP/Low-layer)
+scapy>=2.5.0
+
+# Utility Libraries
+netifaces>=0.11.0
+ipaddress>=1.0.23
+
+# Configuration
+PyYAML>=6.0
+
+# Rich Console Output (optional, fallback to simple output if not installed)
+rich>=13.0.0
+

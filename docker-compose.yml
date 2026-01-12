@@ -1,0 +1,119 @@
+# PLC Discovery Tool - Docker Compose Configuration
+# 
+# Usage:
+#   docker-compose up -d simulators    # Start simulators only
+#   docker-compose up scanner          # Run scanner (one-time)
+#   docker-compose up -d               # Start all services
+#   docker-compose run scanner --mode discover  # Run with custom args
+
+version: '3.8'
+
+services:
+  # =========================================
+  # PLC Scanner Service
+  # =========================================
+  scanner:
+    build:
+      context: .
+      target: production
+    container_name: plc-scanner
+    volumes:
+      # Output directory
+      - ./plc_scan_results:/app/output
+      # Configuration files
+      - ./plc_config.yaml:/app/config.yaml:ro
+      - ./type_mapping.json:/app/type_mapping.json:ro
+    environment:
+      - TZ=Asia/Tokyo
+    networks:
+      - plc-network
+    depends_on:
+      - simulators
+    # Override command for custom scan
+    # command: ["--config", "/app/config.yaml", "--mode", "full", "--target", "simulators"]
+
+  # =========================================
+  # PLC Simulators Service
+  # =========================================
+  simulators:
+    build:
+      context: .
+      target: simulator
+    container_name: plc-simulators
+    ports:
+      # SLMP Simulator
+      - "5001:5001"
+      # Modbus Simulator
+      - "5502:502"
+      # EtherNet/IP Simulator
+      - "5503:44818"
+      # S7 Simulator
+      - "5102:102"
+    environment:
+      - TZ=Asia/Tokyo
+      - SLMP_PORT=5001
+      - MODBUS_PORT=502
+      - ETHERNET_IP_PORT=44818
+      - S7_PORT=102
+    networks:
+      - plc-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; s=socket.socket(); s.connect(('localhost', 5001)); s.close()"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  # =========================================
+  # Development/Test Service
+  # =========================================
+  dev:
+    build:
+      context: .
+      target: development
+    container_name: plc-dev
+    volumes:
+      - .:/app
+      - ./plc_scan_results:/app/output
+    environment:
+      - TZ=Asia/Tokyo
+    networks:
+      - plc-network
+    depends_on:
+      - simulators
+    command: ["python", "-m", "pytest", "tests/", "-v", "-m", "not integration"]
+
+  # =========================================
+  # Integration Test Service
+  # =========================================
+  integration-test:
+    build:
+      context: .
+      target: development
+    container_name: plc-integration-test
+    volumes:
+      - .:/app
+    environment:
+      - TZ=Asia/Tokyo
+      - SLMP_HOST=simulators
+      - MODBUS_HOST=simulators
+    networks:
+      - plc-network
+    depends_on:
+      simulators:
+        condition: service_healthy
+    command: ["python", "-m", "pytest", "tests/integration/", "-v", "-m", "integration"]
+
+networks:
+  plc-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+
+# Named volumes for persistent data
+volumes:
+  scan-results:
+    driver: local
+
+

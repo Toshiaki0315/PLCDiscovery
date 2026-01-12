@@ -1,0 +1,677 @@
+# PLC Discovery Tool
+
+工場ネットワーク内のマルチベンダーPLCを自動検出し、デバイスデータを読み取り専用で収集するツールです。
+
+## 特徴
+
+- **マルチベンダー対応**: 三菱電機、キーエンス、オムロン、シーメンス、ロックウェル等
+- **マルチプロトコル対応**: SLMP、EtherNet/IP、Modbus/TCP、S7、FINS通信
+- **安全設計**: 読み取り専用、PLCを停止させない
+- **エラー耐性**: 通信エラーが発生しても継続、二分探索による不正アドレス特定
+- **スマートリトライ**: 指数バックオフとサーキットブレーカーによる自動リトライ
+- **CSV出力**: 後でデータ解析しやすい形式で保存
+- **設定ファイル対応**: YAML/JSON形式で設定をファイル管理
+- **複数PLC並列処理**: 複数PLCを同時にスキャン
+- **監査ログ**: 全通信を監査用に記録
+- **リッチな進捗表示**: 見やすいプログレスバーとテーブル表示
+- **データ型変換**: FLOAT、DWORD、STRING等のデータ型サポート
+- **通知機能**: Webhook、Slack、Teams連携
+- **Docker対応**: コンテナ環境での実行
+- **SQLite出力**: データベースへの永続化と履歴追跡
+- **レポート生成**: HTML/PDF/JSON形式のレポート出力
+
+## 要件
+
+- Python 3.10以上
+- 対応OS: Windows, macOS, Linux
+
+## インストール
+
+```bash
+# リポジトリのクローン
+git clone <repository-url>
+cd PLCDiscovery
+
+# 依存ライブラリのインストール
+pip install -r requirements.txt
+
+# 開発用（テスト実行時）
+pip install -r requirements-dev.txt
+```
+
+### オプショナル依存関係
+
+一部の機能は追加ライブラリが必要です。インストールされていない場合でも、代替機能で動作します。
+
+| ライブラリ | 機能 | 未インストール時の動作 |
+|-----------|------|----------------------|
+| `scapy` | ARP探索によるMAC取得 | ARP探索が無効化（IP探索は動作） |
+| `aiohttp` | 非同期HTTP通知 | urllibで同期通知に代替 |
+| `weasyprint` または `pdfkit` | PDFレポート生成 | HTMLレポートのみ利用可能 |
+| `rich` | リッチな進捗表示 | シンプルなテキスト表示に代替 |
+
+```bash
+# 全機能を有効にする場合
+pip install scapy aiohttp weasyprint rich
+```
+
+## 使い方
+
+### 探索モード (Discovery)
+
+同一ネットワークセグメント内のPLCを自動検出:
+
+```bash
+python plc_scanner.py --mode discover
+```
+
+指定IPレンジ内のPLCを検出:
+
+```bash
+python plc_scanner.py --mode discover --ip-range "192.168.1.0/24"
+```
+
+### フルスキャンモード (Full Scan)
+
+工場停止時用。PLCの主要デバイス範囲を一括取得:
+
+```bash
+python plc_scanner.py --mode full --target 192.168.1.10
+```
+
+プロトコルを明示的に指定:
+
+```bash
+python plc_scanner.py --mode full --target 192.168.1.10 --protocol slmp
+```
+
+### 範囲指定モード (Range Mode)
+
+稼働時用。指定範囲のみを取得:
+
+```bash
+python plc_scanner.py --mode range --target 192.168.1.10 --device D --range 0-1000
+```
+
+定期実行（60秒間隔）:
+
+```bash
+python plc_scanner.py --mode range --target 192.168.1.10 --device D --range 0-100 --interval 60
+```
+
+### データ型変換を指定したスキャン
+
+FLOAT型でデータを読み取り:
+
+```bash
+python plc_scanner.py --mode range --target 192.168.1.10 --device D --range 100-199 --data-type FLOAT
+```
+
+型マッピングファイルを使用:
+
+```bash
+python plc_scanner.py --mode range --target 192.168.1.10 --device D --range 0-500 --type-mapping type_mapping.json
+```
+
+### 複数PLC同時スキャン
+
+複数のPLCを並列でスキャン:
+
+```bash
+python plc_scanner.py --mode full --target 192.168.1.10,192.168.1.20,192.168.1.30 --max-concurrent 3
+```
+
+### 設定ファイルを使用
+
+設定ファイルテンプレートを生成:
+
+```bash
+python plc_scanner.py --generate-config
+```
+
+設定ファイルを使用して実行:
+
+```bash
+python plc_scanner.py --config plc_config.yaml
+```
+
+### 監査ログを有効化
+
+```bash
+python plc_scanner.py --mode full --target 192.168.1.10 --audit-log ./audit.log
+```
+
+### レポート生成
+
+スキャン結果をHTML/PDF/JSON形式でレポート出力:
+
+```bash
+# HTMLレポート
+python plc_scanner.py --mode full --target 192.168.1.10 --report html
+
+# JSONレポート
+python plc_scanner.py --mode range --target 192.168.1.10 --device D --range 0-100 --report json
+
+# PDFレポート（要weasyprintまたはpdfkit）
+python plc_scanner.py --mode full --target 192.168.1.10 --report pdf
+
+# レポートのカスタマイズ
+python plc_scanner.py --mode full --target 192.168.1.10 \
+  --report html \
+  --report-output ./reports/scan_report.html \
+  --report-title "生産ライン1 PLCスキャン結果" \
+  --report-company "株式会社サンプル" \
+  --report-theme dark
+```
+
+レポートには以下が含まれます:
+- スキャン概要（成功/失敗率、所要時間）
+- 検出されたPLC一覧
+- 取得データの詳細（データ型変換結果含む）
+- アクセス拒否アドレス一覧
+- 視覚的なチャート（オプション）
+
+### データベース出力
+
+SQLiteデータベースにスキャン結果を保存:
+
+```bash
+# データベースを有効化
+python plc_scanner.py --mode full --target 192.168.1.10 --database ./plc_data.db
+
+# データベースを無効化（設定ファイルを上書き）
+python plc_scanner.py --mode full --target 192.168.1.10 --no-database
+```
+
+## コマンドラインオプション
+
+| オプション | 説明 | デフォルト |
+|------------|------|------------|
+| `--config`, `-c` | 設定ファイルパス (YAML/JSON) | - |
+| `--generate-config` | 設定ファイルテンプレートを生成 | - |
+| `--mode`, `-m` | 動作モード (discover/full/range) | discover |
+| `--target`, `-t` | 対象PLC IPアドレス（カンマ区切りで複数指定可） | - |
+| `--ip-range`, `-r` | スキャン対象IPレンジ | - |
+| `--protocol`, `-p` | プロトコル指定 (slmp/eip/modbus/s7) | 自動検出 |
+| `--port` | ポート番号 | プロトコルデフォルト |
+| `--device`, `-d` | デバイス種別 (D/M/W/R等) | D |
+| `--range` | アドレス範囲 (例: 0-1000) | 0-999 |
+| `--interval`, `-i` | スキャン間隔（秒） | 0 (単発) |
+| `--packet-interval` | パケット間隔(ms) | 50 |
+| `--retry-interval` | リトライ間隔(ms) | 200 |
+| `--request-timeout` | タイムアウト(ms) | 5000 |
+| `--max-concurrent` | 最大同時接続数 | 1 |
+| `--output-dir`, `-o` | 出力ディレクトリ | ./plc_scan_results |
+| `--encoding` | 出力エンコーディング | utf-8 |
+| `--audit-log` | 監査ログファイルパス | - |
+| `--database` | SQLiteデータベースパス | - |
+| `--no-database` | データベース出力を無効化 | - |
+| `--report` | レポート形式 (html/pdf/json) | - |
+| `--report-output` | レポート出力パス | 自動生成 |
+| `--report-title` | レポートタイトル | "PLC Discovery レポート" |
+| `--report-company` | レポート記載会社名 | - |
+| `--report-theme` | レポートテーマ (default/dark/light) | default |
+| `--verbose`, `-v` | 詳細出力 | - |
+| `--quiet`, `-q` | 進捗出力抑制 | - |
+| `--no-rich` | リッチな出力を無効化 | - |
+| `--data-type` | データ型変換 (FLOAT, DWORD等) | - |
+| `--byte-order` | バイトオーダー (little/big/little_swap/big_swap) | little |
+| `--type-mapping` | 型マッピングファイルパス | - |
+
+## 設定ファイル
+
+`plc_config.example.yaml` を参考に設定ファイルを作成できます：
+
+```yaml
+version: "1.0"
+
+network:
+  discovery_timeout_ms: 1000
+  max_concurrent: 3
+  packet_interval_ms: 50
+
+targets:
+  - ip: "192.168.1.10"
+    protocol: slmp
+    port: 5001
+    name: "Main PLC"
+
+scan:
+  mode: full
+  device_ranges:
+    - device: D
+      start: 0
+      end: 8191
+
+output:
+  directory: "./plc_scan_results"
+  encoding: utf-8
+
+logging:
+  level: INFO
+  audit_log: "./audit.log"
+```
+
+## 出力ファイル
+
+| ファイル名 | 内容 |
+|------------|------|
+| `discovery_result_YYYYMMDD_HHMMSS.csv` | 検出されたPLC一覧 |
+| `plc_data_<IP>_YYYYMMDD_HHMMSS.csv` | PLCデバイスデータ |
+| `access_denied_log.csv` | アクセス不可アドレス一覧 |
+| `scan_summary_YYYYMMDD_HHMMSS.csv` | スキャン統計サマリー |
+| `audit.log` | 監査ログ（JSON Lines形式） |
+
+## 対応プロトコルとメーカー
+
+| プロトコル | 対応メーカー | デフォルトポート |
+|------------|--------------|------------------|
+| SLMP (3Eフレーム) | 三菱電機、キーエンス、パナソニック、東芝、日立産機 | 5001 |
+| EtherNet/IP | オムロン、ロックウェル、キーエンス、安川電機 | 44818 |
+| Modbus/TCP | 横河電機、富士電機、IDEC、デルタ電子 | 502 |
+| S7通信 | シーメンス | 102 |
+
+## 安全上の注意
+
+- **本ツールは読み取り専用です**。PLCへの書き込み機能は一切ありません。
+- ネットワーク負荷軽減のため、適切な`--packet-interval`を設定してください。
+- 工場稼働中は`--mode range`で必要な範囲のみを取得することを推奨します。
+- フルスキャンは工場停止時に実施してください。
+
+## プロジェクト構造
+
+```
+PLCDiscovery/
+├── plc_scanner.py              # メインCLI
+├── plc_config.example.yaml     # 設定ファイルサンプル
+├── requirements.txt            # 依存ライブラリ
+├── requirements-dev.txt        # 開発用依存ライブラリ
+├── README.md                   # このファイル
+├── plc_discovery/
+│   ├── __init__.py
+│   ├── config.py               # 設定・定数
+│   ├── config_loader.py        # 設定ファイルローダー
+│   ├── utils.py                # ユーティリティ
+│   ├── discovery.py            # 探索モジュール
+│   ├── broadcast_discovery.py  # UDPブロードキャスト探索
+│   ├── collector.py            # データ収集モジュール
+│   ├── parallel.py             # 並列処理モジュール
+│   ├── output.py               # CSV出力モジュール
+│   ├── audit_log.py            # 監査ログモジュール
+│   ├── progress.py             # 進捗表示モジュール
+│   └── protocols/
+│       ├── __init__.py
+│       ├── base.py             # 基底ハンドラー
+│       ├── slmp.py             # SLMP プロトコル
+│       ├── ethernet_ip.py      # EtherNet/IP プロトコル
+│       ├── modbus.py           # Modbus/TCP プロトコル
+│       └── s7.py               # S7 プロトコル
+├── tests/                      # ユニットテスト
+│   ├── conftest.py
+│   ├── test_config.py
+│   ├── test_config_loader.py
+│   ├── test_data_types.py
+│   ├── test_utils.py
+│   ├── test_discovery.py
+│   ├── test_broadcast_discovery.py
+│   ├── test_collector.py
+│   ├── test_parallel.py
+│   ├── test_output.py
+│   ├── test_progress.py
+│   ├── test_audit_log.py
+│   ├── test_protocols.py
+│   └── integration/            # 統合テスト
+│       ├── conftest.py
+│       ├── test_slmp_integration.py
+│       ├── test_modbus_integration.py
+│       └── test_binary_search.py
+└── simulators/                 # テスト用ダミーPLCシミュレータ
+    ├── README.md
+    ├── run_all.py
+    ├── slmp_simulator.py
+    ├── modbus_simulator.py
+    ├── ethernet_ip_simulator.py
+    └── s7_simulator.py
+```
+
+## テスト
+
+ユニットテストの実行:
+
+```bash
+# 全テスト実行
+pytest
+
+# ユニットテストのみ（統合テスト除外）
+pytest -m "not integration"
+
+# カバレッジレポート付き
+pytest --cov=plc_discovery --cov-report=html
+```
+
+### 統合テスト
+
+統合テストはシミュレータの起動が必要です。シミュレータが起動していない場合、統合テストはスキップまたはエラーになります。
+
+```bash
+# 1. シミュレータを起動
+python simulators/run_all.py &
+
+# 2. シミュレータの起動を待機（5秒程度）
+sleep 5
+
+# 3. 統合テストを実行
+pytest -m integration
+
+# 4. 終了時はシミュレータを停止
+pkill -f "simulators/run_all.py"
+```
+
+> **Note**: CI/CDパイプラインでは、統合テストジョブ内でシミュレータを自動起動しています。
+
+## シミュレータを使用したテスト
+
+実機PLCがない環境でのテスト:
+
+```bash
+# シミュレータを起動
+python simulators/run_all.py &
+
+# テスト実行
+python plc_scanner.py --mode discover
+python plc_scanner.py --mode full --target 127.0.0.1 --protocol slmp
+```
+
+## Docker
+
+Dockerを使用した実行:
+
+```bash
+# イメージのビルド
+docker build -t plc-scanner .
+
+# ヘルプ表示
+docker run --rm plc-scanner --help
+
+# 探索モード
+docker run --rm -v $(pwd)/plc_scan_results:/app/output plc-scanner \
+  --mode discover --ip-range "192.168.1.0/24"
+```
+
+Docker Composeを使用した環境構築:
+
+```bash
+# シミュレータとスキャナーを起動
+docker-compose up -d
+
+# スキャナーを実行
+docker-compose run scanner --mode full --target simulators
+
+# 統合テスト
+docker-compose run integration-test
+
+# 停止
+docker-compose down
+```
+
+## データベース出力
+
+SQLiteデータベースへの保存（オプション）:
+
+### CLIでの有効化
+
+```bash
+# データベース出力を有効にしてスキャン
+python plc_scanner.py --mode full --target 192.168.1.10 --database ./plc_data.db
+
+# 変更履歴追跡を有効に
+python plc_scanner.py --mode range --target 192.168.1.10 \
+  --device D --range 0-100 \
+  --database ./plc_data.db --db-track-history
+
+# データベース出力を無効に（設定ファイルの設定を上書き）
+python plc_scanner.py --config plc_config.yaml --no-database
+```
+
+### 設定ファイルでの有効化
+
+```yaml
+# plc_config.yaml
+output:
+  database:
+    enabled: true
+    path: "./plc_data.db"
+    track_history: true
+    max_history_days: 30
+```
+
+### Pythonコードでの利用
+
+```python
+from plc_discovery import DatabaseExporter, DatabaseConfig, create_database
+
+# シンプルな作成
+db = create_database("./plc_data.db")
+
+# 設定を指定して作成
+config = DatabaseConfig(
+    enabled=True,
+    path="./plc_data.db",
+    track_history=True,
+    max_history_days=30
+)
+db = DatabaseExporter(config)
+
+# セッション管理
+with db.session(mode="full") as session_id:
+    db.export_plc_data(data_points, "192.168.1.10", session_id)
+
+# データ取得
+plcs = db.get_plcs()
+data = db.get_latest_data("192.168.1.10")
+history = db.get_address_history("192.168.1.10", "D100", days=7)
+changes = db.get_changes(plc_ip="192.168.1.10", days=7)
+stats = db.get_statistics()
+
+db.close()
+```
+
+### データベーステーブル
+
+| テーブル | 説明 |
+|----------|------|
+| `plcs` | 発見されたPLC一覧 |
+| `scan_sessions` | スキャンセッション履歴 |
+| `data_points` | デバイスデータポイント |
+| `denied_addresses` | アクセス拒否アドレスログ |
+| `data_history` | 値変更履歴 |
+
+## 通知機能
+
+スキャン完了やエラー発生時に通知を送信:
+
+### 設定ファイルでの通知設定
+
+```yaml
+# plc_config.yaml
+notifications:
+  # Webhook通知
+  - name: main_webhook
+    type: webhook
+    url: "https://your-server.com/api/notifications"
+    events:
+      - scan_complete
+      - scan_error
+    
+  # Slack通知
+  - name: slack_alerts
+    type: slack
+    url: "https://hooks.slack.com/services/YOUR/WEBHOOK"
+    events:
+      - scan_error
+      - discovery_complete
+  
+  # Microsoft Teams通知
+  - name: teams_alerts
+    type: teams
+    url: "https://outlook.office.com/webhook/YOUR/URL"
+```
+
+### Pythonコードでの通知
+
+```python
+from plc_discovery import (
+    NotificationManager, NotificationType, NotificationPriority
+)
+
+# 通知マネージャーの初期化
+manager = NotificationManager()
+manager.add_slack("alerts", "https://hooks.slack.com/...")
+manager.add_webhook("logging", "https://example.com/webhook")
+
+# 通知送信
+await manager.notify_scan_complete(
+    plc_count=10,
+    success_count=9,
+    error_count=1,
+    duration_seconds=45.5
+)
+
+# エラー通知
+await manager.notify_error(
+    error_message="Connection timeout",
+    plc_ip="192.168.1.50"
+)
+```
+
+詳しくは `simulators/README.md` を参照してください。
+
+## データ型変換
+
+PLCから読み取ったデータを様々な型に変換できます：
+
+| データ型 | 説明 | ワード数 |
+|----------|------|----------|
+| WORD | 16ビット符号なし整数 | 1 |
+| INT16 | 16ビット符号付き整数 | 1 |
+| DWORD | 32ビット符号なし整数 | 2 |
+| INT32 | 32ビット符号付き整数 | 2 |
+| FLOAT | 32ビットIEEE 754浮動小数点 | 2 |
+| DOUBLE | 64ビットIEEE 754倍精度浮動小数点 | 4 |
+| BCD16 | 16ビットBCD（4桁） | 1 |
+| BCD32 | 32ビットBCD（8桁） | 2 |
+| STRING | ASCII文字列 | 可変 |
+| BIT/BOOL | ビット値 | 1 |
+
+### 使用例（設定ファイル）
+
+```yaml
+data_types:
+  default_type: WORD
+  default_byte_order: little
+  mappings:
+    - start: 100
+      end: 199
+      type: FLOAT
+      description: "温度データ"
+    - start: 200
+      end: 299
+      type: DWORD
+      description: "生産カウンター"
+```
+
+### プログラムからの使用
+
+```python
+from plc_discovery.data_types import DataTypeConverter, DataType, ByteOrder
+
+# 2ワードからFLOATに変換
+words = [0x0000, 0x3F80]  # IEEE 754 for 1.0
+value = DataTypeConverter.convert(words, DataType.FLOAT, ByteOrder.LITTLE_ENDIAN)
+print(value)  # 1.0
+
+# バッチ変換
+words = [100, 200, 300, 400]
+values = DataTypeConverter.convert_batch(words, DataType.INT16)
+print(values)  # [100, 200, 300, 400]
+```
+
+## 二分探索エラー回避アルゴリズム
+
+本ツールの重要な特徴は、アクセス不可アドレスを自動特定する二分探索アルゴリズムです：
+
+1. 指定範囲を一括で読み出し試行
+2. エラー発生時、範囲を半分に分割して再試行
+3. さらにエラーが出る場合は再分割（最大12段階）
+4. 1点単位まで分割してアクセス可否を判定
+5. 判定されたアクセス不可アドレスは以降スキップ
+
+これにより、一部のアドレスがアクセス不可でも全体のスキャンが中断することなく継続されます。
+
+## データベース管理スクリプト
+
+SQLiteデータベースのセットアップ・管理用スクリプトが `scripts/` ディレクトリに用意されています。
+
+### セットアップスクリプト
+
+```bash
+# シェルスクリプト版
+./scripts/setup_database.sh [database_path]
+
+# Python版
+python scripts/setup_database.py [database_path]
+
+# オプション
+python scripts/setup_database.py --force ./plc_data.db  # 強制再作成
+python scripts/setup_database.py --status ./plc_data.db # ステータス表示
+```
+
+### 管理スクリプト
+
+```bash
+./scripts/manage_database.sh <command> [database_path]
+```
+
+| コマンド | 説明 |
+|----------|------|
+| `status` | データベースのステータスと統計情報を表示 |
+| `tables` | テーブル一覧と行数を表示 |
+| `backup` | バックアップを作成 |
+| `cleanup [日数]` | 古いデータを削除（デフォルト: 30日以前） |
+| `vacuum` | データベースを最適化（容量削減） |
+| `export` | CSVファイルにエクスポート |
+| `reset` | すべてのデータを削除 |
+| `shell` | SQLite対話型シェルを開く |
+
+### 使用例
+
+```bash
+# データベース作成
+./scripts/setup_database.sh ./plc_data.db
+
+# ステータス確認
+./scripts/manage_database.sh status ./plc_data.db
+
+# 7日以前のデータを削除
+./scripts/manage_database.sh cleanup ./plc_data.db 7
+
+# バックアップ作成
+./scripts/manage_database.sh backup ./plc_data.db
+
+# CSVエクスポート
+./scripts/manage_database.sh export ./plc_data.db
+```
+
+## 監査ログ形式
+
+監査ログはJSON Lines形式で記録されます：
+
+```json
+{"timestamp": "2024-01-01T00:00:00", "event_type": "SESSION_START", "session_id": "xxx"}
+{"timestamp": "2024-01-01T00:00:01", "event_type": "CONNECT", "plc_ip": "192.168.1.10", "status": "SUCCESS"}
+{"timestamp": "2024-01-01T00:00:02", "event_type": "READ_SUCCESS", "plc_ip": "192.168.1.10", "device": "D", "address_start": 0, "address_end": 100}
+```
+
+## ライセンス
+
+MIT License
