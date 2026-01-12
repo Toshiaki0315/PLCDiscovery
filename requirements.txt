@@ -2,7 +2,7 @@
 # Python 3.10+ required
 
 # SLMP Protocol (Mitsubishi/Keyence/Panasonic)
-pymcprotocol>=0.4.0
+pymcprotocol>=0.3.0
 
 # EtherNet/IP Protocol (Omron/Rockwell)
 pycomm3>=0.32.0
