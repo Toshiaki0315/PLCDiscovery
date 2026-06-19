@@ -22,6 +22,7 @@ from .protocols.slmp import SLMPHandler
 from .protocols.ethernet_ip import EtherNetIPHandler
 from .protocols.modbus import ModbusHandler
 from .protocols.s7 import S7Handler
+from .protocols.fins import FINSHandler
 from .utils import get_timestamp, logger
 
 # Protocol to handler mapping
@@ -30,6 +31,7 @@ PROTOCOL_HANDLERS: Dict[Protocol, Type[BaseProtocolHandler]] = {
     Protocol.ETHERNET_IP: EtherNetIPHandler,
     Protocol.MODBUS_TCP: ModbusHandler,
     Protocol.S7: S7Handler,
+    Protocol.FINS: FINSHandler,
 }
 
 

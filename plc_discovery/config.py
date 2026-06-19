@@ -357,5 +357,10 @@ DEFAULT_DEVICE_RANGES: Dict[Protocol, List[DeviceRange]] = {
     Protocol.S7: [
         DeviceRange(DeviceType.DB, 0, 65535),
     ],
+    Protocol.FINS: [
+        DeviceRange(DeviceType.DM, 0, 999),
+        DeviceRange(DeviceType.HR, 0, 499),
+        DeviceRange(DeviceType.W, 0, 199),
+    ],
 }
 

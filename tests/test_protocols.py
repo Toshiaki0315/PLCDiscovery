@@ -14,6 +14,7 @@ from plc_discovery.protocols.slmp import SLMPHandler
 from plc_discovery.protocols.modbus import ModbusHandler
 from plc_discovery.protocols.ethernet_ip import EtherNetIPHandler
 from plc_discovery.protocols.s7 import S7Handler
+from plc_discovery.protocols.fins import FINSHandler
 
 
 class TestBaseProtocolHandler:
@@ -397,4 +398,30 @@ class TestEtherNetIPHandler:
         
         assert status == StatusCode.NG_COMM_ERROR
         assert data is None
+
+
+class TestFINSHandler:
+    """Tests for FINSHandler"""
+    
+    def test_handler_creation(self, network_config):
+        """Test FINS handler creation"""
+        handler = FINSHandler("192.168.1.10", 9600, config=network_config)
+        assert handler.protocol == Protocol.FINS
+        assert handler.ip_address == "192.168.1.10"
+        assert handler.port == 9600
+        assert handler.use_tcp is False
+        
+    def test_handler_default_port(self, network_config):
+        """Test FINS handler with default port"""
+        handler = FINSHandler("192.168.1.10", config=network_config)
+        assert handler.port == 9600
+        
+    @pytest.mark.asyncio
+    async def test_read_not_connected(self, network_config):
+        """Test reading when not connected"""
+        handler = FINSHandler("192.168.1.10", 9600, config=network_config)
+        data, status = await handler.read_device_raw(DeviceType.DM, 0, 10)
+        assert status == StatusCode.NG_COMM_ERROR
+        assert data is None
+
 

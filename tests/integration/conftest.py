@@ -118,6 +118,14 @@ def run_ethernet_ip_simulator():
     asyncio.run(main())
 
 
+def run_fins_simulator():
+    """Run FINS simulator in separate process"""
+    import asyncio
+    from simulators.fins_simulator import run_fins_simulator as run_sim
+    
+    asyncio.run(run_sim(host="127.0.0.1", port=9600))
+
+
 @pytest.fixture(scope="session")
 def slmp_simulator() -> Generator[SimulatorProcess, None, None]:
     """
@@ -169,6 +177,38 @@ def ethernet_ip_simulator() -> Generator[SimulatorProcess, None, None]:
         simulator.stop()
 
 
+class UDPSimulatorProcess(SimulatorProcess):
+    """Wrapper for UDP simulator process management"""
+    
+    def start(self):
+        """Start the simulator process without TCP wait_for_port"""
+        if self.is_running():
+            return
+        
+        self.process = Process(target=self.start_func, daemon=True)
+        self.process.start()
+        
+        # UDP uses connectionless socket, just sleep for a short time to let it bind
+        time.sleep(0.5)
+
+
+@pytest.fixture(scope="session")
+def fins_simulator() -> Generator[SimulatorProcess, None, None]:
+    """
+    Fixture that starts FINS simulator for the test session.
+    
+    Yields:
+        SimulatorProcess: The running simulator
+    """
+    simulator = UDPSimulatorProcess("FINS", 9600, run_fins_simulator)
+    
+    try:
+        simulator.start()
+        yield simulator
+    finally:
+        simulator.stop()
+
+
 @pytest.fixture(scope="session")
 def all_simulators(
     slmp_simulator,
@@ -206,6 +246,18 @@ def modbus_plc_info():
         ip_address="127.0.0.1",
         protocol=Protocol.MODBUS_TCP,
         port=5502,
+        manufacturer="Test Simulator",
+    )
+
+
+@pytest.fixture
+def fins_plc_info():
+    """PLCInfo for FINS simulator"""
+    from plc_discovery.config import PLCInfo, Protocol
+    return PLCInfo(
+        ip_address="127.0.0.1",
+        protocol=Protocol.FINS,
+        port=9600,
         manufacturer="Test Simulator",
     )
 

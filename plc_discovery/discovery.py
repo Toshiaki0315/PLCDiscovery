@@ -222,6 +222,8 @@ class PLCDiscovery:
                 plc_info = await self._query_modbus_info(plc_info)
             elif plc_info.protocol == Protocol.S7:
                 plc_info = await self._query_s7_info(plc_info)
+            elif plc_info.protocol == Protocol.FINS:
+                plc_info = await self._query_fins_info(plc_info)
         except Exception as e:
             logger.debug(f"Failed to get detailed info for {plc_info.ip_address}: {e}")
         
@@ -357,6 +359,32 @@ class PLCDiscovery:
             logger.debug("snap7 not available")
         except Exception as e:
             logger.debug(f"S7 query failed: {e}")
+        
+        return plc_info
+    
+    async def _query_fins_info(self, plc_info: PLCInfo) -> PLCInfo:
+        """Query FINS device for information"""
+        try:
+            from .protocols.fins import FINSHandler
+            from .config import DeviceType, StatusCode
+            
+            # Simple read to confirm connection
+            handler = FINSHandler(
+                ip_address=plc_info.ip_address,
+                port=plc_info.port or 9600,
+                config=self.config
+            )
+            
+            if await handler.connect():
+                try:
+                    data, status = await handler.read_device_raw(DeviceType.DM, 0, 1)
+                    if status == StatusCode.OK:
+                        plc_info.manufacturer = plc_info.manufacturer or "オムロン"
+                        plc_info.model = "FINS対応PLC"
+                finally:
+                    await handler.disconnect()
+        except Exception as e:
+            logger.debug(f"FINS query failed: {e}")
         
         return plc_info
     

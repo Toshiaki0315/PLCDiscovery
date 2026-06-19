@@ -5,7 +5,7 @@
 ## 特徴
 
 - **マルチベンダー対応**: 三菱電機、キーエンス、オムロン、シーメンス、ロックウェル等
-- **マルチプロトコル対応**: SLMP、EtherNet/IP、Modbus/TCP、S7、FINS通信
+- **マルチプロトコル対応**: SLMP、EtherNet/IP、Modbus/TCP、S7、FINS通信（※FINSはPhase 2対応予定）
 - **安全設計**: 読み取り専用、PLCを停止させない
 - **エラー耐性**: 通信エラーが発生しても継続、二分探索による不正アドレス特定
 - **スマートリトライ**: 指数バックオフとサーキットブレーカーによる自動リトライ
@@ -206,6 +206,7 @@ python plc_scanner.py --mode full --target 192.168.1.10 --no-database
 | `--audit-log` | 監査ログファイルパス | - |
 | `--database` | SQLiteデータベースパス | - |
 | `--no-database` | データベース出力を無効化 | - |
+| `--db-track-history` | データベースの変更履歴追跡を有効化 | - |
 | `--report` | レポート形式 (html/pdf/json) | - |
 | `--report-output` | レポート出力パス | 自動生成 |
 | `--report-title` | レポートタイトル | "PLC Discovery レポート" |
@@ -264,12 +265,13 @@ logging:
 
 ## 対応プロトコルとメーカー
 
-| プロトコル | 対応メーカー | デフォルトポート |
-|------------|--------------|------------------|
-| SLMP (3Eフレーム) | 三菱電機、キーエンス、パナソニック、東芝、日立産機 | 5001 |
-| EtherNet/IP | オムロン、ロックウェル、キーエンス、安川電機 | 44818 |
-| Modbus/TCP | 横河電機、富士電機、IDEC、デルタ電子 | 502 |
-| S7通信 | シーメンス | 102 |
+| プロトコル | 対応メーカー | デフォルトポート | 備考 |
+|------------|--------------|------------------|------|
+| SLMP (3Eフレーム) | 三菱電機、キーエンス、パナソニック、東芝、日立産機 | 5001 | |
+| EtherNet/IP | オムロン、ロックウェル、キーエンス、安川電機 | 44818 | |
+| Modbus/TCP | 横河電機、富士電機、IDEC、デルタ電子 | 502 | |
+| S7通信 | シーメンス | 102 | |
+| FINS通信 | オムロン、キーエンス | 9600 | ※Phase 2対応予定（シミュレータのみ提供） |
 
 ## 安全上の注意
 
@@ -291,6 +293,8 @@ PLCDiscovery/
 │   ├── __init__.py
 │   ├── config.py               # 設定・定数
 │   ├── config_loader.py        # 設定ファイルローダー
+│   ├── data_types.py           # データ型変換モジュール
+│   ├── database.py             # SQLiteデータベースモジュール
 │   ├── utils.py                # ユーティリティ
 │   ├── discovery.py            # 探索モジュール
 │   ├── broadcast_discovery.py  # UDPブロードキャスト探索
@@ -299,6 +303,9 @@ PLCDiscovery/
 │   ├── output.py               # CSV出力モジュール
 │   ├── audit_log.py            # 監査ログモジュール
 │   ├── progress.py             # 進捗表示モジュール
+│   ├── notifications.py        # 通知機能モジュール
+│   ├── report.py               # レポート生成モジュール
+│   ├── retry.py                # リトライ/サーキットブレーカーモジュール
 │   └── protocols/
 │       ├── __init__.py
 │       ├── base.py             # 基底ハンドラー
@@ -311,6 +318,7 @@ PLCDiscovery/
 │   ├── test_config.py
 │   ├── test_config_loader.py
 │   ├── test_data_types.py
+│   ├── test_database.py        # データベーステスト
 │   ├── test_utils.py
 │   ├── test_discovery.py
 │   ├── test_broadcast_discovery.py
@@ -319,6 +327,9 @@ PLCDiscovery/
 │   ├── test_output.py
 │   ├── test_progress.py
 │   ├── test_audit_log.py
+│   ├── test_notifications.py   # 通知機能テスト
+│   ├── test_report.py          # レポートテスト
+│   ├── test_retry.py           # リトライテスト
 │   ├── test_protocols.py
 │   └── integration/            # 統合テスト
 │       ├── conftest.py
@@ -331,7 +342,8 @@ PLCDiscovery/
     ├── slmp_simulator.py
     ├── modbus_simulator.py
     ├── ethernet_ip_simulator.py
-    └── s7_simulator.py
+    ├── s7_simulator.py
+    └── fins_simulator.py       # FINS シミュレータ (Phase 2先行実装)
 ```
 
 ## テスト
