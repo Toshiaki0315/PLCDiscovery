@@ -27,7 +27,7 @@ class TestModbusConnection:
     async def test_connect_success(self, modbus_simulator, modbus_plc_info, network_config):
         """Test successful connection to Modbus simulator"""
         async with PLCDataCollector(modbus_plc_info, network_config) as collector:
-            assert collector._connected is True
+            assert collector._handler.is_connected is True
     
     async def test_connect_wrong_port(self, modbus_simulator, network_config):
         """Test connection failure with wrong port"""
@@ -36,10 +36,9 @@ class TestModbusConnection:
             protocol=Protocol.MODBUS_TCP,
             port=59998,  # Wrong port
         )
-        
-        with pytest.raises(Exception):
-            async with PLCDataCollector(plc_info, network_config) as collector:
-                pass
+        async with PLCDataCollector(plc_info, network_config) as collector:
+            # Handler returns False on failure, does not raise
+            assert not collector._handler.is_connected
 
 
 class TestModbusDataRead:

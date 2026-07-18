@@ -41,6 +41,7 @@ discovery:
     - ethernet_ip
     - modbus
     - s7
+    - fins
 
 # Target PLCs for direct connection (skip discovery)
 targets:
@@ -63,6 +64,12 @@ targets:
   #   protocol: modbus
   #   port: 502
   #   name: "Sensor Unit"
+  
+  # Example: FINS (Omron)
+  # - ip: "192.168.1.40"
+  #   protocol: fins
+  #   port: 9600
+  #   name: "Legacy Omron PLC"
 
 # Scan settings
 scan:

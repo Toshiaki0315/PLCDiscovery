@@ -19,7 +19,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 logger = logging.getLogger("SLMP-Simulator")
 
 # SLMP 3E Frame constants
-SLMP_SUBHEADER = 0xD000  # Response subheader
+SLMP_SUBHEADER = 0x00D0  # Response subheader 'D0 00'
 SLMP_NETWORK = 0x00
 SLMP_PC_NO = 0xFF
 SLMP_IO_NO = 0x03FF
@@ -176,8 +176,8 @@ class SLMPProtocol(asyncio.Protocol):
         subheader = struct.unpack("<H", frame[0:2])[0]
         data_length = struct.unpack("<H", frame[7:9])[0]
         
-        # Check subheader (should be 0x5000 for request)
-        if subheader != 0x5000:
+        # Check subheader (should be 0x0050 for request '50 00')
+        if subheader != 0x0050:
             logger.warning(f"Invalid subheader: {subheader:04X}")
             return self._make_error_response(0x4000)
         
@@ -206,9 +206,9 @@ class SLMPProtocol(asyncio.Protocol):
             return self._make_error_response(0x4000)
         
         # Parse device specification
-        head_device = struct.unpack("<I", data[0:4])[0]
-        device_code = data[4]
-        device_points = struct.unpack("<H", data[5:7])[0]
+        head_device = struct.unpack("<I", data[0:3] + b'\x00')[0]
+        device_code = data[3]
+        device_points = struct.unpack("<H", data[4:6])[0]
         
         # Get device name
         device_name = None
@@ -240,9 +240,9 @@ class SLMPProtocol(asyncio.Protocol):
         if len(data) < 6:
             return self._make_error_response(0x4000)
         
-        head_device = struct.unpack("<I", data[0:4])[0]
-        device_code = data[4]
-        device_points = struct.unpack("<H", data[5:7])[0]
+        head_device = struct.unpack("<I", data[0:3] + b'\x00')[0]
+        device_code = data[3]
+        device_points = struct.unpack("<H", data[4:6])[0]
         
         device_name = None
         for name, code in DEVICE_CODES.items():

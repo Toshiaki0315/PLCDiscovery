@@ -28,7 +28,7 @@ class TestSLMPConnection:
     async def test_connect_success(self, slmp_simulator, slmp_plc_info, network_config):
         """Test successful connection to SLMP simulator"""
         async with PLCDataCollector(slmp_plc_info, network_config) as collector:
-            assert collector._connected is True
+            assert collector._handler.is_connected is True
     
     async def test_connect_wrong_port(self, slmp_simulator, network_config):
         """Test connection failure with wrong port"""
@@ -37,10 +37,9 @@ class TestSLMPConnection:
             protocol=Protocol.SLMP,
             port=59999,  # Wrong port
         )
-        
-        with pytest.raises(Exception):
-            async with PLCDataCollector(plc_info, network_config) as collector:
-                pass
+        async with PLCDataCollector(plc_info, network_config) as collector:
+            # Handler returns False on failure, does not raise
+            assert not collector._handler.is_connected
 
 
 class TestSLMPDataRead:
@@ -221,10 +220,10 @@ class TestSLMPDataValues:
         
         dp = data_points[0]
         if dp.status == StatusCode.OK:
-            # raw_hex should be 4 character hex string
+            # raw_hex is formatted as '0xNNNN' (6 chars with 0x prefix)
             assert dp.raw_hex is not None
-            assert len(dp.raw_hex) == 4
-            # Should be valid hex
+            assert dp.raw_hex.startswith('0x')
+            # Should be valid hex (strip 0x prefix)
             int(dp.raw_hex, 16)
 
 

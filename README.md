@@ -5,7 +5,7 @@
 ## 特徴
 
 - **マルチベンダー対応**: 三菱電機、キーエンス、オムロン、シーメンス、ロックウェル等
-- **マルチプロトコル対応**: SLMP、EtherNet/IP、Modbus/TCP、S7、FINS通信（※FINSはPhase 2対応予定）
+- **マルチプロトコル対応**: SLMP、EtherNet/IP、Modbus/TCP、S7、FINS通信
 - **安全設計**: 読み取り専用、PLCを停止させない
 - **エラー耐性**: 通信エラーが発生しても継続、二分探索による不正アドレス特定
 - **スマートリトライ**: 指数バックオフとサーキットブレーカーによる自動リトライ
@@ -271,7 +271,7 @@ logging:
 | EtherNet/IP | オムロン、ロックウェル、キーエンス、安川電機 | 44818 | |
 | Modbus/TCP | 横河電機、富士電機、IDEC、デルタ電子 | 502 | |
 | S7通信 | シーメンス | 102 | |
-| FINS通信 | オムロン、キーエンス | 9600 | ※Phase 2対応予定（シミュレータのみ提供） |
+| FINS通信 | オムロン、キーエンス | 9600 | |
 
 ## 安全上の注意
 
@@ -343,7 +343,7 @@ PLCDiscovery/
     ├── modbus_simulator.py
     ├── ethernet_ip_simulator.py
     ├── s7_simulator.py
-    └── fins_simulator.py       # FINS シミュレータ (Phase 2先行実装)
+    └── fins_simulator.py       # FINS シミュレータ
 ```
 
 ## テスト

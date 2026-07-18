@@ -69,7 +69,7 @@ class ModbusHandler(BaseProtocolHandler):
                 client = ModbusTcpClient(
                     host=self.ip_address,
                     port=self.port,
-                    timeout=self.config.connection_timeout_ms / 1000
+                    timeout=self.config.request_timeout_ms / 1000
                 )
                 if client.connect():
                     return client
@@ -142,25 +142,25 @@ class ModbusHandler(BaseProtocolHandler):
                     return self._client.read_holding_registers(
                         address=start_address,
                         count=count,
-                        slave=self._unit_id
+                        device_id=self._unit_id
                     )
                 elif modbus_type == "input":
                     return self._client.read_input_registers(
                         address=start_address,
                         count=count,
-                        slave=self._unit_id
+                        device_id=self._unit_id
                     )
                 elif modbus_type == "coil":
                     return self._client.read_coils(
                         address=start_address,
                         count=count,
-                        slave=self._unit_id
+                        device_id=self._unit_id
                     )
                 elif modbus_type == "discrete":
                     return self._client.read_discrete_inputs(
                         address=start_address,
                         count=count,
-                        slave=self._unit_id
+                        device_id=self._unit_id
                     )
                 return None
             

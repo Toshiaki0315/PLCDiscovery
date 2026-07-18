@@ -78,44 +78,33 @@ class SimulatorProcess:
 def run_slmp_simulator():
     """Run SLMP simulator in separate process"""
     import asyncio
-    from simulators.slmp_simulator import SLMPSimulator
+    from simulators.slmp_simulator import run_server
     
-    async def main():
-        simulator = SLMPSimulator(host="127.0.0.1", port=5001)
-        await simulator.start()
-        # Keep running
-        while True:
-            await asyncio.sleep(1)
-    
-    asyncio.run(main())
+    asyncio.run(run_server("127.0.0.1", 5001, [(5000, 5100), (7000, 7050)]))
 
 
 def run_modbus_simulator():
     """Run Modbus simulator in separate process"""
     import asyncio
-    from simulators.modbus_simulator import ModbusSimulator
+    from simulators.modbus_simulator import run_server
     
-    async def main():
-        simulator = ModbusSimulator(host="127.0.0.1", port=5502)  # Use non-privileged port
-        await simulator.start()
-        while True:
-            await asyncio.sleep(1)
-    
-    asyncio.run(main())
+    asyncio.run(run_server("127.0.0.1", 5502, [(5000, 5100), (8000, 8050)]))
 
 
 def run_ethernet_ip_simulator():
     """Run EtherNet/IP simulator in separate process"""
     import asyncio
-    from simulators.ethernet_ip_simulator import EtherNetIPSimulator
+    from simulators.ethernet_ip_simulator import run_server
     
-    async def main():
-        simulator = EtherNetIPSimulator(host="127.0.0.1", port=44818)
-        await simulator.start()
-        while True:
-            await asyncio.sleep(1)
+    asyncio.run(run_server("127.0.0.1", 44818, [(100, 150)]))
+
+
+def run_s7_simulator():
+    """Run S7 simulator in separate process"""
+    import asyncio
+    from simulators.s7_simulator import run_server
     
-    asyncio.run(main())
+    asyncio.run(run_server("127.0.0.1", 1102, [(500, 550)]))
 
 
 def run_fins_simulator():
@@ -169,6 +158,23 @@ def ethernet_ip_simulator() -> Generator[SimulatorProcess, None, None]:
         SimulatorProcess: The running simulator
     """
     simulator = SimulatorProcess("EtherNet/IP", 44818, run_ethernet_ip_simulator)
+    
+    try:
+        simulator.start()
+        yield simulator
+    finally:
+        simulator.stop()
+
+
+@pytest.fixture(scope="session")
+def s7_simulator() -> Generator[SimulatorProcess, None, None]:
+    """
+    Fixture that starts S7 simulator for the test session.
+    
+    Yields:
+        SimulatorProcess: The running simulator
+    """
+    simulator = SimulatorProcess("S7", 1102, run_s7_simulator)
     
     try:
         simulator.start()
@@ -258,6 +264,30 @@ def fins_plc_info():
         ip_address="127.0.0.1",
         protocol=Protocol.FINS,
         port=9600,
+        manufacturer="Test Simulator",
+    )
+
+
+@pytest.fixture
+def ethernet_ip_plc_info():
+    """PLCInfo for EtherNet/IP simulator"""
+    from plc_discovery.config import PLCInfo, Protocol
+    return PLCInfo(
+        ip_address="127.0.0.1",
+        protocol=Protocol.ETHERNET_IP,
+        port=44818,
+        manufacturer="Test Simulator",
+    )
+
+
+@pytest.fixture
+def s7_plc_info():
+    """PLCInfo for S7 simulator"""
+    from plc_discovery.config import PLCInfo, Protocol
+    return PLCInfo(
+        ip_address="127.0.0.1",
+        protocol=Protocol.S7,
+        port=1102,
         manufacturer="Test Simulator",
     )
 
