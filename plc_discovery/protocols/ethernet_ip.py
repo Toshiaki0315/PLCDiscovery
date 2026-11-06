@@ -46,6 +46,18 @@ class EtherNetIPHandler(BaseProtocolHandler):
         self._client = None
         self._slot = slot
         self._plc_type = None  # 'ab' for Allen-Bradley, 'omron' for Omron
+
+    def _connection_path(self, include_slot: bool) -> str:
+        """
+        Build the pycomm3 connection path ("ip:port" or "ip:port/slot").
+
+        pycomm3 reads the port and slot only from the path string; keyword
+        arguments such as ``slot=`` are silently ignored.
+        """
+        path = f"{self.ip_address}:{self.port}"
+        if include_slot and self._slot:
+            path += f"/{self._slot}"
+        return path
     
     async def connect(self) -> bool:
         """Establish EtherNet/IP connection"""
@@ -53,7 +65,7 @@ class EtherNetIPHandler(BaseProtocolHandler):
             from pycomm3 import LogixDriver
             
             def _connect():
-                client = LogixDriver(self.ip_address, slot=self._slot)
+                client = LogixDriver(self._connection_path(include_slot=True))
                 client.open()
                 return client
             
@@ -61,7 +73,7 @@ class EtherNetIPHandler(BaseProtocolHandler):
             self._client = await loop.run_in_executor(None, _connect)
             self._connected = True
             self._plc_type = 'ab'
-            logger.info(f"EtherNet/IP connected to {self.ip_address}")
+            logger.info(f"EtherNet/IP connected to {self.ip_address}:{self.port}")
             return True
             
         except ImportError:
@@ -77,7 +89,7 @@ class EtherNetIPHandler(BaseProtocolHandler):
             from pycomm3 import CIPDriver
             
             def _connect():
-                client = CIPDriver(self.ip_address)
+                client = CIPDriver(self._connection_path(include_slot=False))
                 client.open()
                 return client
             
@@ -85,7 +97,7 @@ class EtherNetIPHandler(BaseProtocolHandler):
             self._client = await loop.run_in_executor(None, _connect)
             self._connected = True
             self._plc_type = 'generic'
-            logger.info(f"EtherNet/IP (Generic) connected to {self.ip_address}")
+            logger.info(f"EtherNet/IP (Generic) connected to {self.ip_address}:{self.port}")
             return True
             
         except Exception as e:

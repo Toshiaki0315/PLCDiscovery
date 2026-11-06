@@ -374,7 +374,24 @@ class TestEtherNetIPHandler:
         """Test EtherNet/IP handler with custom slot"""
         handler = EtherNetIPHandler("192.168.1.10", slot=1, config=network_config)
         assert handler._slot == 1
-    
+
+    def test_connection_path_includes_port_and_slot(self, network_config):
+        """pycomm3 only reads port/slot from the path string"""
+        handler = EtherNetIPHandler("192.168.1.10", 2222, slot=3, config=network_config)
+        assert handler._connection_path(include_slot=True) == "192.168.1.10:2222/3"
+        assert handler._connection_path(include_slot=False) == "192.168.1.10:2222"
+
+        default = EtherNetIPHandler("192.168.1.10", config=network_config)
+        assert default._connection_path(include_slot=True) == "192.168.1.10:44818"
+
+    @pytest.mark.asyncio
+    async def test_connect_uses_specified_port(self, network_config):
+        """Connection path passed to pycomm3 must carry the configured port"""
+        handler = EtherNetIPHandler("192.168.1.10", 2222, config=network_config)
+        with patch("pycomm3.LogixDriver") as logix:
+            assert await handler.connect() is True
+        logix.assert_called_once_with("192.168.1.10:2222")
+
     @pytest.mark.asyncio
     async def test_connect_success(self, network_config):
         """Test successful EtherNet/IP connection"""
