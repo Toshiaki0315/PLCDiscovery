@@ -57,6 +57,27 @@ pip install scapy aiohttp weasyprint rich
 
 ## 使い方
 
+### GUIで使う（おすすめ）
+
+コマンドに慣れていない方は、画面操作で探索・データ収集ができます。追加インストールは不要です（Python標準の Tkinter を使用）。
+
+```bash
+python plc_gui.py
+```
+
+| タブ | できること |
+|------|-----------|
+| ① PLC探索 | 同じネットワーク、または指定IP範囲のPLCを探して一覧表示。行をダブルクリックすると「データ収集」タブに接続先が入ります |
+| ② データ収集 | 範囲指定（生産中でも可・周期実行対応）またはフルスキャン（工場停止時）でデータを読み取り。NGのアドレスは赤色で表示され、「NGのみ表示」で絞り込めます |
+| ③ 通信・出力設定 | パケット間隔・リトライ待機・タイムアウト、CSVの保存先と文字コード（UTF-8 / Shift-JIS）を設定 |
+
+- 結果はCLIと同じ形式のCSV（`discovery_result_*.csv`、`plc_data_*.csv`、`access_denied_log.csv`）で保存されます。画面下の「出力フォルダを開く」で保存先を開けます
+- 実行中は「■ 停止」でいつでも止められます（PLCへの書き込みは一切行いません）
+- フルスキャン開始時には、工場停止中かどうかの確認ダイアログが表示されます
+- 画面には最大5,000行まで表示します。全件はCSVに保存されます
+
+> **Note**: macOS で標準の `/usr/bin/python3` を使うと古い Tk のため表示が崩れることがあります。Homebrew や python.org の Python 3.10 以降を使ってください。Linux で `No module named tkinter` が出る場合は `sudo apt install python3-tk` を実行してください。
+
 ### 探索モード (Discovery)
 
 同一ネットワークセグメント内のPLCを自動検出:
@@ -285,6 +306,7 @@ logging:
 ```
 PLCDiscovery/
 ├── plc_scanner.py              # メインCLI
+├── plc_gui.py                  # GUI（Tkinter）
 ├── plc_config.example.yaml     # 設定ファイルサンプル
 ├── requirements.txt            # 依存ライブラリ
 ├── requirements-dev.txt        # 開発用依存ライブラリ
