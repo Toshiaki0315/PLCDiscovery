@@ -30,7 +30,7 @@ def get_local_ip() -> str:
         return "127.0.0.1"
 
 
-def _networks_from_netifaces() -> Optional[List[Tuple[str, str]]]:
+def _networks_from_netifaces() -> Optional[List[Tuple[str, str, str]]]:
     try:
         import netifaces
     except ImportError:
@@ -39,7 +39,7 @@ def _networks_from_netifaces() -> Optional[List[Tuple[str, str]]]:
     for iface in netifaces.interfaces():
         for info in netifaces.ifaddresses(iface).get(netifaces.AF_INET, []):
             if info.get("addr") and info.get("netmask"):
-                result.append((info["addr"], info["netmask"]))
+                result.append((iface, info["addr"], info["netmask"]))
     return result
 
 
@@ -47,31 +47,74 @@ _IFCONFIG_INET = re.compile(
     r"\binet (?:addr:)?(\d+\.\d+\.\d+\.\d+)\b.*?(?:netmask|Mask:)\s*(0x[0-9a-fA-F]{8}|\d+\.\d+\.\d+\.\d+)"
 )
 _CIDR = re.compile(r"\b(\d+\.\d+\.\d+\.\d+)/(\d{1,2})\b")
+_IFCONFIG_HEADER = re.compile(r"^([^\s:]+(?::\d+)?):?\s+(?:flags=|Link encap)")
+_IP_O_NAME = re.compile(r"^\d+:\s+(\S+)\s+inet\s")
 
 
-def parse_interface_listing(text: str) -> List[Tuple[str, str]]:
+def parse_interfaces(text: str) -> List[Tuple[str, str, str]]:
     """
-    Parse IPv4 address/netmask pairs from "ifconfig" (macOS/BSD, also the
-    old Linux "inet addr: ... Mask:" form), "ip -o -4 addr" (Linux) or
-    "address/prefix" lines (Windows PowerShell Get-NetIPAddress).
+    Parse (interface name, IPv4 address, netmask) from "ifconfig"
+    (macOS/BSD and the old Linux "inet addr: ... Mask:" form),
+    "ip -o -4 addr" (Linux) or "alias|address/prefix" lines (Windows
+    PowerShell Get-NetIPAddress). The name is "" when not available.
     """
     result = []
+    current = ""
     for line in text.splitlines():
+        header = _IFCONFIG_HEADER.match(line)
+        if header:
+            current = header.group(1)
+        name = current
+        ip_o = _IP_O_NAME.match(line)
+        if ip_o:
+            name = ip_o.group(1)
+        elif "|" in line:   # PowerShell: InterfaceAlias|address/prefix
+            name = line.split("|", 1)[0].strip()
+        
         match = _IFCONFIG_INET.search(line)
         if match:
             address, mask = match.groups()
             if mask.lower().startswith("0x"):
                 mask = str(ipaddress.IPv4Address(int(mask, 16)))
-            result.append((address, mask))
+            result.append((name, address, mask))
             continue
         match = _CIDR.search(line)
         if match and int(match.group(2)) <= 32:
             address, prefix = match.groups()
-            result.append((address, str(ipaddress.IPv4Network(f"0.0.0.0/{prefix}").netmask)))
+            result.append((name, address, str(ipaddress.IPv4Network(f"0.0.0.0/{prefix}").netmask)))
     return result
 
 
-def _networks_from_os() -> List[Tuple[str, str]]:
+def parse_interface_listing(text: str) -> List[Tuple[str, str]]:
+    """Like parse_interfaces(), returning only (address, netmask) pairs"""
+    return [(address, mask) for _, address, mask in parse_interfaces(text)]
+
+
+# Virtual adapters (VMs, containers, VPNs) that are never a PLC network.
+# Matched case-insensitively: Windows interface aliases by substring,
+# Unix interface names by prefix.
+VIRTUAL_ALIAS_KEYWORDS = (
+    "vethernet", "hyper-v", "wsl", "vmware", "virtualbox", "vbox", "docker",
+    "loopback", "tap-windows", "wintun", "wireguard", "tailscale", "zerotier",
+    "openvpn", "forticlient", "cisco anyconnect",
+)
+VIRTUAL_NAME_PREFIXES = (
+    "docker", "br-", "virbr", "veth", "vmnet", "vboxnet", "bridge", "utun",
+    "tun", "tap", "wg", "zt", "tailscale", "llw", "awdl", "anpi", "ap1", "lxc", "lxd", "cni", "flannel",
+)
+
+
+def is_virtual_interface(name: str) -> bool:
+    """True for interface names of VMs, containers and VPN tunnels"""
+    lowered = (name or "").strip().lower()
+    if not lowered:
+        return False
+    if any(keyword in lowered for keyword in VIRTUAL_ALIAS_KEYWORDS):
+        return True
+    return lowered.startswith(VIRTUAL_NAME_PREFIXES)
+
+
+def _networks_from_os() -> List[Tuple[str, str, str]]:
     """IPv4 interfaces via the OS's own tools (no extra packages, no admin rights)"""
     import subprocess
     import sys
@@ -79,7 +122,10 @@ def _networks_from_os() -> List[Tuple[str, str]]:
     if sys.platform.startswith("win"):
         commands = [[
             "powershell", "-NoProfile", "-NonInteractive", "-Command",
-            "Get-NetIPAddress -AddressFamily IPv4 | ForEach-Object { $_.IPAddress + '/' + $_.PrefixLength }",
+            # UTF-8 output so localized aliases (e.g. "イーサネット") survive
+            "[Console]::OutputEncoding = [Text.Encoding]::UTF8; "
+            "Get-NetIPAddress -AddressFamily IPv4 | "
+            "ForEach-Object { $_.InterfaceAlias + '|' + $_.IPAddress + '/' + $_.PrefixLength }",
         ]]
     elif sys.platform.startswith("linux"):
         commands = [["ip", "-o", "-4", "addr", "show"], ["ifconfig"]]
@@ -91,37 +137,41 @@ def _networks_from_os() -> List[Tuple[str, str]]:
         except (OSError, subprocess.SubprocessError) as e:
             logger.debug(f"{command[0]} failed: {e}")
             continue
-        networks = parse_interface_listing(result.stdout.decode("ascii", errors="ignore"))
-        if networks:
-            return networks
+        interfaces = parse_interfaces(result.stdout.decode("utf-8", errors="replace"))
+        if interfaces:
+            return interfaces
     return []
 
 
-def get_local_networks() -> List[Tuple[str, str]]:
+def get_local_networks(include_virtual: bool = False) -> List[Tuple[str, str]]:
     """
     All IPv4 networks this PC is connected to, as (local IP, netmask).
     
     Considers every interface (e.g. an office LAN and a separate control
     LAN) and works without a default gateway (isolated factory networks).
-    Loopback, link-local (169.254.x.x, an unconfigured interface) and
-    point-to-point /31-/32 addresses are excluded.
+    Excluded: loopback, link-local (169.254.x.x, an unconfigured interface),
+    point-to-point /31-/32 addresses and - unless include_virtual - virtual
+    adapters of VMs, containers and VPNs (Hyper-V/WSL vEthernet, VMware,
+    VirtualBox, Docker, ...), which would only slow discovery down.
     """
     candidates = _networks_from_netifaces()
     if not candidates:
         candidates = _networks_from_os()
     if not candidates:
         # Last resort: the interface of the default route, assuming /24
-        local_ip = get_local_ip()
-        candidates = [(local_ip, "255.255.255.0")]
+        candidates = [("", get_local_ip(), "255.255.255.0")]
     
     networks: List[Tuple[str, str]] = []
     seen = set()
-    for address, netmask in candidates:
+    for name, address, netmask in candidates:
         try:
             interface = ipaddress.IPv4Interface(f"{address}/{netmask}")
         except ValueError:
             continue
         if interface.ip.is_loopback or interface.ip.is_link_local or interface.network.prefixlen >= 31:
+            continue
+        if not include_virtual and is_virtual_interface(name):
+            logger.info(f"Skipping virtual network adapter {name} ({interface.network})")
             continue
         if interface.network in seen:
             continue

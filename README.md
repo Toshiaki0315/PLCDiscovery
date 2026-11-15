@@ -114,6 +114,12 @@ python plc_gui.py
 python plc_scanner.py --mode discover
 ```
 
+自動検出の対象:
+- このPCがつながっている**すべてのネットワーク**（事務用LANと制御用LANの両方など）。インターネットに出られない独立した工場LANでも動作します
+- 次は対象外です: 仮想ネットワーク（Hyper-V/WSL の vEthernet、VMware、VirtualBox、Docker、VPN など）、
+  /22（1,022台）より大きいネットワーク、リンクローカル（169.254.x.x）。必要な場合は `--ip-range` で指定してください
+- 1台ごとに各プロトコルを同時に問い合わせるため、応答しないアドレスは約1秒で次へ進みます（/24 で最大30秒程度）
+
 指定IPレンジ内のPLCを検出:
 
 ```bash

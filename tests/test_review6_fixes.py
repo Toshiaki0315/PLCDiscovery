@@ -67,7 +67,7 @@ class TestInterfaceParsing:
 
 def networks_with(listing):
     with patch.object(utils, "_networks_from_netifaces", return_value=None), \
-            patch.object(utils, "_networks_from_os", return_value=utils.parse_interface_listing(listing)):
+            patch.object(utils, "_networks_from_os", return_value=utils.parse_interfaces(listing)):
         return utils.get_local_networks()
 
 
@@ -82,7 +82,7 @@ def test_isolated_lan_without_default_gateway():
         raise OSError(51, "Network is unreachable")
 
     with patch.object(utils, "_networks_from_netifaces", return_value=None), \
-            patch.object(utils, "_networks_from_os", return_value=[("10.10.0.5", "255.255.255.0")]), \
+            patch.object(utils, "_networks_from_os", return_value=[("eth1", "10.10.0.5", "255.255.255.0")]), \
             patch.object(socket.socket, "connect", unreachable):
         assert utils.get_network_info() == ("10.10.0.5", "255.255.255.0", "10.10.0.255")
 

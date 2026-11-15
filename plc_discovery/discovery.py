@@ -58,8 +58,13 @@ ARP_SKIPPED_MESSAGE = (
     "PLC discovery continues; MAC addresses are read from the OS ARP cache instead."
 )
 
-# Host count above which a scan-duration warning is logged (larger than a /20)
-LARGE_SCAN_WARNING_HOSTS = 4096
+# Host count above which a scan-duration warning is logged (larger than a /22)
+LARGE_SCAN_WARNING_HOSTS = 1022
+
+# Automatic (same-segment) discovery skips networks larger than this prefix
+# (/22 = 1022 hosts). Control LANs are typically /24; bigger networks are
+# usually office or virtual networks - scan them with an explicit IP range.
+MAX_AUTO_SCAN_PREFIX = 22
 
 
 class PLCDiscovery:
@@ -113,10 +118,22 @@ class PLCDiscovery:
             )
             return []
         
-        labels = [str(ipaddress.IPv4Interface(f"{ip}/{mask}").network) for ip, mask in networks]
-        logger.info(f"Starting same-segment discovery on: {', '.join(labels)}")
+        scan = []
+        for ip, mask in networks:
+            network = ipaddress.IPv4Interface(f"{ip}/{mask}").network
+            if network.prefixlen < MAX_AUTO_SCAN_PREFIX:
+                logger.warning(
+                    f"Skipping {network} ({network.num_addresses - 2} hosts) in automatic discovery: "
+                    f"larger than /{MAX_AUTO_SCAN_PREFIX}. Specify the PLC addresses with an IP range "
+                    f"(e.g. --ip-range {network.network_address}/24) to scan it."
+                )
+                continue
+            scan.append((ip, mask, str(network)))
+        if not scan:
+            return []
+        logger.info(f"Starting same-segment discovery on: {', '.join(label for _, _, label in scan)}")
         
-        for (ip, netmask), label in zip(networks, labels):
+        for ip, netmask, label in scan:
             hosts = [h for h in get_subnet_hosts(ip, netmask) if h != ip]   # skip this PC
             self._report_progress(f"Scanning {len(hosts)} hosts in {label}", 0, len(hosts))
             
@@ -186,9 +203,9 @@ class PLCDiscovery:
         batch_size = max(1, self.config.max_concurrent * 10)
         
         if total > LARGE_SCAN_WARNING_HOSTS:
-            # Rough worst case: every port on every host times out
-            ports = len(PROTOCOL_PORTS)
-            worst_s = total / batch_size * ports * self.config.discovery_timeout_ms / 1000
+            # Rough worst case: every host is silent; its protocols are probed
+            # in parallel, a TCP check plus a probe each (~2 timeouts per host)
+            worst_s = total / batch_size * 2 * self.config.discovery_timeout_ms / 1000
             logger.warning(
                 f"Scanning {total} hosts may take up to ~{worst_s / 60:.0f} minutes; "
                 f"consider a narrower --ip-range"
@@ -281,36 +298,36 @@ class PLCDiscovery:
         """
         loop = asyncio.get_running_loop()
         timeout = self.config.discovery_timeout_ms / 1000
-        detected: List[tuple] = []
+        candidates = [
+            (protocol, port)
+            for protocol in PROTOCOL_PORTS if protocol in self.protocols
+            for port in self._candidate_ports(ip, protocol)
+        ]
         
-        for protocol in PROTOCOL_PORTS:
-            if protocol not in self.protocols:
-                continue
-            for port in self._candidate_ports(ip, protocol):
-                try:
-                    # TCP protocols: skip the probe if the port is closed.
-                    # UDP protocols (FINS) have no connection to check first.
-                    if protocol not in UDP_PROTOCOLS:
-                        is_open = await loop.run_in_executor(
-                            None, lambda p=port: is_port_open(ip, p, timeout)
-                        )
-                        if not is_open:
-                            continue
-                    
-                    # An open port is not proof of a PLC (e.g. NAS on 5001):
-                    # require a valid protocol reply
-                    verified = await loop.run_in_executor(
-                        None, lambda p=port, proto=protocol: verify_protocol(ip, p, proto, timeout)
-                    )
-                    if verified:
-                        detected.append((protocol, port))
-                        logger.debug(f"Verified {protocol.name} on {ip}:{port}")
-                    else:
-                        logger.debug(f"Open port {ip}:{port} did not answer as {protocol.name}")
-                except Exception as e:
-                    logger.debug(f"Port scan error {ip}:{port}: {e}")
-            if first_only and detected:
-                break
+        async def check(protocol: Protocol, port: int) -> bool:
+            try:
+                # TCP protocols: skip the probe if the port is closed.
+                # UDP protocols (FINS) have no connection to check first.
+                if protocol not in UDP_PROTOCOLS:
+                    if not await loop.run_in_executor(None, is_port_open, ip, port, timeout):
+                        return False
+                # An open port is not proof of a PLC (e.g. NAS on 5001):
+                # require a valid protocol reply
+                if await loop.run_in_executor(None, verify_protocol, ip, port, protocol, timeout):
+                    logger.debug(f"Verified {protocol.name} on {ip}:{port}")
+                    return True
+                logger.debug(f"Open port {ip}:{port} did not answer as {protocol.name}")
+            except Exception as e:
+                logger.debug(f"Port scan error {ip}:{port}: {e}")
+            return False
+        
+        # All protocols of a host are probed concurrently: a silent host costs
+        # about one timeout instead of one per protocol (6 s -> ~1 s by default).
+        # That is at most one connection per protocol port, i.e. light load.
+        answers = await asyncio.gather(*(check(protocol, port) for protocol, port in candidates))
+        detected = [candidate for candidate, ok in zip(candidates, answers) if ok]
+        if first_only:
+            detected = detected[:1]
         
         results = []
         for protocol, port in detected:
