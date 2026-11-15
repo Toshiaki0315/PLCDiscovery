@@ -177,9 +177,13 @@ class S7Handler(BaseProtocolHandler):
             return None, StatusCode.NG_TIMEOUT
         except Exception as e:
             error_str = str(e).lower()
-            # Check for typical S7 errors
+            # Errors reported by the CPU for the requested area/address
             if "area" in error_str or "address" in error_str or "db" in error_str:
                 return None, StatusCode.NG_ILLEGAL_ADDR
+            # Anything else is a transport problem (connection reset, ISO/TCP
+            # error, job timeout): snap7 does not reconnect by itself, so
+            # re-establish the connection before the next request
+            self._needs_reconnect = True
             logger.debug(f"S7 read error: {e}")
             return None, StatusCode.NG_COMM_ERROR
     

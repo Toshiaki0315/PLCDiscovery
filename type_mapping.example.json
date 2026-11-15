@@ -1,5 +1,5 @@
 {
-  "description": "Data Type Mapping Example - Maps address ranges to specific data types. 'device' limits a mapping to one device type (mappings without it apply to word devices only); multi-word values are paired from 'start' (e.g. FLOAT at 100: 100-101, 102-103, ...)",
+  "description": "Data Type Mapping Example - Maps address ranges to specific data types. 'device' limits a mapping to one device type (mappings without it apply to word devices only); multi-word values are paired from 'start' (e.g. FLOAT at 100: 100-101, 102-103, ...); STRING/RAW values span 'length' words (default: the whole range)",
   "default_type": "WORD",
   "default_byte_order": "little",
   "mappings": [
@@ -56,7 +56,8 @@
       "start": 1000,
       "end": 1099,
       "type": "STRING",
-      "description": "Product names (ASCII)"
+      "description": "Product names (ASCII, 10 words = 20 characters each)",
+      "length": 10
     }
   ]
 }

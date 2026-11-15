@@ -40,6 +40,56 @@ SLMP_ADDRESS_END_CODES = (
 )
 
 
+# Binary response framing: (header size, subheader, offset of the 2-byte data length)
+#   3E: D0 00 | net | pc | io(2) | station | length(2)                     -> 9 bytes
+#   4E: D4 00 | serial(2) | 00 00 | net | pc | io(2) | station | length(2) -> 13 bytes
+_FRAME_LAYOUT = {
+    "3E": (9, b"\xD0\x00", 7),
+    "4E": (13, b"\xD4\x00", 11),
+}
+
+
+def _framed_client_class(frame: str):
+    """
+    pymcprotocol client whose _recv() reads exactly one complete response.
+    
+    pymcprotocol reads a response with a single recv(). A response split over
+    several TCP segments (e.g. 900 words = ~1.8 KB on a 1.5 KB MTU LAN) was
+    then decoded with the missing bytes as 0 and reported as valid data, and
+    the rest of the response was read as the next reply. A closed connection
+    (recv() == b"") was decoded as all-zero data as well.
+    """
+    if frame == "4E":
+        from pymcprotocol import Type4E as Base
+    else:
+        from pymcprotocol import Type3E as Base
+    header_size, subheader, length_offset = _FRAME_LAYOUT[frame]
+    
+    class FramedClient(Base):
+        def _recv_exact(self, size: int) -> bytes:
+            buf = bytearray()
+            while len(buf) < size:
+                chunk = self._sock.recv(size - len(buf))
+                if not chunk:
+                    raise ConnectionError("SLMP connection closed by the PLC")
+                buf += chunk
+            return bytes(buf)
+        
+        def _recv(self) -> bytes:
+            header = self._recv_exact(header_size)
+            if header[:2] != subheader:
+                raise ConnectionError(f"unexpected SLMP response header: {header[:2].hex()}")
+            length = int.from_bytes(header[length_offset:length_offset + 2], "little")
+            return header + self._recv_exact(length)
+    
+    FramedClient.__name__ = f"Framed{Base.__name__}"
+    return FramedClient
+
+
+# Exceptions raised when the PLC answered with an end code: the connection is fine
+_PLC_ANSWER_ERRORS = ("MCProtocolError", "UnsupportedComandError")
+
+
 class SLMPHandler(BaseProtocolHandler):
     """
     SLMP (Seamless Message Protocol) / MC Protocol Handler
@@ -49,6 +99,7 @@ class SLMPHandler(BaseProtocolHandler):
     """
     
     protocol = Protocol.SLMP
+    FRAME = "3E"
     
     def __init__(
         self,
@@ -62,17 +113,20 @@ class SLMPHandler(BaseProtocolHandler):
     async def connect(self) -> bool:
         """Establish SLMP connection"""
         try:
-            from pymcprotocol import Type3E
+            client_class = _framed_client_class(self.FRAME)
             
             def _connect():
-                client = Type3E()
+                client = client_class()
+                # Socket timeout follows the configured request timeout
+                # (pymcprotocol's own default is 2 s)
+                client.soc_timeout = self.config.request_timeout_ms / 1000
                 client.connect(self.ip_address, self.port)
                 return client
             
             loop = asyncio.get_running_loop()
             self._client = await loop.run_in_executor(None, _connect)
             self._connected = True
-            logger.info(f"SLMP connected to {self.ip_address}:{self.port}")
+            logger.info(f"SLMP ({self.FRAME}) connected to {self.ip_address}:{self.port}")
             return True
             
         except ImportError:
@@ -150,14 +204,24 @@ class SLMPHandler(BaseProtocolHandler):
             data = await self._run_blocking(_read)
             
             if data is not None:
-                return list(data), StatusCode.OK
+                # pymcprotocol decodes words as signed; report raw 16-bit
+                # values (0-65535) like the other protocols
+                return [v & 0xFFFF for v in data], StatusCode.OK
             else:
                 return None, StatusCode.NG_COMM_ERROR
                 
-        except asyncio.TimeoutError:
-            logger.debug(f"SLMP read timeout: {device_type.value}{start_address}")
+        except (asyncio.TimeoutError, TimeoutError) as e:
+            # Includes pymcprotocol's socket timeout (distinct from
+            # asyncio.TimeoutError on Python 3.10): the late reply may still
+            # arrive, so never reuse this connection
+            self._needs_reconnect = True
+            logger.debug(f"SLMP read timeout: {device_type.value}{start_address} ({e})")
             return None, StatusCode.NG_TIMEOUT
         except Exception as e:
+            if type(e).__name__ not in _PLC_ANSWER_ERRORS:
+                # Transport-level failure (closed/reset connection, framing
+                # error): re-establish the connection before the next request
+                self._needs_reconnect = True
             return None, self._classify_error(e, device_type, start_address)
     
     @staticmethod
@@ -205,31 +269,7 @@ class SLMPBinaryHandler(SLMPHandler):
     For high-speed communication with newer PLCs.
     """
     
+    FRAME = "4E"
+    
     def __init__(self, ip_address: str, port: Optional[int] = None, **kwargs):
         super().__init__(ip_address, port or 5000, **kwargs)
-    
-    async def connect(self) -> bool:
-        """Establish SLMP Binary connection"""
-        try:
-            from pymcprotocol import Type4E
-            
-            def _connect():
-                client = Type4E()
-                client.connect(self.ip_address, self.port)
-                return client
-            
-            loop = asyncio.get_running_loop()
-            self._client = await loop.run_in_executor(None, _connect)
-            self._connected = True
-            logger.info(f"SLMP Binary connected to {self.ip_address}:{self.port}")
-            return True
-            
-        except ImportError:
-            # Fall back to 3E frame
-            logger.info("Type4E not available, falling back to Type3E")
-            return await super().connect()
-        except Exception as e:
-            logger.error(f"SLMP Binary connection failed: {e}")
-            return False
-
-

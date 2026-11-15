@@ -222,6 +222,9 @@ class EtherNetIPHandler(BaseProtocolHandler):
             if isinstance(e, LookupError) or "path" in error_str or "not found" in error_str:
                 logger.debug(f"EtherNet/IP address error: {e}")
                 return None, StatusCode.NG_ILLEGAL_ADDR
+            # Transport problem (pycomm3 CommError, socket error): the CIP
+            # session is unusable, re-establish it before the next request
+            self._needs_reconnect = True
             logger.debug(f"EtherNet/IP read error: {e}")
             return None, StatusCode.NG_COMM_ERROR
     

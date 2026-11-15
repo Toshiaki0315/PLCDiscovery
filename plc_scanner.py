@@ -53,7 +53,8 @@ from plc_discovery.parallel import ParallelPLCScanner, scan_plcs_parallel
 from plc_discovery.broadcast_discovery import BroadcastDiscovery
 from plc_discovery.progress import RichProgressDisplay, get_display, is_rich_available
 from plc_discovery.data_types import (
-    BIT_DEVICES, DataType, ByteOrder, DataTypeConverter, DataTypeManager, DataTypeMapping
+    BIT_DEVICES, VARIABLE_LENGTH_TYPES, DataType, ByteOrder, DataTypeConverter,
+    DataTypeManager, DataTypeMapping
 )
 from plc_discovery.notifications import NotificationManager
 from plc_discovery.database import (
@@ -491,15 +492,25 @@ def apply_data_type_conversion(
     if not data_type and not type_manager:
         return data_points
     
-    # Parse addresses and find the start of each contiguous run
+    # Parse addresses and find the start/end of each contiguous run
     parsed: List[Optional[tuple]] = [_split_address(dp.address) for dp in data_points]
+    
+    def continues(prev, addr) -> bool:
+        return bool(addr and prev and prev[0] == addr[0] and prev[1] + 1 == addr[1])
+    
     run_start: List[Optional[int]] = []
     for idx, addr in enumerate(parsed):
-        prev = parsed[idx - 1] if idx else None
-        if addr and prev and prev[0] == addr[0] and prev[1] + 1 == addr[1]:
+        if idx and continues(parsed[idx - 1], addr):
             run_start.append(run_start[-1])
         else:
             run_start.append(addr[1] if addr else None)
+    run_end: List[Optional[int]] = [None] * len(parsed)
+    for idx in range(len(parsed) - 1, -1, -1):
+        addr = parsed[idx]
+        if idx + 1 < len(parsed) and continues(addr, parsed[idx + 1]):
+            run_end[idx] = run_end[idx + 1]
+        else:
+            run_end[idx] = addr[1] if addr else None
     
     result: List[DataPoint] = []
     i = 0
@@ -514,18 +525,23 @@ def apply_data_type_conversion(
         
         prefix, number = addr
         
-        # Determine data type and alignment base for this address
+        # Determine data type, value size and alignment base for this address
         align_base = run_start[i]
-        if type_manager:
-            mapping = type_manager.get_mapping_for_address(number, prefix)
-            if mapping:
-                dt, bo, align_base = mapping.data_type, mapping.byte_order, mapping.start_address
-            else:
-                dt, bo = type_manager.default_type, type_manager.default_byte_order
+        mapping = type_manager.get_mapping_for_address(number, prefix) if type_manager else None
+        if mapping:
+            dt, bo, align_base = mapping.data_type, mapping.byte_order, mapping.start_address
+            word_count = mapping.words_per_value()
         else:
-            dt, bo = data_type, byte_order
-        
-        word_count = max(DataTypeConverter.get_word_count(dt) or 1, 1) if dt else 1
+            if type_manager:
+                dt, bo = type_manager.default_type, type_manager.default_byte_order
+            else:
+                dt, bo = data_type, byte_order
+            if dt in VARIABLE_LENGTH_TYPES:
+                # STRING / RAW without a mapping: the whole requested range
+                word_count = run_end[i] - run_start[i] + 1
+            else:
+                word_count = DataTypeConverter.get_word_count(dt) if dt else 1
+        word_count = max(word_count or 1, 1)
         
         if dt is None or (word_count > 1 and prefix.upper() in BIT_DEVICES):
             result.append(dp)

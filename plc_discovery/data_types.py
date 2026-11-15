@@ -429,6 +429,9 @@ class DataTypeConverter:
         return results
 
 
+# Types whose size is not fixed by the type itself
+VARIABLE_LENGTH_TYPES = frozenset({DataType.STRING, DataType.RAW})
+
 # Bit devices: multi-word types are never applied to them, and mappings
 # without an explicit device do not apply to them
 BIT_DEVICES = frozenset({"M", "X", "Y", "B", "SM"})
@@ -444,13 +447,24 @@ class DataTypeMapping:
     "100-199 = FLOAT" mapping is never applied to M100-M199.
     Multi-word values are aligned to ``start_address``: with FLOAT at
     100-199 the words are paired as 100-101, 102-103, ...
+    STRING / RAW values span ``length`` words (default: the whole range).
     """
+    
+    def words_per_value(self) -> int:
+        """Number of words that make up one value of this mapping"""
+        if self.data_type in VARIABLE_LENGTH_TYPES:
+            return self.length or (self.end_address - self.start_address + 1)
+        return DataTypeConverter.get_word_count(self.data_type)
     start_address: int
     end_address: int
     data_type: DataType
     byte_order: ByteOrder = ByteOrder.LITTLE_ENDIAN
     description: str = ""
     device: Optional[str] = None
+    # Words per value for variable-length types (STRING, RAW). Default: the
+    # whole mapping range is one value. E.g. 100 words with length 10 =
+    # ten 20-character strings.
+    length: Optional[int] = None
     
     def contains(self, address: int, device: Optional[str] = None) -> bool:
         """Check if address (of the given device type) is within this mapping"""
@@ -531,6 +545,7 @@ class DataTypeManager:
                 byte_order=ByteOrder(mapping_config.get("byte_order", "little")),
                 description=mapping_config.get("description", ""),
                 device=mapping_config.get("device"),
+                length=mapping_config.get("length"),
             )
             manager.add_mapping(mapping)
         
