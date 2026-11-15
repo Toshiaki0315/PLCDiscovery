@@ -36,8 +36,14 @@ FINS_AREA_CODES = {
     DeviceType.HR: 0xB2,     # HR Area (word)
     DeviceType.W: 0xB1,      # W Area (word)
     DeviceType.IR: 0xDC,     # IR Area (word) - Actually CIO
-    DeviceType.M: 0x30,      # CIO Area (bit) - for compatibility
+    DeviceType.M: 0xB0,      # CIO Area (word access; 0x30 is bit access = 1 byte/point)
 }
+
+# End code bits that are flags, not errors:
+#   MRES bit 7 (0x8000): network relay error flag
+#   SRES bit 7 (0x0080): fatal CPU error flag
+#   SRES bit 6 (0x0040): non-fatal CPU error flag (e.g. battery low)
+FINS_END_CODE_MASK = 0x7F3F
 
 # FINS Commands
 FINS_CMD_MEMORY_READ = (0x01, 0x01)   # Memory area read
@@ -154,14 +160,18 @@ class FINSHandler(BaseProtocolHandler):
             self._writer.write(handshake)
             await self._writer.drain()
             
-            # Wait for response
-            response = await asyncio.wait_for(
-                self._reader.read(24),
-                timeout=self.config.request_timeout_ms / 1000
-            )
-            
-            if len(response) < 24:
+            # Wait for response (16-byte header + client node + server node)
+            try:
+                response = await asyncio.wait_for(
+                    self._reader.readexactly(24),
+                    timeout=self.config.request_timeout_ms / 1000
+                )
+            except asyncio.IncompleteReadError:
                 logger.error("Invalid FINS/TCP handshake response")
+                return False
+            
+            if response[:4] != b"FINS" or struct.unpack(">I", response[12:16])[0] != 0:
+                logger.error("FINS/TCP handshake rejected")
                 return False
             
             # Parse response to get node addresses
@@ -238,18 +248,21 @@ class FINSHandler(BaseProtocolHandler):
         Returns:
             Tuple of (data list or None, status code)
         """
+        if not await self._ensure_fresh_connection():
+            return None, StatusCode.NG_COMM_ERROR
         if not self._connected:
             return None, StatusCode.NG_COMM_ERROR
         
         try:
             # Build FINS command
             frame = self._build_read_command(device_type, start_address, count)
+            sid = self._sid
             
             # Send and receive
             if self.use_tcp:
-                response = await self._send_tcp(frame)
+                response = await self._send_tcp(frame, sid)
             else:
-                response = await self._send_udp(frame)
+                response = await self._send_udp(frame, sid)
             
             if response is None:
                 return None, StatusCode.NG_TIMEOUT
@@ -339,55 +352,90 @@ class FINSHandler(BaseProtocolHandler):
         ])
         return header + fins_frame
     
-    async def _send_tcp(self, frame: bytes) -> Optional[bytes]:
-        """Send frame via TCP and receive response"""
+    @staticmethod
+    def _response_matches(response: bytes, sid: int) -> bool:
+        """Check that a FINS frame is the response to the request with this SID"""
+        return (
+            len(response) >= 12
+            and (response[0] & 0x40) != 0           # ICF: response frame
+            and response[9] == sid                  # SID echoes the request
+            and response[10:12] == bytes(FINS_CMD_MEMORY_READ)
+        )
+    
+    async def _send_tcp(self, frame: bytes, sid: int) -> Optional[bytes]:
+        """
+        Send frame via TCP and receive response.
+        
+        Any timeout, short read or unexpected frame leaves the stream at an
+        unknown position, so the connection is re-established before the
+        next request.
+        """
+        timeout = self.config.request_timeout_ms / 1000
         try:
             self._writer.write(frame)
             await self._writer.drain()
             
-            # Read TCP header first
-            header = await asyncio.wait_for(
-                self._reader.read(16),
-                timeout=self.config.request_timeout_ms / 1000
-            )
+            # FINS/TCP header: "FINS" + length + command + error code
+            header = await asyncio.wait_for(self._reader.readexactly(16), timeout=timeout)
+            if header[:4] != b"FINS":
+                raise ValueError("FINS/TCP header magic mismatch")
             
-            if len(header) < 16:
-                return None
-            
-            # Parse length from header
             length = struct.unpack(">I", header[4:8])[0]
+            if length < 8:
+                raise ValueError(f"FINS/TCP invalid length: {length}")
             
-            # Read FINS frame
+            # Read FINS frame (length counts command + error code + frame)
             fins_data = await asyncio.wait_for(
-                self._reader.read(length - 8),
-                timeout=self.config.request_timeout_ms / 1000
+                self._reader.readexactly(length - 8), timeout=timeout
             )
+            
+            tcp_error = struct.unpack(">I", header[12:16])[0]
+            if tcp_error != 0:
+                raise ValueError(f"FINS/TCP error code: 0x{tcp_error:08X}")
+            
+            if not self._response_matches(fins_data, sid):
+                raise ValueError("FINS/TCP response does not match request SID")
             
             return fins_data
             
         except asyncio.TimeoutError:
             logger.error("FINS/TCP read timeout")
-            return None
         except Exception as e:
             logger.error(f"FINS/TCP send error: {e}")
-            return None
+        self._needs_reconnect = True
+        return None
     
-    async def _send_udp(self, frame: bytes) -> Optional[bytes]:
-        """Send frame via UDP and receive response"""
+    async def _send_udp(self, frame: bytes, sid: int) -> Optional[bytes]:
+        """
+        Send frame via UDP and receive the matching response.
+        
+        Late responses to earlier (timed-out) requests are discarded by SID,
+        so they can never be taken as data for the current request.
+        """
         if not self._protocol_instance:
             return None
         
+        loop = asyncio.get_running_loop()
+        timeout = self.config.request_timeout_ms / 1000
+        
         try:
+            # Discard stale responses still queued from earlier requests
+            self._protocol_instance.drain()
+            
             # Send request
             self._transport.sendto(frame)
             
-            # Wait for response
-            response = await asyncio.wait_for(
-                self._protocol_instance.receive(),
-                timeout=self.config.request_timeout_ms / 1000
-            )
-            
-            return response
+            deadline = loop.time() + timeout
+            while True:
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    raise asyncio.TimeoutError()
+                response = await asyncio.wait_for(
+                    self._protocol_instance.receive(), timeout=remaining
+                )
+                if self._response_matches(response, sid):
+                    return response
+                logger.debug("FINS/UDP: discarded unmatched/stale response")
             
         except asyncio.TimeoutError:
             logger.error("FINS/UDP read timeout")
@@ -407,8 +455,11 @@ class FINSHandler(BaseProtocolHandler):
         # Skip header (10 bytes) and command code (2 bytes)
         # Response format: Header(10) + Cmd(2) + EndCode(2) + Data...
         
-        # Check end code (bytes 12-13)
-        end_code = (response[12] << 8) | response[13]
+        # Check end code (bytes 12-13), ignoring relay/CPU status flag bits
+        raw_end_code = (response[12] << 8) | response[13]
+        end_code = raw_end_code & FINS_END_CODE_MASK
+        if raw_end_code != end_code:
+            logger.debug(f"FINS end code flags set: 0x{raw_end_code:04X}")
         
         if end_code != 0x0000:
             error_msg = FINS_ERROR_CODES.get(end_code, f"Unknown error: {end_code:04X}")
@@ -459,6 +510,14 @@ class FINSUDPProtocol(asyncio.DatagramProtocol):
     async def receive(self) -> bytes:
         """Wait for and return next response"""
         return await self._response_queue.get()
+    
+    def drain(self) -> None:
+        """Discard all queued responses"""
+        while True:
+            try:
+                self._response_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
 
 
 # Register default port

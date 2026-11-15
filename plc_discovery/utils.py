@@ -11,11 +11,8 @@ from typing import Generator, List, Optional, Tuple
 
 from .config import MANUFACTURER_OUI
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+# Library code must not configure the root logger; applications
+# (plc_scanner.py, plc_gui.py) set up handlers and levels themselves.
 logger = logging.getLogger(__name__)
 
 

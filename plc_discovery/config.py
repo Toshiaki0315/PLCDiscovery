@@ -355,7 +355,8 @@ DEFAULT_DEVICE_RANGES: Dict[Protocol, List[DeviceRange]] = {
         DeviceRange(DeviceType.IR, 0, 9999),
     ],
     Protocol.S7: [
-        DeviceRange(DeviceType.DB, 0, 65535),
+        # Word indexes in DB1 (a DB holds at most 64 KB = 32768 words)
+        DeviceRange(DeviceType.DB, 0, 32767),
     ],
     Protocol.FINS: [
         DeviceRange(DeviceType.DM, 0, 999),

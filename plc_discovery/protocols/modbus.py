@@ -127,6 +127,8 @@ class ModbusHandler(BaseProtocolHandler):
         Returns:
             Tuple of (data list or None, status code)
         """
+        if not await self._ensure_fresh_connection():
+            return None, StatusCode.NG_COMM_ERROR
         if not self._connected or not self._client:
             return None, StatusCode.NG_COMM_ERROR
         
@@ -164,11 +166,7 @@ class ModbusHandler(BaseProtocolHandler):
                     )
                 return None
             
-            loop = asyncio.get_event_loop()
-            result = await asyncio.wait_for(
-                loop.run_in_executor(None, _read),
-                timeout=self.config.request_timeout_ms / 1000
-            )
+            result = await self._run_blocking(_read)
             
             if result is None:
                 return None, StatusCode.NG_COMM_ERROR
@@ -191,7 +189,9 @@ class ModbusHandler(BaseProtocolHandler):
             if modbus_type in ["holding", "input"]:
                 data = list(result.registers)
             elif modbus_type in ["coil", "discrete"]:
-                data = [1 if bit else 0 for bit in result.bits]
+                # pymodbus pads the bit list to a multiple of 8; keep only
+                # the requested points so addresses are not duplicated
+                data = [1 if bit else 0 for bit in result.bits[:count]]
             else:
                 data = []
             

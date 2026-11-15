@@ -50,12 +50,20 @@ class S7Handler(BaseProtocolHandler):
         port: Optional[int] = None,
         rack: int = 0,
         slot: int = 0,
+        db_number: int = 1,
         **kwargs
     ):
+        """
+        Addressing used by read_device_raw():
+            Addresses are 16-bit word indexes, i.e. byte offset = address * 2.
+            DB/D read from data block ``db_number`` (e.g. DB1 address 5 = DB1.DBW10),
+            M/X/Y read the merker/input/output areas (M address 5 = MW10).
+        """
         super().__init__(ip_address, port or PROTOCOL_PORTS[Protocol.S7], **kwargs)
         self._client = None
         self._rack = rack
         self._slot = slot
+        self._db_number = db_number
     
     async def connect(self) -> bool:
         """Establish S7 connection"""
@@ -68,18 +76,21 @@ class S7Handler(BaseProtocolHandler):
                 # S7-300/400: rack=0, slot=2
                 # S7-1200/1500: rack=0, slot=0 or slot=1
                 try:
-                    client.connect(self.ip_address, self._rack, self._slot)
-                    return client
+                    client.connect(self.ip_address, self._rack, self._slot, self.port)
+                    return client, self._slot
                 except Exception:
                     # Try alternative slot
                     alt_slot = 2 if self._slot == 0 else 0
-                    client.connect(self.ip_address, self._rack, alt_slot)
-                    return client
+                    client.connect(self.ip_address, self._rack, alt_slot, self.port)
+                    return client, alt_slot
             
             loop = asyncio.get_event_loop()
-            self._client = await loop.run_in_executor(None, _connect)
+            self._client, used_slot = await loop.run_in_executor(None, _connect)
             self._connected = True
-            logger.info(f"S7 connected to {self.ip_address} (rack={self._rack}, slot={self._slot})")
+            logger.info(
+                f"S7 connected to {self.ip_address}:{self.port} "
+                f"(rack={self._rack}, slot={used_slot})"
+            )
             return True
             
         except ImportError:
@@ -117,12 +128,14 @@ class S7Handler(BaseProtocolHandler):
         
         Args:
             device_type: Device type (DB, M, X, Y)
-            start_address: Starting address (byte offset for DB)
+            start_address: Starting word index (byte offset = address * 2)
             count: Number of words to read
         
         Returns:
             Tuple of (data list or None, status code)
         """
+        if not await self._ensure_fresh_connection():
+            return None, StatusCode.NG_COMM_ERROR
         if not self._connected or not self._client:
             return None, StatusCode.NG_COMM_ERROR
         
@@ -132,24 +145,22 @@ class S7Handler(BaseProtocolHandler):
             return None, StatusCode.NG_UNSUPPORTED
         
         try:
-            # Calculate byte length (count is in words, each word is 2 bytes)
+            # Addresses are word indexes: byte offset = address * 2
+            byte_offset = start_address * 2
             byte_count = count * 2
             
             def _read():
                 if area == S7_AREA_DB:
-                    # For data blocks, need DB number
-                    # Use start_address as DB number, read from byte 0
-                    db_number = start_address if start_address > 0 else 1
-                    return self._client.db_read(db_number, 0, byte_count)
-                else:
-                    # For other areas (M, I, Q)
-                    return self._client.read_area(area, 0, start_address, byte_count)
+                    return self._client.db_read(self._db_number, byte_offset, byte_count)
+                if area == S7_AREA_MK:
+                    return self._client.mb_read(byte_offset, byte_count)
+                if area == S7_AREA_PE:
+                    return self._client.eb_read(byte_offset, byte_count)
+                if area == S7_AREA_PA:
+                    return self._client.ab_read(byte_offset, byte_count)
+                raise ValueError(f"Unsupported S7 area: {area}")
             
-            loop = asyncio.get_event_loop()
-            data_bytes = await asyncio.wait_for(
-                loop.run_in_executor(None, _read),
-                timeout=self.config.request_timeout_ms / 1000
-            )
+            data_bytes = await self._run_blocking(_read)
             
             if data_bytes:
                 # Convert bytes to word list (big-endian for S7)

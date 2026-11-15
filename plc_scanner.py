@@ -793,7 +793,8 @@ async def main():
     log_level = logging.DEBUG if args.verbose else (logging.ERROR if args.quiet else logging.INFO)
     logging.basicConfig(
         level=log_level,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        force=True,
     )
     
     # Load configuration file if specified
@@ -1049,5 +1050,10 @@ async def main():
             close_audit_logger()
 
 
-if __name__ == "__main__":
+def cli():
+    """Console-script entry point (``plc-scanner``)"""
     asyncio.run(main())
+
+
+if __name__ == "__main__":
+    cli()

@@ -29,6 +29,17 @@ SLMP_DEVICE_MAP = {
 }
 
 
+# SLMP end codes meaning the requested device/address/size is invalid
+# (the PLC answered; the address range itself is the problem)
+SLMP_ADDRESS_END_CODES = (
+    "c051", "c052", "c053", "c054",  # number of points out of range
+    "c055",                          # file/device data error
+    "c056",                          # request exceeds the maximum address
+    "c05b",                          # CPU cannot access the specified device
+    "c05c",                          # request content error (device specification)
+)
+
+
 class SLMPHandler(BaseProtocolHandler):
     """
     SLMP (Seamless Message Protocol) / MC Protocol Handler
@@ -105,6 +116,8 @@ class SLMPHandler(BaseProtocolHandler):
         Returns:
             Tuple of (data list or None, status code)
         """
+        if not await self._ensure_fresh_connection():
+            return None, StatusCode.NG_COMM_ERROR
         if not self._connected or not self._client:
             return None, StatusCode.NG_COMM_ERROR
         
@@ -134,11 +147,7 @@ class SLMPHandler(BaseProtocolHandler):
                         readsize=count
                     )
             
-            loop = asyncio.get_event_loop()
-            data = await asyncio.wait_for(
-                loop.run_in_executor(None, _read),
-                timeout=self.config.request_timeout_ms / 1000
-            )
+            data = await self._run_blocking(_read)
             
             if data is not None:
                 return list(data), StatusCode.OK
@@ -149,13 +158,26 @@ class SLMPHandler(BaseProtocolHandler):
             logger.debug(f"SLMP read timeout: {device_type.value}{start_address}")
             return None, StatusCode.NG_TIMEOUT
         except Exception as e:
-            error_str = str(e).lower()
-            # Check for illegal address error
-            if "illegal" in error_str or "0x4001" in error_str or "c055" in error_str:
-                logger.debug(f"SLMP illegal address: {device_type.value}{start_address}")
-                return None, StatusCode.NG_ILLEGAL_ADDR
-            logger.debug(f"SLMP read error: {e}")
-            return None, StatusCode.NG_COMM_ERROR
+            return None, self._classify_error(e, device_type, start_address)
+    
+    @staticmethod
+    def _classify_error(e: Exception, device_type: DeviceType, start_address: int) -> StatusCode:
+        """Map a pymcprotocol exception to a status code"""
+        if type(e).__name__ == "UnsupportedComandError":
+            logger.debug(f"SLMP command not supported: {device_type.value}")
+            return StatusCode.NG_UNSUPPORTED
+        
+        error_str = str(e).lower()
+        end_code = getattr(e, "errorcode", None)
+        code_str = str(end_code).lower() if end_code is not None else error_str
+        
+        if any(c in code_str for c in SLMP_ADDRESS_END_CODES) or \
+                "illegal" in error_str or "0x4001" in error_str:
+            logger.debug(f"SLMP illegal address: {device_type.value}{start_address} ({e})")
+            return StatusCode.NG_ILLEGAL_ADDR
+        
+        logger.debug(f"SLMP read error: {e}")
+        return StatusCode.NG_COMM_ERROR
     
     async def read_cpu_info(self) -> dict:
         """

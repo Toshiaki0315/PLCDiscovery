@@ -17,12 +17,13 @@ from ..config import Protocol, DeviceType, StatusCode, PROTOCOL_PORTS
 
 logger = logging.getLogger(__name__)
 
-# Device type mapping for pycomm3
+# Device type mapping to PLC-5/SLC/MicroLogix data files (file letter, file number).
+# Data-file addressing ("N7:0") is only understood by SLC-style controllers;
+# Logix and generic CIP devices use symbolic tags (see read_tag()).
 EIP_DEVICE_MAP = {
-    DeviceType.D: "N",     # Integer file (AB)
-    DeviceType.DM: "DM",   # Data memory (Omron)
-    DeviceType.HR: "N",    # Integer file
-    DeviceType.M: "B",     # Bit file
+    DeviceType.D: ("N", 7),    # Integer file N7
+    DeviceType.HR: ("N", 7),   # Integer file N7
+    DeviceType.M: ("B", 3),    # Bit file B3 (read as 16-bit words)
 }
 
 
@@ -45,7 +46,7 @@ class EtherNetIPHandler(BaseProtocolHandler):
         super().__init__(ip_address, port or PROTOCOL_PORTS[Protocol.ETHERNET_IP], **kwargs)
         self._client = None
         self._slot = slot
-        self._plc_type = None  # 'ab' for Allen-Bradley, 'omron' for Omron
+        self._plc_type = None  # 'logix', 'slc' or 'generic'
 
     def _connection_path(self, include_slot: bool) -> str:
         """
@@ -72,16 +73,39 @@ class EtherNetIPHandler(BaseProtocolHandler):
             loop = asyncio.get_event_loop()
             self._client = await loop.run_in_executor(None, _connect)
             self._connected = True
-            self._plc_type = 'ab'
-            logger.info(f"EtherNet/IP connected to {self.ip_address}:{self.port}")
+            self._plc_type = 'logix'
+            logger.info(f"EtherNet/IP (Logix) connected to {self.ip_address}:{self.port}")
             return True
             
         except ImportError:
             logger.error("pycomm3 library not installed")
             return False
         except Exception as e:
-            logger.warning(f"LogixDriver connection failed: {e}, trying CIPDriver")
+            logger.warning(f"LogixDriver connection failed: {e}, trying SLCDriver")
+            if await self._connect_slc():
+                return True
             return await self._connect_generic()
+    
+    async def _connect_slc(self) -> bool:
+        """Connect using the PLC-5/SLC/MicroLogix driver (data-file addressing)"""
+        try:
+            from pycomm3 import SLCDriver
+            
+            def _connect():
+                client = SLCDriver(self._connection_path(include_slot=True))
+                client.open()
+                return client
+            
+            loop = asyncio.get_event_loop()
+            self._client = await loop.run_in_executor(None, _connect)
+            self._connected = True
+            self._plc_type = 'slc'
+            logger.info(f"EtherNet/IP (SLC) connected to {self.ip_address}:{self.port}")
+            return True
+        except Exception as e:
+            logger.warning(f"SLCDriver connection failed: {e}, trying CIPDriver")
+            self._client = None
+            return False
     
     async def _connect_generic(self) -> bool:
         """Connect using generic CIP driver"""
@@ -133,21 +157,30 @@ class EtherNetIPHandler(BaseProtocolHandler):
         For Allen-Bradley, uses tag-based reading.
         For generic CIP, uses object-based reading.
         """
+        if not await self._ensure_fresh_connection():
+            return None, StatusCode.NG_COMM_ERROR
         if not self._connected or not self._client:
             return None, StatusCode.NG_COMM_ERROR
         
         try:
-            if self._plc_type == 'ab':
+            if self._plc_type == 'slc':
                 return await self._read_ab_style(device_type, start_address, count)
-            else:
-                return await self._read_generic_style(device_type, start_address, count)
+            # Logix / generic CIP devices have no numeric device addresses.
+            # Returning data from another object under these addresses would
+            # be misleading, so report the device type as unsupported.
+            logger.warning(
+                f"Address-based read of {device_type.value} is not supported on "
+                f"{self._plc_type} EtherNet/IP devices; use read_tag() instead"
+            )
+            return None, StatusCode.NG_UNSUPPORTED
                 
         except asyncio.TimeoutError:
             logger.debug(f"EtherNet/IP read timeout")
             return None, StatusCode.NG_TIMEOUT
         except Exception as e:
             error_str = str(e).lower()
-            if "path" in error_str or "not found" in error_str:
+            if isinstance(e, LookupError) or "path" in error_str or "not found" in error_str:
+                logger.debug(f"EtherNet/IP address error: {e}")
                 return None, StatusCode.NG_ILLEGAL_ADDR
             logger.debug(f"EtherNet/IP read error: {e}")
             return None, StatusCode.NG_COMM_ERROR
@@ -163,32 +196,27 @@ class EtherNetIPHandler(BaseProtocolHandler):
         
         Constructs tag names like "N7:0", "B3:0", etc.
         """
+        mapping = EIP_DEVICE_MAP.get(device_type)
+        if mapping is None:
+            return None, StatusCode.NG_UNSUPPORTED
+        
         try:
-            # Build tag name based on device type
-            file_letter = EIP_DEVICE_MAP.get(device_type, "N")
-            file_number = 7  # Default file number
-            
-            # For integer files, read as array
+            file_letter, file_number = mapping
             tag_name = f"{file_letter}{file_number}:{start_address}"
             
             def _read():
                 if count == 1:
                     result = self._client.read(tag_name)
-                    if result.value is not None:
-                        return [result.value]
-                    return None
-                else:
-                    # Read array
-                    result = self._client.read(f"{tag_name}{{count}}")
-                    if result.value is not None:
-                        return list(result.value)
-                    return None
+                    if result.error:
+                        raise LookupError(f"{tag_name}: {result.error}")
+                    return [result.value]
+                # Array read: "N7:0{10}" reads 10 elements
+                result = self._client.read(f"{tag_name}{{{count}}}")
+                if result.error:
+                    raise LookupError(f"{tag_name}{{{count}}}: {result.error}")
+                return list(result.value)
             
-            loop = asyncio.get_event_loop()
-            data = await asyncio.wait_for(
-                loop.run_in_executor(None, _read),
-                timeout=self.config.request_timeout_ms / 1000
-            )
+            data = await self._run_blocking(_read)
             
             if data is not None:
                 return data, StatusCode.OK
@@ -196,55 +224,6 @@ class EtherNetIPHandler(BaseProtocolHandler):
             
         except Exception as e:
             logger.debug(f"AB-style read error: {e}")
-            raise
-    
-    async def _read_generic_style(
-        self,
-        device_type: DeviceType,
-        start_address: int,
-        count: int
-    ) -> Tuple[Optional[List[int]], StatusCode]:
-        """
-        Read data using generic CIP object access.
-        
-        Uses Assembly Object or custom object access.
-        """
-        try:
-            def _read():
-                # Try to get assembly instance
-                # Assembly Object: Class 0x04
-                from pycomm3.cip import Services, ClassCode
-                
-                # Read from assembly instance
-                result = self._client.generic_message(
-                    service=Services.get_attribute_all,
-                    class_code=ClassCode.assembly,
-                    instance=start_address,
-                    connected=False
-                )
-                
-                if result and result.value:
-                    # Convert bytes to word list
-                    data = result.value
-                    words = []
-                    for i in range(0, len(data) - 1, 2):
-                        word = data[i] | (data[i + 1] << 8)
-                        words.append(word)
-                    return words[:count]
-                return None
-            
-            loop = asyncio.get_event_loop()
-            data = await asyncio.wait_for(
-                loop.run_in_executor(None, _read),
-                timeout=self.config.request_timeout_ms / 1000
-            )
-            
-            if data is not None:
-                return data, StatusCode.OK
-            return None, StatusCode.NG_COMM_ERROR
-            
-        except Exception as e:
-            logger.debug(f"Generic CIP read error: {e}")
             raise
     
     async def read_tag(self, tag_name: str) -> Tuple[Optional[any], StatusCode]:
@@ -260,7 +239,7 @@ class EtherNetIPHandler(BaseProtocolHandler):
         if not self._connected or not self._client:
             return None, StatusCode.NG_COMM_ERROR
         
-        if self._plc_type != 'ab':
+        if self._plc_type not in ('logix', 'slc'):
             return None, StatusCode.NG_UNSUPPORTED
         
         try:

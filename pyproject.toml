@@ -49,11 +49,15 @@ dev = [
 ]
 
 [project.scripts]
-plc-scanner = "plc_scanner:main"
+plc-scanner = "plc_scanner:cli"
 
 [project.urls]
 "Homepage" = "https://github.com/your-org/plc-discovery"
 "Bug Tracker" = "https://github.com/your-org/plc-discovery/issues"
+
+[tool.setuptools]
+# Top-level scripts imported by the console entry point
+py-modules = ["plc_scanner", "plc_gui"]
 
 [tool.setuptools.packages.find]
 include = ["plc_discovery*"]
