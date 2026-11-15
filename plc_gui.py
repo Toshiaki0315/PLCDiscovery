@@ -39,7 +39,7 @@ from plc_discovery.config import (
     StatusCode,
 )
 from plc_discovery.data_types import ByteOrder
-from plc_discovery.discovery import PLCDiscovery, discover_plcs
+from plc_discovery.discovery import PLCDiscovery, discover_plcs, plc_key
 from plc_discovery.output import DEFAULT_OUTPUT_DIR, CSVExporter
 from plc_scanner import BYTE_ORDER_MAP, DATA_TYPE_MAP, apply_data_type_conversion
 
@@ -283,6 +283,8 @@ class PLCScannerApp:
         self.ent_ip_range.grid(row=0, column=2, sticky=tk.W)
         ttk.Label(opts, text="例: 192.168.1.0/24  または  192.168.1.10-192.168.1.50",
                   style="Hint.TLabel").grid(row=1, column=2, sticky=tk.W)
+        ttk.Label(opts, text="このPCで動かしているPLCシミュレータを探す場合: 127.0.0.1",
+                  style="Hint.TLabel").grid(row=2, column=2, sticky=tk.W)
         ttk.Checkbutton(opts, text="UDPブロードキャスト探索も行う", variable=self.var_broadcast).grid(
             row=1, column=0, sticky=tk.W, pady=(4, 0))
 
@@ -576,8 +578,9 @@ class PLCScannerApp:
 
         self._post("status", f"{ip_range or '同一セグメント'} をスキャン中...")
         tcp_plcs = await discover_plcs(ip_range, config, self._progress_cb)
-        known = {p.ip_address for p in plcs}
-        plcs.extend(p for p in tcp_plcs if p.ip_address not in known)
+        # 同じIPでも応答したプロトコルごとに1行（複数プロトコル対応PLC・シミュレータ）
+        known = {plc_key(p) for p in plcs}
+        plcs.extend(p for p in tcp_plcs if plc_key(p) not in known)
 
         path = None
         if plcs:
@@ -596,12 +599,17 @@ class PLCScannerApp:
                 d["ip_address"], d["manufacturer"] or "-", d["model"] or "-",
                 d["protocol"] or "-", d["port"], d["mac_address"] or "-"))
         if plcs:
-            self.lbl_discover_count.configure(text=f"{len(plcs)} 台のPLCを検出")
-            self.var_status.set(f"探索完了: {len(plcs)} 台検出  →  {path}")
+            hosts = len({p.ip_address for p in plcs})
+            count = f"{len(plcs)} 件を検出" + (f"（{hosts} 台）" if hosts != len(plcs) else "")
+            self.lbl_discover_count.configure(text=count)
+            self.var_status.set(f"探索完了: {count}  →  {path}")
             self.last_output_dir = Path(path).parent if path else None
         else:
             self.lbl_discover_count.configure(text="PLCは見つかりませんでした")
-            self.var_status.set("探索完了: PLCは見つかりませんでした")
+            hint = ""
+            if self.var_scope.get() == "segment":
+                hint = "（このPCで動かしているシミュレータは「IP範囲を指定」に 127.0.0.1 と入力して探索してください）"
+            self.var_status.set("探索完了: PLCは見つかりませんでした" + hint)
 
     # ----- データ収集 -----------------------------------------
 

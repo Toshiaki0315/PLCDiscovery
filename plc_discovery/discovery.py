@@ -8,6 +8,7 @@ Supports:
 """
 
 import asyncio
+import ipaddress
 import socket
 import struct
 from typing import Dict, List, Optional, Callable
@@ -30,6 +31,26 @@ try:
 except ImportError:
     SCAPY_AVAILABLE = False
     logger.warning("scapy not available, ARP discovery disabled")
+
+
+# Non-privileged ports used by the bundled simulators instead of 502 / 102.
+# Probed only on loopback addresses (127.x), so LAN scans are unchanged.
+SIMULATOR_PORTS: Dict[Protocol, List[int]] = {
+    Protocol.MODBUS_TCP: [1502],
+    Protocol.S7: [1102],
+}
+
+
+def _is_loopback(ip: str) -> bool:
+    try:
+        return ipaddress.ip_address(ip).is_loopback
+    except ValueError:
+        return False
+
+
+def plc_key(plc: PLCInfo) -> tuple:
+    """Identity of a discovery result: one per IP, protocol and port"""
+    return (plc.ip_address, plc.protocol, plc.port)
 
 
 ARP_SKIPPED_MESSAGE = (
@@ -61,7 +82,8 @@ class PLCDiscovery:
         """
         self.config = config or NetworkConfig()
         self.protocols = list(protocols) if protocols else list(PROTOCOL_PORTS)
-        self.discovered_plcs: Dict[str, PLCInfo] = {}
+        # Keyed by plc_key(): (ip, protocol, port) - one entry per protocol
+        self.discovered_plcs: Dict[tuple, PLCInfo] = {}
         self._progress_callback: Optional[Callable[[str, int, int], None]] = None
     
     def set_progress_callback(self, callback: Callable[[str, int, int], None]):
@@ -167,13 +189,14 @@ class PLCDiscovery:
         for i in range(0, total, batch_size):
             batch = hosts[i:i + batch_size]
             results = await asyncio.gather(
-                *(self._probe_host(h, mac_table.get(h)) for h in batch),
+                *(self._probe_host_all(h, mac_table.get(h)) for h in batch),
                 return_exceptions=True
             )
             
             for result in results:
-                if isinstance(result, PLCInfo):
-                    self.discovered_plcs[result.ip_address] = result
+                if isinstance(result, list):
+                    for plc in result:
+                        self.discovered_plcs[plc_key(plc)] = plc
             
             self._report_progress("Scanning hosts", min(i + batch_size, total), total)
     
@@ -219,62 +242,80 @@ class PLCDiscovery:
         
         return mac_table
     
+    def _candidate_ports(self, ip: str, protocol: Protocol) -> List[int]:
+        """Ports to try for a protocol: the standard port, plus the simulator
+        ports (non-privileged) when scanning this PC's loopback address"""
+        ports = [PROTOCOL_PORTS[protocol]]
+        if _is_loopback(ip):
+            ports += [p for p in SIMULATOR_PORTS.get(protocol, []) if p not in ports]
+        return ports
+    
     async def _probe_host(self, ip: str, mac: Optional[str] = None) -> Optional[PLCInfo]:
         """
-        Probe a single host for PLC protocols.
-        Returns PLCInfo if a PLC is detected, None otherwise.
+        Probe a single host and return its primary PLC protocol (the first
+        verified one), or None. Used to auto-detect a target's protocol.
         """
-        detected_protocols = []
+        found = await self._probe_host_all(ip, mac, first_only=True)
+        return found[0] if found else None
+    
+    async def _probe_host_all(
+        self,
+        ip: str,
+        mac: Optional[str] = None,
+        first_only: bool = False
+    ) -> List[PLCInfo]:
+        """
+        Probe a single host for PLC protocols.
         
-        # Check each protocol port
-        for protocol, port in PROTOCOL_PORTS.items():
+        Returns one PLCInfo per verified protocol/port (a multi-protocol PLC
+        or a PC running several simulators answers more than one), in the
+        order of PROTOCOL_PORTS. Empty list if no PLC protocol answers.
+        """
+        loop = asyncio.get_running_loop()
+        timeout = self.config.discovery_timeout_ms / 1000
+        detected: List[tuple] = []
+        
+        for protocol in PROTOCOL_PORTS:
             if protocol not in self.protocols:
                 continue
-            try:
-                # TCP protocols: skip the probe if the port is closed.
-                # UDP protocols (FINS) have no connection to check first.
-                if protocol not in UDP_PROTOCOLS:
-                    is_open = await asyncio.get_running_loop().run_in_executor(
-                        None,
-                        lambda p=port: is_port_open(ip, p, self.config.discovery_timeout_ms / 1000)
+            for port in self._candidate_ports(ip, protocol):
+                try:
+                    # TCP protocols: skip the probe if the port is closed.
+                    # UDP protocols (FINS) have no connection to check first.
+                    if protocol not in UDP_PROTOCOLS:
+                        is_open = await loop.run_in_executor(
+                            None, lambda p=port: is_port_open(ip, p, timeout)
+                        )
+                        if not is_open:
+                            continue
+                    
+                    # An open port is not proof of a PLC (e.g. NAS on 5001):
+                    # require a valid protocol reply
+                    verified = await loop.run_in_executor(
+                        None, lambda p=port, proto=protocol: verify_protocol(ip, p, proto, timeout)
                     )
-                    if not is_open:
-                        continue
-                
-                # An open port is not proof of a PLC (e.g. NAS on 5001):
-                # require a valid protocol reply
-                verified = await asyncio.get_running_loop().run_in_executor(
-                    None,
-                    lambda p=port, proto=protocol: verify_protocol(
-                        ip, p, proto, self.config.discovery_timeout_ms / 1000
-                    )
-                )
-                if verified:
-                    detected_protocols.append((protocol, port))
-                    logger.debug(f"Verified {protocol.name} on {ip}:{port}")
-                else:
-                    logger.debug(f"Open port {ip}:{port} did not answer as {protocol.name}")
-            
-            except Exception as e:
-                logger.debug(f"Port scan error {ip}:{port}: {e}")
+                    if verified:
+                        detected.append((protocol, port))
+                        logger.debug(f"Verified {protocol.name} on {ip}:{port}")
+                    else:
+                        logger.debug(f"Open port {ip}:{port} did not answer as {protocol.name}")
+                except Exception as e:
+                    logger.debug(f"Port scan error {ip}:{port}: {e}")
+            if first_only and detected:
+                break
         
-        if not detected_protocols:
-            return None
-        
-        # Create PLCInfo with the first detected protocol
-        protocol, port = detected_protocols[0]
-        plc_info = PLCInfo(
-            ip_address=ip,
-            mac_address=mac,
-            protocol=protocol,
-            port=port,
-            manufacturer=get_manufacturer_from_mac(mac) if mac else None
-        )
-        
-        # Try to get detailed info using protocol-specific queries
-        plc_info = await self._get_detailed_info(plc_info)
-        
-        return plc_info
+        results = []
+        for protocol, port in detected:
+            plc_info = PLCInfo(
+                ip_address=ip,
+                mac_address=mac,
+                protocol=protocol,
+                port=port,
+                manufacturer=get_manufacturer_from_mac(mac) if mac else None
+            )
+            # Try to get detailed info using protocol-specific queries
+            results.append(await self._get_detailed_info(plc_info))
+        return results
     
     async def _get_detailed_info(self, plc_info: PLCInfo) -> PLCInfo:
         """
@@ -332,7 +373,7 @@ class PLCDiscovery:
             from pycomm3 import CIPDriver
             
             def _query():
-                with CIPDriver(plc_info.ip_address) as plc:
+                with CIPDriver(f"{plc_info.ip_address}:{plc_info.port or 44818}") as plc:
                     identity = plc.get_plc_info()
                     if identity:
                         plc_info.manufacturer = identity.get('vendor', plc_info.manufacturer)
@@ -407,7 +448,7 @@ class PLCDiscovery:
             
             def _query():
                 client = snap7.client.Client()
-                client.connect(plc_info.ip_address, 0, 0)
+                client.connect(plc_info.ip_address, 0, 0, plc_info.port or 102)
                 
                 try:
                     # Get CPU info

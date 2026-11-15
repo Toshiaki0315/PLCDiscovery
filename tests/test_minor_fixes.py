@@ -140,19 +140,19 @@ async def test_probe_hosts_batched(monkeypatch):
         active["max"] = max(active["max"], active["now"])
         await asyncio.sleep(0)
         active["now"] -= 1
-        return PLCInfo(ip) if ip.endswith(".7") else None
+        return [PLCInfo(ip, protocol=Protocol.SLMP, port=5001)] if ip.endswith(".7") else []
 
     def counting_probe(ip, mac=None):
         created.append(ip)
         return fake_probe(ip, mac)
 
-    monkeypatch.setattr(discovery, "_probe_host", counting_probe)
+    monkeypatch.setattr(discovery, "_probe_host_all", counting_probe)
     hosts = [f"10.0.0.{i}" for i in range(1, 31)]
     await discovery._probe_hosts(hosts, {})
 
     assert created == hosts
     assert active["max"] <= 10  # max_concurrent * 10
-    assert list(discovery.discovered_plcs) == ["10.0.0.7"]
+    assert [p.ip_address for p in discovery.discovered_plcs.values()] == ["10.0.0.7"]
 
 
 # ---------------------------------------------------------------------------

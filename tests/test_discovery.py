@@ -149,8 +149,8 @@ class TestDiscoveryIPRangeScan:
         """Test discovery with invalid IP range"""
         discovery = PLCDiscovery(network_config)
         
-        with patch.object(discovery, '_probe_host', new_callable=AsyncMock) as mock_probe:
-            mock_probe.return_value = None
+        with patch.object(discovery, '_probe_host_all', new_callable=AsyncMock) as mock_probe:
+            mock_probe.return_value = []
             results = await discovery.discover_ip_range("invalid_range")
         
         assert len(results) == 0
@@ -166,12 +166,13 @@ class TestDiscoveryIPRangeScan:
             port=5001
         )
         
-        with patch.object(discovery, '_probe_host', new_callable=AsyncMock) as mock_probe:
-            # Only one IP responds
+        with patch.object(discovery, '_probe_host_all', new_callable=AsyncMock) as mock_probe, \
+                patch("plc_discovery.discovery.read_arp_cache", return_value={}):
+            # Only one IP responds (one protocol)
             async def probe_side_effect(ip, mac):
                 if ip == "192.168.1.10":
-                    return plc_info
-                return None
+                    return [plc_info]
+                return []
             
             mock_probe.side_effect = probe_side_effect
             results = await discovery.discover_ip_range("192.168.1.10-11")

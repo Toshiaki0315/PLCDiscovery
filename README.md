@@ -46,7 +46,8 @@ plc_scanner.bat --mode range --target 192.168.1.10 --device D --range 0-99
 - macOS / Linux の `start_gui.sh` は、Tkinter を含む Python を自動で探して使います（PATH 上の `python3` のほか、Homebrew・python.org の既定の場所も確認）。既存の `.venv` に Tkinter がなければ、その Python で作り直します。見つからない場合は対処方法を表示します（macOS: `brew install python-tk`、Ubuntu: `sudo apt install python3-tk`）
 - 任意パッケージの `netifaces`（サブネットの自動判定）は、Windows + Python 3.10 以降では C++ ビルドツールがないと入りません。入らない場合もサブネットを /24 とみなして動作します
 - やり直したいときは `.venv` フォルダーを削除してから再実行してください
-- シミュレータは `127.0.0.1` で待ち受けます（詳細は [simulators/README.md](simulators/README.md)）。ポートは SLMP 5001 / Modbus 1502 / EtherNet/IP 44818 / S7 1102 / FINS 9600 です
+- シミュレータは `127.0.0.1` で待ち受けます（詳細は [simulators/README.md](simulators/README.md)）。ポートは SLMP 5001 / Modbus 1502 / EtherNet/IP 44818 / S7 1102 / FINS 9600 です。探索で見つけるには、IP範囲に `127.0.0.1` を指定します
+- 探索結果は、同じIPアドレスでも応答したプロトコルごとに1行ずつ表示します（複数プロトコル対応のPLCも同様）
 
 ## インストール
 
