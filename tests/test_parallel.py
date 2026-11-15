@@ -29,9 +29,10 @@ STATUS_ERROR = StatusCode.NG_ILLEGAL_ADDR
 class MockCollector:
     """Mock collector with proper async context manager"""
     
-    def __init__(self, data_points, denied_addresses=None):
+    def __init__(self, data_points, denied_addresses=None, connected=True):
         self.data_points = data_points
         self._denied_addresses = denied_addresses or set()
+        self.is_connected = connected
     
     async def __aenter__(self):
         return self
@@ -149,7 +150,23 @@ class TestParallelPLCScanner:
         assert "192.168.1.10" in results
         assert results["192.168.1.10"].success is True
         assert len(results["192.168.1.10"].data_points) == 1
-    
+
+    @pytest.mark.asyncio
+    async def test_connection_failure_is_not_success(self):
+        """A PLC that cannot be connected must be reported as failed"""
+        config = NetworkConfig(max_concurrent=1)
+        plc = PLCInfo(ip_address="192.168.1.10", protocol=Protocol.SLMP, port=5001)
+
+        with patch('plc_discovery.parallel.PLCDataCollector') as mock_collector_class:
+            mock_collector_class.return_value = MockCollector([], connected=False)
+
+            scanner = ParallelPLCScanner(config)
+            results = await scanner.scan_multiple_plcs([plc])
+
+        result = results["192.168.1.10"]
+        assert result.success is False
+        assert "Failed to connect" in result.error_message
+
     @pytest.mark.asyncio
     async def test_scan_multiple_plcs_parallel(self):
         """Test scanning multiple PLCs in parallel"""

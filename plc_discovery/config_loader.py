@@ -107,6 +107,9 @@ class ConfigLoader:
     def __init__(self, config_path: Optional[str] = None):
         self.config_path = config_path
         self.config: Dict[str, Any] = {}
+        # Settings exactly as written in the file (without defaults), used to
+        # tell an explicit setting apart from a default value
+        self._file_config: Dict[str, Any] = {}
         self._load_defaults()
     
     def _load_defaults(self):
@@ -164,6 +167,7 @@ class ConfigLoader:
         """Recursively merge file config with defaults"""
         if not file_config:
             return
+        self._file_config = file_config
         
         def merge_dict(base: Dict, override: Dict) -> Dict:
             result = base.copy()
@@ -175,6 +179,24 @@ class ConfigLoader:
             return result
         
         self.config = merge_dict(self.config, file_config)
+    
+    def is_set(self, *keys: str) -> bool:
+        """
+        Check whether a setting was explicitly written in the config file.
+        
+        Example:
+            loader.is_set("scan", "mode")
+        """
+        node: Any = self._file_config
+        for key in keys:
+            if not isinstance(node, dict) or key not in node:
+                return False
+            node = node[key]
+        return node is not None
+    
+    def get_scan_interval(self) -> float:
+        """Get periodic scan interval in seconds (0 = single scan)"""
+        return float(self.config.get("scan", {}).get("interval_seconds", 0) or 0)
     
     def get_network_config(self) -> NetworkConfig:
         """Get NetworkConfig from loaded configuration"""

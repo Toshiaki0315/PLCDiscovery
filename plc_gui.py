@@ -62,10 +62,10 @@ STATUS_LABELS = {
 }
 
 BYTE_ORDER_LABELS = {
-    "little": "リトルエンディアン (標準)",
-    "big": "ビッグエンディアン",
-    "little_swap": "リトル + ワードスワップ",
-    "big_swap": "ビッグ + ワードスワップ",
+    "little": "リトル CDAB（下位ワード先頭・標準）",
+    "big": "ビッグ ABCD（上位ワード先頭）",
+    "little_swap": "リトル + バイトスワップ DCBA",
+    "big_swap": "ビッグ + バイトスワップ BADC",
 }
 
 
@@ -656,10 +656,13 @@ class PLCScannerApp:
         collector.set_progress_callback(self._progress_cb)
         if not await collector.connect():
             raise RuntimeError(f"{ip}:{plc.port} ({plc.protocol.name}) に接続できませんでした。")
+        exported_denied: set = set()
+        loop = asyncio.get_running_loop()
         try:
             iteration = 0
             while True:
                 iteration += 1
+                started = loop.time()
                 if mode == "full":
                     points = await collector.collect_full_scan()
                 else:
@@ -672,14 +675,18 @@ class PLCScannerApp:
                     points = apply_data_type_conversion(points, data_type, byte_order, None)
 
                 path = exporter.export_plc_data(points, ip) if points else None
-                denied = collector.get_denied_addresses()
-                denied_path = exporter.export_denied_addresses(denied, ip) if denied else None
+                # Append only addresses not yet logged (avoid duplicates every cycle)
+                new_denied = collector.get_denied_addresses() - exported_denied
+                denied_path = exporter.export_denied_addresses(new_denied, ip) if new_denied else None
+                exported_denied |= new_denied
                 self._post("data", points, collector.get_statistics(), path, denied_path, iteration)
 
                 if not interval:
                     break
-                self._post("status", f"周期実行 {iteration} 回目完了。{interval:g} 秒後に次回実行（停止ボタンで終了）")
-                await asyncio.sleep(interval)
+                # Fixed period: subtract the time spent reading
+                wait = max(0.0, interval - (loop.time() - started))
+                self._post("status", f"周期実行 {iteration} 回目完了。{wait:.1f} 秒後に次回実行（停止ボタンで終了）")
+                await asyncio.sleep(wait)
         finally:
             await collector.disconnect()
 

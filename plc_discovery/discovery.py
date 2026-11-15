@@ -287,7 +287,7 @@ class PLCDiscovery:
         """Query Modbus device for identification"""
         try:
             from pymodbus.client import ModbusTcpClient
-            from pymodbus.mei_message import ReadDeviceInformationRequest
+            from .protocols.modbus import modbus_unit_kwargs
             
             def _query():
                 client = ModbusTcpClient(
@@ -299,11 +299,12 @@ class PLCDiscovery:
                 if client.connect():
                     try:
                         # Try to read device identification (MEI)
-                        request = ReadDeviceInformationRequest(
+                        method = client.read_device_information
+                        response = method(
                             read_code=0x01,  # Basic identification
-                            object_id=0x00
+                            object_id=0x00,
+                            **modbus_unit_kwargs(method, 1)
                         )
-                        response = client.execute(request)
                         
                         if response and not response.isError():
                             info = response.information

@@ -5,6 +5,7 @@ Base Protocol Handler - Abstract interface for PLC communication
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, Tuple
 import asyncio
+import dataclasses
 import logging
 
 from ..config import (
@@ -66,8 +67,13 @@ class BaseProtocolHandler(ABC):
         # the next request so a late response cannot be read as a new one.
         self._needs_reconnect = False
         
-        # Initialize retry handler with exponential backoff
-        self._retry_config = retry_config or PLC_RETRY_CONFIG
+        # Initialize retry handler with exponential backoff.
+        # The first retry waits retry_interval_ms (--retry-interval).
+        self._retry_config = retry_config or dataclasses.replace(
+            PLC_RETRY_CONFIG,
+            initial_delay_ms=self.config.retry_interval_ms,
+            max_delay_ms=max(PLC_RETRY_CONFIG.max_delay_ms, self.config.retry_interval_ms),
+        )
         self._circuit_breaker = None
         if use_circuit_breaker:
             self._circuit_breaker = CircuitBreaker(CircuitBreakerConfig(

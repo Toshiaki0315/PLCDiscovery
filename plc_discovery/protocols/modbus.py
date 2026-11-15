@@ -8,6 +8,7 @@ Supports:
 """
 
 import asyncio
+import inspect
 from typing import List, Optional, Tuple
 import logging
 
@@ -27,6 +28,23 @@ MODBUS_DEVICE_MAP = {
     DeviceType.X: "discrete",    # Discrete Inputs
     DeviceType.Y: "coil",        # Coils
 }
+
+def modbus_unit_kwargs(method, unit_id: int) -> dict:
+    """
+    Keyword argument selecting the unit/device for a pymodbus client call.
+    
+    The name changed across pymodbus 3.x: ``slave=`` (3.0 - 3.9) became
+    ``device_id=`` (3.10+). Pick whichever the installed version accepts.
+    """
+    try:
+        params = inspect.signature(method).parameters
+    except (TypeError, ValueError):
+        params = {}
+    for name in ("device_id", "slave", "unit"):
+        if name in params:
+            return {name: unit_id}
+    return {"device_id": unit_id}
+
 
 # Modbus TCP constants
 MODBUS_PORT = 502
@@ -141,28 +159,32 @@ class ModbusHandler(BaseProtocolHandler):
         try:
             def _read():
                 if modbus_type == "holding":
-                    return self._client.read_holding_registers(
-                        address=start_address,
+                    method = self._client.read_holding_registers
+                    return method(
+                        start_address,
                         count=count,
-                        device_id=self._unit_id
+                        **modbus_unit_kwargs(method, self._unit_id)
                     )
                 elif modbus_type == "input":
-                    return self._client.read_input_registers(
-                        address=start_address,
+                    method = self._client.read_input_registers
+                    return method(
+                        start_address,
                         count=count,
-                        device_id=self._unit_id
+                        **modbus_unit_kwargs(method, self._unit_id)
                     )
                 elif modbus_type == "coil":
-                    return self._client.read_coils(
-                        address=start_address,
+                    method = self._client.read_coils
+                    return method(
+                        start_address,
                         count=count,
-                        device_id=self._unit_id
+                        **modbus_unit_kwargs(method, self._unit_id)
                     )
                 elif modbus_type == "discrete":
-                    return self._client.read_discrete_inputs(
-                        address=start_address,
+                    method = self._client.read_discrete_inputs
+                    return method(
+                        start_address,
                         count=count,
-                        device_id=self._unit_id
+                        **modbus_unit_kwargs(method, self._unit_id)
                     )
                 return None
             
@@ -223,15 +245,14 @@ class ModbusHandler(BaseProtocolHandler):
         try:
             def _read_id():
                 # Try to read device identification (Function code 0x2B)
-                return self._client.read_device_information(
-                    slave=self._unit_id
+                method = self._client.read_device_information
+                return method(
+                    read_code=0x01,  # Basic identification
+                    object_id=0x00,
+                    **modbus_unit_kwargs(method, self._unit_id)
                 )
             
-            loop = asyncio.get_event_loop()
-            result = await asyncio.wait_for(
-                loop.run_in_executor(None, _read_id),
-                timeout=self.config.request_timeout_ms / 1000
-            )
+            result = await self._run_blocking(_read_id)
             
             if result and not result.isError():
                 if hasattr(result, 'information'):

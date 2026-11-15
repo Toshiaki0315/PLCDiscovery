@@ -210,14 +210,14 @@ python plc_scanner.py --mode full --target 192.168.1.10 --no-database
 |------------|------|------------|
 | `--config`, `-c` | 設定ファイルパス (YAML/JSON) | - |
 | `--generate-config` | 設定ファイルテンプレートを生成 | - |
-| `--mode`, `-m` | 動作モード (discover/full/range) | discover |
+| `--mode`, `-m` | 動作モード (discover/full/range)。省略時は設定ファイルの `scan.mode`（明示されている場合のみ） | discover |
 | `--target`, `-t` | 対象PLC IPアドレス（カンマ区切りで複数指定可） | - |
 | `--ip-range`, `-r` | スキャン対象IPレンジ | - |
 | `--protocol`, `-p` | プロトコル指定 (slmp/eip/modbus/s7) | 自動検出 |
 | `--port` | ポート番号 | プロトコルデフォルト |
 | `--device`, `-d` | デバイス種別 (D/M/W/R等) | D |
 | `--range` | アドレス範囲 (例: 0-1000) | 0-999 |
-| `--interval`, `-i` | スキャン間隔（秒） | 0 (単発) |
+| `--interval`, `-i` | 範囲指定モードの周期（秒）。省略時は設定ファイルの `scan.interval_seconds` | 0 (単発) |
 | `--packet-interval` | パケット間隔(ms) | 50 |
 | `--retry-interval` | リトライ間隔(ms) | 200 |
 | `--request-timeout` | タイムアウト(ms) | 5000 |
@@ -237,7 +237,7 @@ python plc_scanner.py --mode full --target 192.168.1.10 --no-database
 | `--quiet`, `-q` | 進捗出力抑制 | - |
 | `--no-rich` | リッチな出力を無効化 | - |
 | `--data-type` | データ型変換 (FLOAT, DWORD等) | - |
-| `--byte-order` | バイトオーダー (little/big/little_swap/big_swap) | little |
+| `--byte-order` | 複数ワード値の並び。little=CDAB（下位ワード先頭）、big=ABCD、little_swap=DCBA、big_swap=BADC（ワード内バイト入替） | little |
 | `--type-mapping` | 型マッピングファイルパス | - |
 
 ## 設定ファイル

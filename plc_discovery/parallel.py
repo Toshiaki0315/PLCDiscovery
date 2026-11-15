@@ -172,12 +172,19 @@ class ParallelPLCScanner:
         
         try:
             async with PLCDataCollector(plc, self.config) as collector:
+                connected = collector.is_connected
                 self._audit.log_connect(
                     plc.ip_address,
                     plc.protocol.name if plc.protocol else "UNKNOWN",
                     plc.port or 0,
-                    True
+                    connected
                 )
+                
+                if not connected:
+                    raise ConnectionError(
+                        f"Failed to connect to {plc.ip_address}:{plc.port} "
+                        f"({plc.protocol.name if plc.protocol else 'UNKNOWN'})"
+                    )
                 
                 if mode == ScanMode.FULL:
                     data_points = await collector.collect_full_scan()

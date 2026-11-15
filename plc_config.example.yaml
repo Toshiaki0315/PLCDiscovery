@@ -138,7 +138,9 @@ data_types:
   # Default data type for addresses without specific mapping
   default_type: WORD
   
-  # Default byte order: little, big, little_swap, big_swap
+  # Default byte order for multi-word values (words AB=high, CD=low):
+  #   little=CDAB (low word first), big=ABCD,
+  #   little_swap=DCBA, big_swap=BADC (bytes swapped inside each word)
   default_byte_order: little
   
   # Address-specific type mappings

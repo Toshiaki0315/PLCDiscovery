@@ -41,13 +41,24 @@ class DataType(Enum):
 
 
 class ByteOrder(Enum):
-    """Byte order for multi-byte values"""
-    LITTLE_ENDIAN = "little"    # Intel byte order (most PLCs)
-    BIG_ENDIAN = "big"          # Motorola byte order
+    """
+    Order of multi-word values.
     
-    # Word swap variants (common in PLCs)
-    LITTLE_ENDIAN_WORD_SWAP = "little_swap"  # Swap word order
-    BIG_ENDIAN_WORD_SWAP = "big_swap"        # Swap word order
+    Each PLC register is a 16-bit word ``AB`` (A = high byte, B = low byte).
+    For a 32-bit value made of words ``AB`` (high) and ``CD`` (low):
+    
+        LITTLE_ENDIAN            "little"       CDAB  low word first (Mitsubishi, Keyence, Omron)
+        BIG_ENDIAN               "big"          ABCD  high word first (Modbus standard, Siemens)
+        LITTLE_ENDIAN_WORD_SWAP  "little_swap"  DCBA  low word first, bytes swapped in each word
+        BIG_ENDIAN_WORD_SWAP     "big_swap"     BADC  high word first, bytes swapped in each word
+    
+    The "_swap" names are kept for configuration compatibility; they swap
+    the two bytes inside every word.
+    """
+    LITTLE_ENDIAN = "little"
+    BIG_ENDIAN = "big"
+    LITTLE_ENDIAN_WORD_SWAP = "little_swap"
+    BIG_ENDIAN_WORD_SWAP = "big_swap"
 
 
 @dataclass
@@ -175,33 +186,40 @@ class DataTypeConverter:
             return None
     
     @classmethod
+    def _is_little(cls, byte_order: ByteOrder) -> bool:
+        """True when the low word comes first"""
+        return byte_order in (ByteOrder.LITTLE_ENDIAN, ByteOrder.LITTLE_ENDIAN_WORD_SWAP)
+    
+    @classmethod
+    def _is_byte_swapped(cls, byte_order: ByteOrder) -> bool:
+        """True when the two bytes inside each word are swapped"""
+        return byte_order in (ByteOrder.LITTLE_ENDIAN_WORD_SWAP, ByteOrder.BIG_ENDIAN_WORD_SWAP)
+    
+    @classmethod
+    def _swap_word_bytes(cls, word: int) -> int:
+        return ((word & 0xFF) << 8) | ((word >> 8) & 0xFF)
+    
+    @classmethod
     def _words_to_bytes(
         cls,
         words: List[int],
         byte_order: ByteOrder
     ) -> bytes:
-        """Convert word list to bytes"""
+        """
+        Convert word list to bytes in the struct format matching byte_order.
+        
+        The result is unpacked with '<' for little orders and '>' for big
+        orders by the _bytes_to_* helpers.
+        """
         result = bytearray()
+        little = cls._is_little(byte_order)
+        swapped = cls._is_byte_swapped(byte_order)
         
-        # Handle word swap
-        if byte_order in (ByteOrder.LITTLE_ENDIAN_WORD_SWAP, 
-                          ByteOrder.BIG_ENDIAN_WORD_SWAP):
-            # Swap word pairs
-            swapped = []
-            for i in range(0, len(words), 2):
-                if i + 1 < len(words):
-                    swapped.extend([words[i + 1], words[i]])
-                else:
-                    swapped.append(words[i])
-            words = swapped
-        
-        # Convert words to bytes
         for word in words:
-            if byte_order in (ByteOrder.LITTLE_ENDIAN, 
-                              ByteOrder.LITTLE_ENDIAN_WORD_SWAP):
-                result.extend(struct.pack('<H', word & 0xFFFF))
-            else:
-                result.extend(struct.pack('>H', word & 0xFFFF))
+            word &= 0xFFFF
+            if swapped:
+                word = cls._swap_word_bytes(word)
+            result.extend(struct.pack('<H' if little else '>H', word))
         
         return bytes(result)
     
@@ -306,12 +324,15 @@ class DataTypeConverter:
         if len(words) < 2:
             return None
         
-        # Combine words based on byte order
-        if byte_order in (ByteOrder.LITTLE_ENDIAN, 
-                          ByteOrder.LITTLE_ENDIAN_WORD_SWAP):
-            bcd_value = words[0] | (words[1] << 16)
+        w0, w1 = words[0] & 0xFFFF, words[1] & 0xFFFF
+        if cls._is_byte_swapped(byte_order):
+            w0, w1 = cls._swap_word_bytes(w0), cls._swap_word_bytes(w1)
+        
+        # Combine words based on word order
+        if cls._is_little(byte_order):
+            bcd_value = w0 | (w1 << 16)
         else:
-            bcd_value = words[1] | (words[0] << 16)
+            bcd_value = w1 | (w0 << 16)
         
         result = 0
         multiplier = 1

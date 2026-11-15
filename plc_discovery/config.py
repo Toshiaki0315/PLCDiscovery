@@ -152,7 +152,6 @@ SAFE_READ_WORDS: Dict[Protocol, int] = {
 # Manufacturer OUI prefixes (MAC address first 3 bytes)
 MANUFACTURER_OUI: Dict[str, str] = {
     "00:00:1C": "三菱電機",
-    "00:50:56": "三菱電機",
     "00:0D:7C": "キーエンス",
     "00:0A:DC": "オムロン",
     "00:1B:1B": "シーメンス",

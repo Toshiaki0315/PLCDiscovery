@@ -66,6 +66,11 @@ class PLCDataCollector:
         else:
             logger.info(f"{message} ({current}/{total})" if total else message)
     
+    @property
+    def is_connected(self) -> bool:
+        """True when a protocol handler is connected to the PLC"""
+        return self._handler is not None and self._handler.is_connected
+    
     async def connect(self) -> bool:
         """
         Connect to PLC using appropriate protocol handler.
@@ -215,30 +220,31 @@ class PLCDataCollector:
         """
         all_results = []
         iteration = 0
-        start_time = asyncio.get_event_loop().time()
+        loop = asyncio.get_running_loop()
+        start_time = loop.time()
         
         while True:
             iteration += 1
-            
-            # Check termination conditions
-            if max_iterations and iteration > max_iterations:
-                break
-            
-            if duration_seconds:
-                elapsed = asyncio.get_event_loop().time() - start_time
-                if elapsed >= duration_seconds:
-                    break
-            
             self._report_progress(f"Iteration {iteration}")
             
-            # Collect data
+            # Collect data (keep only this iteration in _collected_data)
+            self.clear_data()
             data_points = await self.collect_range(
                 device_type, start_address, end_address
             )
             all_results.append(data_points)
             
-            # Wait for next interval
-            await asyncio.sleep(interval_seconds)
+            # Check termination conditions before waiting
+            if max_iterations and iteration >= max_iterations:
+                break
+            
+            # Fixed-rate schedule: the next iteration starts interval_seconds
+            # after the previous one started, regardless of read duration
+            next_start = start_time + iteration * interval_seconds
+            if duration_seconds and next_start - start_time >= duration_seconds:
+                break
+            
+            await asyncio.sleep(max(0.0, next_start - loop.time()))
         
         return all_results
     

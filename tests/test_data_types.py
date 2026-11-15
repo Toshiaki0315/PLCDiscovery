@@ -177,13 +177,16 @@ class TestDataTypeConverter:
         assert result == 0xFFFFFFFFFFFFFFFF
     
     def test_word_swap_byte_order(self):
-        """Test word-swapped byte orders"""
-        # 0x12345678 with word swap
-        words = [0x1234, 0x5678]  # Swapped words
-        result = DataTypeConverter.convert(
-            words, DataType.DWORD, ByteOrder.LITTLE_ENDIAN_WORD_SWAP
-        )
-        assert result == 0x12345678
+        """The four byte orders give four distinct layouts (CDAB/ABCD/DCBA/BADC)"""
+        words = [0x1122, 0x3344]  # AB, CD
+        expected = {
+            ByteOrder.LITTLE_ENDIAN: 0x33441122,            # CDAB
+            ByteOrder.BIG_ENDIAN: 0x11223344,               # ABCD
+            ByteOrder.LITTLE_ENDIAN_WORD_SWAP: 0x44332211,  # DCBA
+            ByteOrder.BIG_ENDIAN_WORD_SWAP: 0x22114433,     # BADC
+        }
+        for byte_order, value in expected.items():
+            assert DataTypeConverter.convert(words, DataType.DWORD, byte_order) == value
     
     def test_empty_words(self):
         """Test conversion with empty word list"""
