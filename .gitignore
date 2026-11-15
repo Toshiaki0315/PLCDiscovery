@@ -27,3 +27,6 @@ dist/
 
 # Virtual environment created by the launchers (start_gui.*, plc_scanner.*)
 .venv/
+
+# Scan output written by plc_scanner.py / the GUI (default --output-dir)
+plc_scan_results/
