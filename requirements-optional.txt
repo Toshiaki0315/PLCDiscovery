@@ -1,0 +1,7 @@
+# Optional dependencies (the tool works without them)
+#
+# netifaces: exact netmask of the local network for same-segment discovery.
+#   Without it, a /24 subnet is assumed.
+#   Windows + Python 3.10 or later: no prebuilt wheel, needs
+#   "Microsoft C++ Build Tools" to install.
+netifaces>=0.11.0

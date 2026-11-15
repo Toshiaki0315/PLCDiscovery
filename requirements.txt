@@ -16,8 +16,9 @@ python-snap7>=1.4.0
 # Network Discovery (ARP/Low-layer)
 scapy>=2.5.0
 
-# Utility Libraries
-netifaces>=0.11.0
+# netifaces (subnet detection) is optional: see requirements-optional.txt.
+# It has no Windows wheels for Python 3.10+, so installing it there needs a
+# C++ compiler; without it, discovery assumes a /24 subnet.
 
 # Configuration
 PyYAML>=6.0

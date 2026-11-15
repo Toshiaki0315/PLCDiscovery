@@ -25,6 +25,27 @@
 - Python 3.10以上
 - 対応OS: Windows, macOS, Linux
 
+## かんたん起動（起動スクリプト）
+
+Python 3.10 以上をインストールしてあれば、起動スクリプトをダブルクリック（または実行）するだけで使えます。
+初回のみ、プロジェクト内に仮想環境（`.venv`）を作り、必要なパッケージを自動でインストールします（インターネット接続が必要です）。
+2回目以降は `requirements.txt` が変わったときだけ再インストールします。
+
+| 用途 | Windows | macOS / Linux |
+|------|---------|---------------|
+| GUI を起動 | `start_gui.bat` をダブルクリック | `./start_gui.sh`（macOS は `start_gui.command` をダブルクリックでも可） |
+| コマンドライン版 | `plc_scanner.bat <オプション>` | `./plc_scanner.sh <オプション>` |
+
+```bat
+plc_scanner.bat --mode range --target 192.168.1.10 --device D --range 0-99
+```
+
+- コマンドライン版を引数なしで実行（ダブルクリック）するとヘルプを表示します。誤ってネットワーク探索を始めないためです
+- GUI には Tkinter が必要です。Windows の python.org 版には含まれています
+- macOS / Linux の `start_gui.sh` は、Tkinter を含む Python を自動で探して使います（PATH 上の `python3` のほか、Homebrew・python.org の既定の場所も確認）。既存の `.venv` に Tkinter がなければ、その Python で作り直します。見つからない場合は対処方法を表示します（macOS: `brew install python-tk`、Ubuntu: `sudo apt install python3-tk`）
+- 任意パッケージの `netifaces`（サブネットの自動判定）は、Windows + Python 3.10 以降では C++ ビルドツールがないと入りません。入らない場合もサブネットを /24 とみなして動作します
+- やり直したいときは `.venv` フォルダーを削除してから再実行してください
+
 ## インストール
 
 ```bash
@@ -34,6 +55,9 @@ cd PLCDiscovery
 
 # 依存ライブラリのインストール
 pip install -r requirements.txt
+
+# 任意: サブネットの自動判定（Windows + Python 3.10 以降は C++ ビルドツールが必要）
+pip install -r requirements-optional.txt
 
 # 開発用（テスト実行時）
 pip install -r requirements-dev.txt
@@ -46,6 +70,7 @@ pip install -r requirements-dev.txt
 | ライブラリ | 機能 | 未インストール時の動作 |
 |-----------|------|----------------------|
 | `scapy` | ARP探索によるMAC取得 | ARP探索が無効化（IP探索は動作） |
+| `netifaces` | 同一セグメント探索のサブネット自動判定 | サブネットを /24 とみなして探索 |
 | `aiohttp` | 非同期HTTP通知 | urllibで同期通知に代替 |
 | `weasyprint` または `pdfkit` | PDFレポート生成 | HTMLレポートのみ利用可能 |
 | `rich` | リッチな進捗表示 | シンプルなテキスト表示に代替 |

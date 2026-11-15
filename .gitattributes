@@ -1,0 +1,8 @@
+# Windows batch files: CRLF and Shift_JIS (CP932) in the working tree so that
+# cmd.exe on Japanese Windows shows the messages correctly; stored as UTF-8
+# in the repository.
+*.bat text eol=crlf working-tree-encoding=CP932
+
+# Shell scripts must keep LF line endings
+*.sh text eol=lf
+*.command text eol=lf

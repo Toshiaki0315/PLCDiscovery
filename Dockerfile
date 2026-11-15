@@ -23,8 +23,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # ---------------------------------------------------
 FROM base as builder
 
-COPY requirements.txt .
-RUN pip install --user -r requirements.txt
+COPY requirements.txt requirements-optional.txt ./
+RUN pip install --user -r requirements.txt -r requirements-optional.txt
 
 # ---------------------------------------------------
 # Production stage

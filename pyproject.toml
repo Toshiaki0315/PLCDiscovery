@@ -33,13 +33,16 @@ dependencies = [
     "pymodbus>=3.0.0",
     "python-snap7>=1.4.0",
     "scapy>=2.5.0",
-    "netifaces>=0.11.0",
     "PyYAML>=6.0",           # YAML config and type mapping files
 ]
 
 [project.optional-dependencies]
 rich = [
     "rich>=13.0.0",          # optional rich console output (plain output without it)
+]
+net = [
+    "netifaces>=0.11.0",     # exact subnet for discovery (/24 assumed without it);
+                             # no Windows wheels for Python 3.10+
 ]
 dev = [
     "pytest>=7.4.0",

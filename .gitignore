@@ -24,3 +24,6 @@ htmlcov/
 build/
 dist/
 *.egg-info/
+
+# Virtual environment created by the launchers (start_gui.*, plc_scanner.*)
+.venv/
