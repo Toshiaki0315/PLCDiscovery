@@ -216,6 +216,9 @@ class SessionCache:
         """Check if an address is known to be inaccessible"""
         return address in self._denied_addresses
     
+    def __len__(self) -> int:
+        return len(self._denied_addresses)
+    
     def get_all_denied(self) -> set:
         """Get all denied addresses"""
         return self._denied_addresses.copy()

@@ -16,6 +16,7 @@ import logging
 from .config import (
     Protocol, PROTOCOL_PORTS, PLCInfo, NetworkConfig
 )
+from .probes import verify_protocol
 from .utils import (
     get_network_info, get_subnet_hosts, parse_ip_range,
     is_port_open, get_manufacturer_from_mac, format_mac_address,
@@ -180,9 +181,22 @@ class PLCDiscovery:
                     lambda p=port: is_port_open(ip, p, self.config.discovery_timeout_ms / 1000)
                 )
                 
-                if is_open:
+                if not is_open:
+                    continue
+                
+                # An open port is not proof of a PLC (e.g. NAS on 5001):
+                # require a valid protocol reply
+                verified = await asyncio.get_running_loop().run_in_executor(
+                    None,
+                    lambda p=port, proto=protocol: verify_protocol(
+                        ip, p, proto, self.config.discovery_timeout_ms / 1000
+                    )
+                )
+                if verified:
                     detected_protocols.append((protocol, port))
-                    logger.debug(f"Open port: {ip}:{port} ({protocol.name})")
+                    logger.debug(f"Verified {protocol.name} on {ip}:{port}")
+                else:
+                    logger.debug(f"Open port {ip}:{port} did not answer as {protocol.name}")
             
             except Exception as e:
                 logger.debug(f"Port scan error {ip}:{port}: {e}")
@@ -289,7 +303,8 @@ class PLCDiscovery:
                 client = ModbusTcpClient(
                     plc_info.ip_address, 
                     port=plc_info.port or 502,
-                    timeout=self.config.request_timeout_ms / 1000
+                    timeout=self.config.request_timeout_ms / 1000,
+                    retries=0,
                 )
                 
                 if client.connect():

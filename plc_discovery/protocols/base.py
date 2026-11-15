@@ -166,6 +166,11 @@ class BaseProtocolHandler(ABC):
                 start += 1
                 continue
             
+            # End the chunk before the next known-bad address so a cached
+            # denial in the middle of a chunk does not fail the whole read
+            # (and trigger a new binary search) on every scan
+            chunk_size = self._clip_before_denied(device_type, start, chunk_size)
+            
             # Rate limiting
             await self._rate_limiter.wait()
             
@@ -192,6 +197,15 @@ class BaseProtocolHandler(ABC):
     # ------------------------------------------------------------------
     # Read helpers
     # ------------------------------------------------------------------
+    
+    def _clip_before_denied(self, device_type: DeviceType, start: int, chunk_size: int) -> int:
+        """Shorten a chunk so it stops before the first cached denied address"""
+        if not len(self._session_cache):
+            return chunk_size
+        for offset in range(1, chunk_size):
+            if self._session_cache.is_denied(f"{device_type.value}{start + offset}"):
+                return offset
+        return chunk_size
     
     def _ok_points(
         self,

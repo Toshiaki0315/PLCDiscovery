@@ -177,7 +177,10 @@ class TestTypeMappingConversion:
         assert result[0].address == "D0"
         assert result[0].converted_value == 1.0
         assert result[0].raw_words == [0x0000, 0x3F80]
-        assert result[1].address == "D2" and result[1].converted_value == 7  # default WORD
+        # second word kept with its raw value
+        assert result[1].address == "D1" and result[1].value == 0x3F80
+        assert result[1].converted_value is None
+        assert result[2].address == "D2" and result[2].converted_value == 7  # default WORD
 
     def test_failed_word_not_combined(self):
         points = [ok("D0", 0x0000), DataPoint(address="D1", status=StatusCode.NG_TIMEOUT)]
@@ -235,14 +238,14 @@ async def test_interrupt_finalizes_and_denied_logged_once():
     plc = PLCInfo("127.0.0.1", protocol=Protocol.SLMP, port=5001)
 
     with patch.object(plc_scanner, "PLCDataCollector", lambda *a: collector):
-        task = asyncio.ensure_future(plc_scanner.run_single_scan(
-            plc, NetworkConfig(), exporter, SilentDisplay(), ScanMode.RANGE,
+        task = asyncio.ensure_future(plc_scanner.run_periodic_scan(
+            [plc], NetworkConfig(), exporter, SilentDisplay(),
             [DeviceRange(DeviceType.D, 0, 9)], interval=0.01
         ))
         while collector.collect_calls < 3:
             await asyncio.sleep(0.005)
         task.cancel()  # what asyncio.run does on Ctrl+C
-        outcome = await task
+        (outcome,) = await task
 
     assert outcome.interrupted is True
     assert outcome.success is True

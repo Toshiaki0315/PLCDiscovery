@@ -34,8 +34,9 @@ class TestPLCDiscovery:
         callback.assert_called_once_with("Test message", 1, 10)
     
     @pytest.mark.asyncio
+    @patch('plc_discovery.discovery.verify_protocol', return_value=True)
     @patch('plc_discovery.discovery.is_port_open')
-    async def test_probe_host_slmp(self, mock_port_open, network_config):
+    async def test_probe_host_slmp(self, mock_port_open, mock_verify, network_config):
         """Test probing host with SLMP port open"""
         # Only SLMP port is open
         def port_check(ip, port, timeout):
@@ -70,8 +71,9 @@ class TestPLCDiscovery:
         assert result is None
     
     @pytest.mark.asyncio
+    @patch('plc_discovery.discovery.verify_protocol', return_value=True)
     @patch('plc_discovery.discovery.is_port_open')
-    async def test_probe_host_with_mac(self, mock_port_open, network_config):
+    async def test_probe_host_with_mac(self, mock_port_open, mock_verify, network_config):
         """Test probing host with MAC address"""
         mock_port_open.side_effect = lambda ip, port, timeout: port == 5001
         

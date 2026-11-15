@@ -30,6 +30,7 @@ License: MIT
 
 import argparse
 import asyncio
+import contextlib
 import dataclasses
 import json
 import logging
@@ -456,8 +457,10 @@ def apply_data_type_conversion(
     
     Multi-word types (DWORD, FLOAT, DOUBLE, ...) combine the value with the
     following points, but only when they are consecutive addresses that were
-    read successfully. The combined value is stored on the first address and
-    the consumed words are kept in raw_words.
+    read successfully. The combined value is stored on the first address
+    (with all words in raw_words). The following addresses stay in the output
+    with their own raw value/hex and a display_value pointing to the first
+    address, so no raw data is lost from the CSV.
     
     Args:
         data_points: List of data points to convert
@@ -524,6 +527,13 @@ def apply_data_type_conversion(
             display_value=DataTypeConverter.to_string(converted, dt),
             raw_words=words if word_count > 1 else None,
         ))
+        # Keep the remaining words of a multi-word value as their own rows
+        for part in group[1:]:
+            result.append(dataclasses.replace(
+                part,
+                data_type=dt.value,
+                display_value=f"(part of {dp.address})",
+            ))
         i += word_count
     
     return result
@@ -688,6 +698,64 @@ async def _collect_ranges(
     return points
 
 
+class _ResultWriter:
+    """Writes one PLC's data / newly denied addresses to CSV and the database"""
+    
+    def __init__(self, ip: str, exporter: CSVExporter, display: RichProgressDisplay,
+                 db_exporter: Optional[DatabaseExporter] = None):
+        self.ip = ip
+        self.exporter = exporter
+        self.display = display
+        self.db_exporter = db_exporter
+        self._exported_denied: Set[str] = set()
+    
+    def export_points(self, points: List[DataPoint]) -> Optional[str]:
+        if not points:
+            return None
+        path = self.exporter.export_plc_data(points, self.ip)
+        if self.db_exporter and self.db_exporter.is_enabled:
+            db_count = self.db_exporter.export_plc_data(points, self.ip)
+            self.display.print_info(f"Saved {db_count} records to database")
+        return path
+    
+    def export_new_denied(self, denied: Set[str]) -> Optional[str]:
+        """Append only addresses not yet written in this session"""
+        new = set(denied) - self._exported_denied
+        if not new:
+            return None
+        self._exported_denied.update(new)
+        path = self.exporter.export_denied_addresses(new, self.ip)
+        if self.db_exporter and self.db_exporter.is_enabled:
+            self.db_exporter.export_denied_addresses(new, self.ip)
+        return path
+
+
+def _range_labels(device_ranges: Optional[List[DeviceRange]]) -> List[str]:
+    return [
+        f"{r.device_type.value}{r.start_address}-{r.device_type.value}{r.end_address}"
+        for r in (device_ranges or [])
+    ] or ["ALL"]
+
+
+def _protocol_name(plc_info: PLCInfo) -> str:
+    return plc_info.protocol.name if plc_info.protocol else "UNKNOWN"
+
+
+def _check_connected(collector: PLCDataCollector, plc_info: PLCInfo,
+                     outcome: ScanOutcome, display: RichProgressDisplay) -> bool:
+    """Log the connection result; record an error in outcome on failure"""
+    audit = get_audit_logger()
+    connected = collector.is_connected
+    audit.log_connect(plc_info.ip_address, _protocol_name(plc_info), plc_info.port or 0, connected)
+    if not connected:
+        outcome.error = (
+            f"Failed to connect to {plc_info.ip_address}:{plc_info.port} ({_protocol_name(plc_info)})"
+        )
+        display.print_error(outcome.error)
+        audit.log_error(outcome.error, {"plc_ip": plc_info.ip_address})
+    return connected
+
+
 async def run_single_scan(
     plc_info: PLCInfo,
     config: NetworkConfig,
@@ -695,128 +763,59 @@ async def run_single_scan(
     display: RichProgressDisplay,
     mode: ScanMode,
     device_ranges: Optional[List[DeviceRange]] = None,
-    interval: float = 0,
     data_type: Optional[DataType] = None,
     byte_order: ByteOrder = ByteOrder.LITTLE_ENDIAN,
     type_manager: Optional[DataTypeManager] = None,
     db_exporter: DatabaseExporter = None
 ) -> ScanOutcome:
     """
-    Run scan on a single PLC.
+    Run a single (non-periodic) scan on one PLC.
     
     Connection failures are reported in the returned outcome instead of
     raising, so remaining targets are still scanned.
     """
     audit = get_audit_logger()
     ip = plc_info.ip_address
-    protocol_name = plc_info.protocol.name if plc_info.protocol else "UNKNOWN"
     outcome = ScanOutcome(ip)
-    device_ranges = device_ranges or []
+    writer = _ResultWriter(ip, exporter, display, db_exporter)
+    labels = _range_labels(device_ranges)
+    loop = asyncio.get_running_loop()
     
     display.print_info(f"Connecting to {ip}...")
-    
     if data_type:
         display.print_info(f"Data type conversion: {data_type.value} ({byte_order.value})")
     
-    def export_points(points: List[DataPoint]) -> Optional[str]:
-        if not points:
-            return None
-        path = exporter.export_plc_data(points, ip)
-        if db_exporter and db_exporter.is_enabled:
-            db_count = db_exporter.export_plc_data(points, ip)
-            display.print_info(f"Saved {db_count} records to database")
-        return path
-    
-    exported_denied: Set[str] = set()
-    
-    def export_new_denied(denied: Set[str]) -> Optional[str]:
-        """Append only addresses not yet written in this session"""
-        new = set(denied) - exported_denied
-        if not new:
-            return None
-        exported_denied.update(new)
-        path = exporter.export_denied_addresses(new, ip)
-        if db_exporter and db_exporter.is_enabled:
-            db_exporter.export_denied_addresses(new, ip)
-        return path
-    
-    loop = asyncio.get_running_loop()
-    stats: Dict[str, Any] = {}
-    
     try:
         async with PLCDataCollector(plc_info, config) as collector:
-            connected = collector.is_connected
-            audit.log_connect(ip, protocol_name, plc_info.port or 0, connected)
-            
-            if not connected:
-                outcome.error = f"Failed to connect to {ip}:{plc_info.port} ({protocol_name})"
-                display.print_error(outcome.error)
-                audit.log_error(outcome.error, {"plc_ip": ip})
+            if not _check_connected(collector, plc_info, outcome, display):
                 return outcome
             
-            range_labels = [
-                f"{r.device_type.value}{r.start_address}-{r.device_type.value}{r.end_address}"
-                for r in device_ranges
-            ] or ["ALL"]
-            audit.log_scan_start(ip, mode.value, range_labels)
+            audit.log_scan_start(ip, mode.value, labels)
             scan_started = loop.time()
             
             if mode == ScanMode.FULL:
                 display.print_info("Running full scan...")
                 outcome.data_points = await collector.collect_full_scan()
-            elif interval > 0:
-                # Continuous mode: export every iteration, stop on Ctrl+C
-                display.print_info(f"Scanning {', '.join(range_labels)} every {interval:g}s")
-                try:
-                    iteration = 0
-                    while True:
-                        iteration += 1
-                        started = loop.time()
-                        display.print_info(f"Iteration {iteration}")
-                        
-                        collector.clear_data()
-                        points = await _collect_ranges(collector, device_ranges)
-                        points = apply_data_type_conversion(
-                            points, data_type, byte_order, type_manager
-                        )
-                        outcome.data_points = points
-                        export_points(points)
-                        export_new_denied(collector.get_denied_addresses())
-                        
-                        wait = max(0.0, interval - (loop.time() - started))
-                        display.print_info(f"Waiting {wait:.1f} seconds...")
-                        await asyncio.sleep(wait)
-                except (asyncio.CancelledError, KeyboardInterrupt):
-                    display.print_warning("Scan interrupted by user")
-                    outcome.interrupted = True
-                    _uncancel_current_task()
             else:
-                display.print_info(f"Scanning {', '.join(range_labels)}")
-                outcome.data_points = await _collect_ranges(collector, device_ranges)
+                display.print_info(f"Scanning {', '.join(labels)}")
+                outcome.data_points = await _collect_ranges(collector, device_ranges or [])
             
             outcome.denied_addresses = collector.get_denied_addresses()
             stats = collector.get_statistics()
-            
             audit.log_scan_complete(
-                ip,
-                stats["total_points"],
-                stats["success_count"],
-                stats["error_count"],
+                ip, stats["total_points"], stats["success_count"], stats["error_count"],
                 (loop.time() - scan_started) * 1000
             )
-    
     except Exception as e:
         audit.log_error(str(e), {"plc_ip": ip})
         raise
     
-    if interval <= 0 or mode == ScanMode.FULL:
-        # Single scan: convert and export once
-        outcome.data_points = apply_data_type_conversion(
-            outcome.data_points, data_type, byte_order, type_manager
-        )
-        filepath = export_points(outcome.data_points)
-        if filepath:
-            display.print_success(f"Data saved to: {filepath}")
+    outcome.data_points = apply_data_type_conversion(
+        outcome.data_points, data_type, byte_order, type_manager
+    )
+    filepath = writer.export_points(outcome.data_points)
+    if filepath:
+        display.print_success(f"Data saved to: {filepath}")
     
     if outcome.data_points and (data_type or type_manager):
         display.print_info("Sample converted values:")
@@ -824,13 +823,105 @@ async def run_single_scan(
             if dp.converted_value is not None:
                 display.print(f"  {dp.address}: {dp.display_value} ({dp.data_type})")
     
-    denied_path = export_new_denied(outcome.denied_addresses)
+    denied_path = writer.export_new_denied(outcome.denied_addresses)
     if denied_path:
         display.print_info(f"Denied addresses logged to: {denied_path}")
     
     display.print_statistics(stats)
     outcome.success = True
     return outcome
+
+
+async def run_periodic_scan(
+    plc_infos: List[PLCInfo],
+    config: NetworkConfig,
+    exporter: CSVExporter,
+    display: RichProgressDisplay,
+    device_ranges: List[DeviceRange],
+    interval: float,
+    data_type: Optional[DataType] = None,
+    byte_order: ByteOrder = ByteOrder.LITTLE_ENDIAN,
+    type_manager: Optional[DataTypeManager] = None,
+    db_exporter: DatabaseExporter = None
+) -> List[ScanOutcome]:
+    """
+    Periodic range scan of one or more PLCs until Ctrl+C.
+    
+    All targets stay connected (keeping their session cache of denied
+    addresses) and are read one after another in every cycle, so every
+    target is scanned at the same interval. Each cycle is exported per PLC.
+    """
+    audit = get_audit_logger()
+    loop = asyncio.get_running_loop()
+    labels = _range_labels(device_ranges)
+    outcomes = {p.ip_address: ScanOutcome(p.ip_address) for p in plc_infos}
+    writers = {
+        p.ip_address: _ResultWriter(p.ip_address, exporter, display, db_exporter)
+        for p in plc_infos
+    }
+    
+    async with contextlib.AsyncExitStack() as stack:
+        collectors: Dict[str, PLCDataCollector] = {}
+        for plc_info in plc_infos:
+            ip = plc_info.ip_address
+            display.print_info(f"Connecting to {ip}...")
+            collector = await stack.enter_async_context(PLCDataCollector(plc_info, config))
+            if _check_connected(collector, plc_info, outcomes[ip], display):
+                collectors[ip] = collector
+                audit.log_scan_start(ip, ScanMode.RANGE.value, labels)
+        
+        if not collectors:
+            return list(outcomes.values())
+        
+        display.print_info(
+            f"Scanning {', '.join(labels)} on {len(collectors)} PLC(s) every {interval:g}s "
+            f"(Ctrl+C to stop)"
+        )
+        started_at = loop.time()
+        interrupted = False
+        try:
+            iteration = 0
+            while True:
+                iteration += 1
+                cycle_started = loop.time()
+                display.print_info(f"Iteration {iteration}")
+                
+                for ip, collector in collectors.items():
+                    collector.clear_data()
+                    points = await _collect_ranges(collector, device_ranges)
+                    points = apply_data_type_conversion(points, data_type, byte_order, type_manager)
+                    outcomes[ip].data_points = points
+                    writers[ip].export_points(points)
+                    writers[ip].export_new_denied(collector.get_denied_addresses())
+                
+                wait = max(0.0, interval - (loop.time() - cycle_started))
+                if wait == 0.0:
+                    display.print_warning(
+                        f"Cycle took longer than the {interval:g}s interval; starting next cycle now"
+                    )
+                else:
+                    display.print_info(f"Waiting {wait:.1f} seconds...")
+                await asyncio.sleep(wait)
+        except (asyncio.CancelledError, KeyboardInterrupt):
+            display.print_warning("Scan interrupted by user")
+            interrupted = True
+            _uncancel_current_task()
+        
+        for ip, collector in collectors.items():
+            outcome = outcomes[ip]
+            outcome.interrupted = interrupted
+            outcome.denied_addresses = collector.get_denied_addresses()
+            writers[ip].export_new_denied(outcome.denied_addresses)
+            stats = collector.get_statistics()
+            audit.log_scan_complete(
+                ip, stats["total_points"], stats["success_count"], stats["error_count"],
+                (loop.time() - started_at) * 1000
+            )
+            display.print_info(f"Last cycle statistics for {ip}:")
+            display.print_statistics(stats)
+            outcome.success = True
+    
+    return list(outcomes.values())
 
 
 async def resolve_target(
@@ -1061,9 +1152,23 @@ async def main():
             
             all_plcs = plc_infos
             
-            if len(plc_infos) > 1 and config.max_concurrent > 1:
-                if interval > 0:
-                    display.print_warning("--interval is ignored for parallel scans")
+            if mode == ScanMode.RANGE and interval > 0:
+                # Periodic: all targets in turn every cycle
+                if len(plc_infos) > 1 and config.max_concurrent > 1:
+                    display.print_info("Periodic scans read targets one after another (--max-concurrent not used)")
+                outcomes = await run_periodic_scan(
+                    plc_infos, config, exporter, display, device_ranges, interval,
+                    data_type, byte_order, type_manager, db_exporter
+                )
+                for outcome in outcomes:
+                    if not outcome.success:
+                        failed_targets.append(outcome.ip_address)
+                    if outcome.data_points:
+                        all_data_points[outcome.ip_address] = outcome.data_points
+                    if outcome.denied_addresses:
+                        all_denied_addresses[outcome.ip_address] = list(outcome.denied_addresses)
+                    interrupted = interrupted or outcome.interrupted
+            elif len(plc_infos) > 1 and config.max_concurrent > 1:
                 results = await run_parallel_scan(
                     plc_infos, config, exporter, display,
                     mode, device_ranges, data_type, byte_order, type_manager,
@@ -1081,7 +1186,7 @@ async def main():
                 for plc_info in plc_infos:
                     outcome = await run_single_scan(
                         plc_info, config, exporter, display,
-                        mode, device_ranges, interval,
+                        mode, device_ranges,
                         data_type, byte_order, type_manager, db_exporter
                     )
                     if not outcome.success:
@@ -1090,9 +1195,6 @@ async def main():
                         all_data_points[plc_info.ip_address] = outcome.data_points
                     if outcome.denied_addresses:
                         all_denied_addresses[plc_info.ip_address] = list(outcome.denied_addresses)
-                    if outcome.interrupted:
-                        interrupted = True
-                        break
         
         scan_end_time = datetime.now()
         if interrupted:

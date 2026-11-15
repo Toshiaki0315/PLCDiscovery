@@ -87,7 +87,10 @@ class ModbusHandler(BaseProtocolHandler):
                 client = ModbusTcpClient(
                     host=self.ip_address,
                     port=self.port,
-                    timeout=self.config.request_timeout_ms / 1000
+                    timeout=self.config.request_timeout_ms / 1000,
+                    # Retries are handled by BaseProtocolHandler; pymodbus'
+                    # own retries (default 3) would multiply PLC requests
+                    retries=0,
                 )
                 if client.connect():
                     return client

@@ -27,6 +27,33 @@ EIP_DEVICE_MAP = {
 }
 
 
+# CIP identity values for controllers that support data-file addressing
+ROCKWELL_VENDOR_ID = 1
+CIP_PRODUCT_TYPE_PLC = 0x0E  # "Programmable Logic Controller"
+
+
+def is_slc_identity(identity: Optional[Dict]) -> bool:
+    """
+    True if a ListIdentity reply looks like a Rockwell PLC-5/SLC/MicroLogix.
+    
+    Requires vendor Rockwell, product type PLC, and a product name that is
+    not a Control/CompactLogix controller (those use symbolic tags and are
+    handled by LogixDriver). MicroLogix names are accepted.
+    """
+    if not identity:
+        return False
+    vendor = identity.get("vendor_id", identity.get("vendor"))
+    product_type = identity.get("product_type")
+    name = str(identity.get("product_name", ""))
+    vendor_ok = vendor == ROCKWELL_VENDOR_ID or "rockwell" in str(vendor).lower() \
+        or "allen" in str(vendor).lower()
+    type_ok = product_type == CIP_PRODUCT_TYPE_PLC or \
+        "programmable logic controller" in str(product_type).lower()
+    name = name.lower()
+    is_logix = "logix" in name and "micrologix" not in name
+    return vendor_ok and type_ok and not is_logix
+
+
 class EtherNetIPHandler(BaseProtocolHandler):
     """
     EtherNet/IP (CIP) Protocol Handler
@@ -94,6 +121,19 @@ class EtherNetIPHandler(BaseProtocolHandler):
             def _connect():
                 client = SLCDriver(self._connection_path(include_slot=True))
                 client.open()
+                try:
+                    identity = client._list_identity()
+                except Exception as e:
+                    identity = None
+                    logger.debug(f"ListIdentity failed: {e}")
+                if not is_slc_identity(identity):
+                    # SLCDriver.open() only registers a CIP session, which any
+                    # EtherNet/IP device accepts. Data-file reads would then fail
+                    # and be misreported as illegal addresses.
+                    client.close()
+                    raise ConnectionError(
+                        f"not an SLC/PLC-5/MicroLogix controller (identity: {identity})"
+                    )
                 return client
             
             loop = asyncio.get_running_loop()
@@ -103,7 +143,7 @@ class EtherNetIPHandler(BaseProtocolHandler):
             logger.info(f"EtherNet/IP (SLC) connected to {self.ip_address}:{self.port}")
             return True
         except Exception as e:
-            logger.warning(f"SLCDriver connection failed: {e}, trying CIPDriver")
+            logger.warning(f"SLCDriver connection rejected: {e}, trying CIPDriver")
             self._client = None
             return False
     
