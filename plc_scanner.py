@@ -843,6 +843,9 @@ def _check_connected(collector: PLCDataCollector, plc_info: PLCInfo,
         outcome.error = (
             f"Failed to connect to {plc_info.ip_address}:{plc_info.port} ({_protocol_name(plc_info)})"
         )
+        reason = getattr(collector, "connect_error", None)
+        if reason:
+            outcome.error += f": {reason}"
         display.print_error(outcome.error)
         audit.log_error(outcome.error, {"plc_ip": plc_info.ip_address})
     return connected

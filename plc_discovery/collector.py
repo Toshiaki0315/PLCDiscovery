@@ -53,6 +53,8 @@ class PLCDataCollector:
         self.plc_info = plc_info
         self.config = config or NetworkConfig()
         self._handler: Optional[BaseProtocolHandler] = None
+        # Why connect() failed before reaching the PLC (bad options etc.)
+        self.connect_error: Optional[str] = None
         self._collected_data: List[DataPoint] = []
         self._denied_addresses: set = set()
         self._denied_statuses: Dict[str, StatusCode] = {}
@@ -98,7 +100,10 @@ class PLCDataCollector:
                 config=self.config,
                 **(self.plc_info.options or {})
             )
-        except TypeError as e:
+        except (TypeError, ValueError) as e:
+            # Unknown option name (TypeError) or out-of-range value (ValueError):
+            # fail this target only, the caller continues with the others
+            self.connect_error = f"invalid options {self.plc_info.options}: {e}"
             logger.error(f"Invalid options for {protocol.name}: {self.plc_info.options} ({e})")
             return False
         

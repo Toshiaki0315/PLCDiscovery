@@ -183,9 +183,11 @@ class ParallelPLCScanner:
                 )
                 
                 if not connected:
+                    reason = getattr(collector, "connect_error", None)
                     raise ConnectionError(
                         f"Failed to connect to {plc.ip_address}:{plc.port} "
                         f"({plc.protocol.name if plc.protocol else 'UNKNOWN'})"
+                        + (f": {reason}" if reason else "")
                     )
                 
                 if mode == ScanMode.FULL:

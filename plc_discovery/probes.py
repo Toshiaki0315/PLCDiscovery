@@ -10,6 +10,7 @@ All probes are synchronous (run them in an executor) and never write to the
 device.
 """
 
+import ipaddress
 import logging
 import os
 import socket
@@ -89,22 +90,35 @@ def probe_ethernet_ip(ip: str, port: int, timeout: float) -> bool:
     return command == 0x0063 and reply[12:20] == context
 
 
+def _last_octet(address: str) -> int:
+    try:
+        return int(ipaddress.IPv4Address(address)) & 0xFF
+    except ValueError:
+        return 0
+
+
 def probe_fins_udp(ip: str, port: int, timeout: float) -> bool:
-    """FINS/UDP memory area read of DM0 (1 word); any matching FINS reply counts"""
+    """
+    FINS/UDP memory area read of DM0 (1 word); any matching FINS reply counts.
+    
+    Node numbers follow the same rule as FINSHandler (Omron automatic address
+    conversion): DA1 = last octet of the PLC address, SA1 = last octet of
+    the local address used to reach it.
+    """
     sid = os.urandom(1)[0]
-    request = bytes([
-        0x80, 0x00, 0x02,       # ICF (command, response required), RSV, GCT
-        0x00, 0x00, 0x00,       # DNA, DA1, DA2
-        0x00, 0x00, 0x00,       # SNA, SA1, SA2
-        sid,
-        0x01, 0x01,             # memory area read
-        0x82, 0x00, 0x00, 0x00, # DM, address 0, bit 0
-        0x00, 0x01,             # 1 word
-    ])
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             sock.settimeout(timeout)
             sock.connect((ip, port))
+            request = bytes([
+                0x80, 0x00, 0x02,                            # ICF, RSV, GCT
+                0x00, _last_octet(ip), 0x00,                 # DNA, DA1, DA2
+                0x00, _last_octet(sock.getsockname()[0]), 0x00,  # SNA, SA1, SA2
+                sid,
+                0x01, 0x01,                                  # memory area read
+                0x82, 0x00, 0x00, 0x00,                      # DM, address 0, bit 0
+                0x00, 0x01,                                  # 1 word
+            ])
             sock.send(request)
             reply = sock.recv(2048)
     except OSError as e:  # timeout or ICMP port unreachable

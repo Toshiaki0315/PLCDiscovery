@@ -102,13 +102,18 @@ DEFAULT_CONFIG = {
 # per-cycle CSV files from colliding
 MIN_INTERVAL_SECONDS = 1.0
 
-# Protocol-specific handler options allowed in targets[].options
+# Protocol-specific handler options allowed in targets[].options,
+# with their valid integer ranges (inclusive)
+_FINS_NODE = (0, 254)
+TARGET_OPTION_RANGES: Dict[Optional[Protocol], Dict[str, tuple]] = {
+    Protocol.FINS: {"dest_node": _FINS_NODE, "source_node": _FINS_NODE},
+    Protocol.FINS_TCP: {"dest_node": _FINS_NODE, "source_node": _FINS_NODE},
+    Protocol.S7: {"rack": (0, 7), "slot": (0, 31), "db_number": (1, 65535)},
+    Protocol.ETHERNET_IP: {"slot": (0, 255)},
+    Protocol.MODBUS_TCP: {"unit_id": (0, 255)},
+}
 TARGET_OPTIONS: Dict[Optional[Protocol], set] = {
-    Protocol.FINS: {"dest_node", "source_node"},
-    Protocol.FINS_TCP: {"dest_node", "source_node"},
-    Protocol.S7: {"rack", "slot", "db_number"},
-    Protocol.ETHERNET_IP: {"slot"},
-    Protocol.MODBUS_TCP: {"unit_id"},
+    protocol: set(ranges) for protocol, ranges in TARGET_OPTION_RANGES.items()
 }
 
 
@@ -435,6 +440,15 @@ class ConfigLoader:
                         f"{protocol.name if protocol else 'auto-detected protocol'} "
                         f"(allowed: {', '.join(sorted(allowed)) or 'none'})"
                     )
+                for key, value in options.items():
+                    valid = TARGET_OPTION_RANGES.get(protocol, {}).get(key)
+                    if valid is None:
+                        continue
+                    low, high = valid
+                    if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+                        errors.append(
+                            f"targets[{i}].options.{key} must be an integer {low}-{high}, got {value!r}"
+                        )
         
         # Validate discovery protocol filter
         for name in self.config.get("discovery", {}).get("protocols", []) or []:
