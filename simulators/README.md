@@ -16,11 +16,26 @@ PLCが無い環境でPLC Discoveryツールをテストするためのソフト�
 
 ## クイックスタート
 
-### 全シミュレーター一括起動
+### 起動スクリプト（おすすめ）
+
+| OS | 起動方法 |
+|----|---------|
+| Windows | `start_simulators.bat` をダブルクリック |
+| macOS | `start_simulators.command` をダブルクリック、または `./start_simulators.sh` |
+| Linux | `./start_simulators.sh` |
+
+- 止めるときは Ctrl+C を押します
+- 待ち受けアドレスは `127.0.0.1`（このPCからのみ接続可）です。他のPCから接続する場合は `--host 0.0.0.0` を付けます
+  （工場のネットワーク上では、本物のPLCと紛らわしいため使わないでください）
+- 標準ライブラリだけで動くので、パッケージのインストールは不要です（`.venv` があればそれを使います）
+- 起動時に、各シミュレータへ接続する `plc_scanner.py` のコマンド例を表示します
+
+### 全シミュレーター一括起動（直接実行）
 
 ```bash
 cd simulators
-python run_all.py
+python run_all.py            # 既定は 0.0.0.0（全インターフェース）で待ち受け
+python run_all.py --host 127.0.0.1
 ```
 
 これにより以下のシミュレーターが起動します：

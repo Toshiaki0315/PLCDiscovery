@@ -147,16 +147,21 @@ class SimulatorManager:
         logger.info("=" * 60)
         logger.info("")
         
-        # Print test commands
-        logger.info("Test commands:")
-        logger.info("  # Discover simulators")
-        logger.info("  python plc_scanner.py --mode discover --ip-range 127.0.0.1")
-        logger.info("")
-        logger.info("  # Read from SLMP simulator")
-        logger.info("  python plc_scanner.py --mode range --target 127.0.0.1 --protocol slmp --device D --range 0-100")
-        logger.info("")
-        logger.info("  # Read from Modbus simulator")
-        logger.info("  python plc_scanner.py --mode range --target 127.0.0.1 --protocol modbus --port 1502 --device HR --range 0-100")
+        # Print test commands (Modbus and S7 use non-privileged ports)
+        target = "127.0.0.1" if self.host in ("0.0.0.0", "") else self.host
+        commands = [
+            ("Discover (finds SLMP, EtherNet/IP, FINS on their standard ports)",
+             f"--mode discover --ip-range {target}"),
+            ("SLMP", f"--mode range --target {target} --protocol slmp --device D --range 0-99"),
+            ("Modbus/TCP", f"--mode range --target {target} --protocol modbus --port 1502 --device HR --range 0-99"),
+            ("S7", f"--mode range --target {target} --protocol s7 --port 1102 --device DB --range 0-99"),
+            ("FINS/UDP", f"--mode range --target {target} --protocol fins --device DM --range 0-99"),
+            ("FINS/TCP", f"--mode range --target {target} --protocol fins-tcp --device DM --range 0-99"),
+        ]
+        logger.info("Test commands (plc_scanner.py / plc_scanner.bat / ./plc_scanner.sh):")
+        for title, arguments in commands:
+            logger.info(f"  # {title}")
+            logger.info(f"  python plc_scanner.py {arguments}")
         logger.info("")
     
     async def stop_all(self):
