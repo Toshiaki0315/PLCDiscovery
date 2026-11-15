@@ -10,6 +10,7 @@ This module provides comprehensive data collection from PLCs with:
 """
 
 import asyncio
+import functools
 from typing import Dict, List, Optional, Callable, Type
 import logging
 
@@ -26,12 +27,13 @@ from .protocols.fins import FINSHandler
 from .utils import get_timestamp, logger
 
 # Protocol to handler mapping
-PROTOCOL_HANDLERS: Dict[Protocol, Type[BaseProtocolHandler]] = {
+PROTOCOL_HANDLERS: Dict[Protocol, Callable[..., BaseProtocolHandler]] = {
     Protocol.SLMP: SLMPHandler,
     Protocol.ETHERNET_IP: EtherNetIPHandler,
     Protocol.MODBUS_TCP: ModbusHandler,
     Protocol.S7: S7Handler,
     Protocol.FINS: FINSHandler,
+    Protocol.FINS_TCP: functools.partial(FINSHandler, use_tcp=True),
 }
 
 
@@ -354,8 +356,8 @@ async def collect_plc_data(
             return []
 
 
-def get_handler_for_protocol(protocol: Protocol) -> Optional[Type[BaseProtocolHandler]]:
-    """Get the handler class for a given protocol"""
+def get_handler_for_protocol(protocol: Protocol) -> Optional[Callable[..., BaseProtocolHandler]]:
+    """Get the handler factory (class or partial) for a given protocol"""
     return PROTOCOL_HANDLERS.get(protocol)
 
 

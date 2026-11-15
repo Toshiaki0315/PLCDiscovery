@@ -283,6 +283,9 @@ class ConfigLoader:
             "s7": Protocol.S7,
             "s7comm": Protocol.S7,
             "fins": Protocol.FINS,
+            "fins_udp": Protocol.FINS,
+            "fins_tcp": Protocol.FINS_TCP,
+            "fins-tcp": Protocol.FINS_TCP,
         }
         return mapping.get(protocol_str.lower())
     

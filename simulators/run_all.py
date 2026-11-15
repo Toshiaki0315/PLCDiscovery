@@ -12,7 +12,7 @@ This will start:
     - Modbus/TCP Simulator on port 1502
     - EtherNet/IP Simulator on port 44818
     - S7 Simulator on port 1102
-    - FINS Simulator on port 9600
+    - FINS Simulator on port 9600 (UDP and TCP)
 """
 
 import argparse
@@ -34,13 +34,13 @@ try:
     from .modbus_simulator import ModbusDevice, ModbusProtocol
     from .ethernet_ip_simulator import EtherNetIPDevice, EtherNetIPProtocol
     from .s7_simulator import S7Device, COTPProtocol
-    from .fins_simulator import FINSSimulator, FINSUDPServerProtocol
+    from .fins_simulator import FINSSimulator, FINSUDPServerProtocol, FINSTCPServerProtocol
 except ImportError:
     from slmp_simulator import SLMPDevice, SLMPProtocol
     from modbus_simulator import ModbusDevice, ModbusProtocol
     from ethernet_ip_simulator import EtherNetIPDevice, EtherNetIPProtocol
     from s7_simulator import S7Device, COTPProtocol
-    from fins_simulator import FINSSimulator, FINSUDPServerProtocol
+    from fins_simulator import FINSSimulator, FINSUDPServerProtocol, FINSTCPServerProtocol
 
 
 class SimulatorManager:
@@ -122,7 +122,7 @@ class SimulatorManager:
         except Exception as e:
             logger.error(f"✗ Failed to start S7 Simulator: {e}")
         
-        # FINS Simulator (UDP)
+        # FINS Simulator (UDP and TCP on the same port, sharing one memory image)
         try:
             fins_simulator = FINSSimulator(self.host, 9600)
             transport, protocol = await loop.create_datagram_endpoint(
@@ -130,7 +130,12 @@ class SimulatorManager:
                 local_addr=(self.host, 9600)
             )
             self.udp_transports.append(transport)
-            logger.info(f"✓ FINS Simulator started on {self.host}:9600 (UDP)")
+            fins_tcp_server = await loop.create_server(
+                lambda: FINSTCPServerProtocol(fins_simulator),
+                self.host, 9600
+            )
+            self.servers.append(fins_tcp_server)
+            logger.info(f"✓ FINS Simulator started on {self.host}:9600 (UDP + TCP)")
             logger.info(f"  Denied ranges: DM5000-5100, HR1000-1050")
         except Exception as e:
             logger.error(f"✗ Failed to start FINS Simulator: {e}")

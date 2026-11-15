@@ -163,8 +163,9 @@ Examples:
     # Protocol selection
     parser.add_argument(
         "--protocol", "-p",
-        choices=["slmp", "eip", "modbus", "s7", "fins"],
-        help="Force specific protocol (auto-detected if not specified)"
+        choices=["slmp", "eip", "modbus", "s7", "fins", "fins-tcp"],
+        help="Force specific protocol (auto-detected if not specified); "
+             "fins = FINS/UDP, fins-tcp = FINS/TCP"
     )
     
     parser.add_argument(
@@ -345,6 +346,7 @@ def get_protocol_from_string(protocol_str: str) -> Optional[Protocol]:
         "modbus": Protocol.MODBUS_TCP,
         "s7": Protocol.S7,
         "fins": Protocol.FINS,
+        "fins-tcp": Protocol.FINS_TCP,
     }
     return mapping.get(protocol_str.lower())
 

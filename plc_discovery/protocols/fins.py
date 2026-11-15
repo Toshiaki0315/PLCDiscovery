@@ -123,6 +123,9 @@ class FINSHandler(BaseProtocolHandler):
         )
         
         self.use_tcp = use_tcp
+        if use_tcp:
+            # Per-instance protocol so max_read_size/logging reflect FINS/TCP
+            self.protocol = Protocol.FINS_TCP
         self.source_node = source_node
         self.dest_node = dest_node
         
@@ -535,7 +538,5 @@ class FINSUDPProtocol(asyncio.DatagramProtocol):
                 break
 
 
-# Register default port
-PROTOCOL_PORTS[Protocol.FINS] = 9600
 
 

@@ -40,7 +40,8 @@ class Protocol(Enum):
         ETHERNET_IP: EtherNet/IP (CIP)
         MODBUS_TCP: Modbus/TCP
         S7: Siemens S7通信
-        FINS: Omron FINS
+        FINS: Omron FINS/UDP
+        FINS_TCP: Omron FINS/TCP
     
     Example:
         >>> protocol = Protocol.SLMP
@@ -50,7 +51,8 @@ class Protocol(Enum):
     ETHERNET_IP = auto()
     MODBUS_TCP = auto()
     S7 = auto()
-    FINS = auto()
+    FINS = auto()        # FINS over UDP
+    FINS_TCP = auto()    # FINS over TCP (same port, node address handshake)
 
 
 class DeviceType(Enum):
@@ -129,6 +131,7 @@ PROTOCOL_PORTS: Dict[Protocol, int] = {
     Protocol.MODBUS_TCP: 502,
     Protocol.S7: 102,
     Protocol.FINS: 9600,
+    Protocol.FINS_TCP: 9600,
 }
 
 # Maximum words per read request (protocol limits)
@@ -138,6 +141,7 @@ MAX_READ_WORDS: Dict[Protocol, int] = {
     Protocol.MODBUS_TCP: 125,
     Protocol.S7: 200,
     Protocol.FINS: 500,
+    Protocol.FINS_TCP: 500,
 }
 
 # Recommended safe values for read requests
@@ -147,6 +151,7 @@ SAFE_READ_WORDS: Dict[Protocol, int] = {
     Protocol.MODBUS_TCP: 100,
     Protocol.S7: 150,
     Protocol.FINS: 400,
+    Protocol.FINS_TCP: 400,
 }
 
 # Manufacturer OUI prefixes (MAC address first 3 bytes)
@@ -363,4 +368,6 @@ DEFAULT_DEVICE_RANGES: Dict[Protocol, List[DeviceRange]] = {
         DeviceRange(DeviceType.W, 0, 199),
     ],
 }
+# FINS/TCP reads the same memory areas as FINS/UDP
+DEFAULT_DEVICE_RANGES[Protocol.FINS_TCP] = DEFAULT_DEVICE_RANGES[Protocol.FINS]
 

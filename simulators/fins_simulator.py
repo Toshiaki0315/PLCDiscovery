@@ -2,11 +2,19 @@
 """
 FINS Protocol Simulator
 
-Simulates an Omron PLC with FINS/UDP protocol support.
+Simulates an Omron PLC with FINS/UDP and FINS/TCP protocol support.
 Used for testing without actual PLC hardware.
 
+FINS/TCP framing (Omron W342):
+    Header (16 bytes): "FINS" | length (4) | command (4) | error code (4)
+    length counts the bytes after the length field (command + error + data).
+    Commands: 0 = node address data send (client -> server)
+              1 = node address data send (server -> client)
+              2 = FINS frame send
+              3 = FINS frame send error notification
+
 Usage:
-    python fins_simulator.py [--port 9600] [--host 0.0.0.0]
+    python fins_simulator.py [--port 9600] [--host 0.0.0.0] [--transport both|udp|tcp]
 """
 
 import asyncio
@@ -14,7 +22,7 @@ import struct
 import logging
 import argparse
 import random
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
 logging.basicConfig(
     level=logging.INFO,
@@ -25,6 +33,19 @@ logger = logging.getLogger(__name__)
 # FINS Constants
 FINS_ICF_RESPONSE = 0xC0  # Response frame
 FINS_CMD_MEMORY_READ = (0x01, 0x01)
+
+# FINS/TCP constants
+FINS_TCP_MAGIC = b"FINS"
+FINS_TCP_HEADER_SIZE = 16
+FINS_TCP_CMD_NODE_REQUEST = 0x00000000   # client -> server
+FINS_TCP_CMD_NODE_RESPONSE = 0x00000001  # server -> client
+FINS_TCP_CMD_FRAME = 0x00000002          # FINS frame send
+FINS_TCP_CMD_ERROR = 0x00000003          # FINS frame send error notification
+FINS_TCP_ERR_NOT_FINS = 0x00000001       # header is not "FINS"
+FINS_TCP_ERR_TOO_LONG = 0x00000002       # data length too long
+FINS_TCP_ERR_UNSUPPORTED = 0x00000003    # command not supported
+FINS_TCP_MAX_LENGTH = 2048               # sanity limit for the length field
+FINS_TCP_SERVER_NODE = 1                 # simulated PLC node address
 
 # Memory area codes
 FINS_AREA_DM = 0x82
@@ -100,6 +121,24 @@ class FINSSimulator:
             if area == area_code and start <= address <= end:
                 return False
         return True
+    
+    def handle_frame(self, data: bytes, client_addr: Tuple[str, int]) -> Optional[bytes]:
+        """
+        Process one FINS frame (shared by UDP and TCP) and return the
+        response frame, or None if the frame is too short to answer.
+        """
+        if len(data) < 12:
+            logger.warning("Invalid FINS frame (too short)")
+            return None
+        
+        cmd_main = data[10]
+        cmd_sub = data[11]
+        
+        if (cmd_main, cmd_sub) == FINS_CMD_MEMORY_READ:
+            return self._handle_read_command(data, client_addr)
+        
+        logger.warning(f"Unknown command: {cmd_main:02X} {cmd_sub:02X}")
+        return self._build_error_response(data, 0x0401)
     
     def _handle_read_command(
         self,
@@ -210,38 +249,133 @@ class FINSUDPServerProtocol(asyncio.DatagramProtocol):
     
     def datagram_received(self, data: bytes, addr: Tuple[str, int]):
         logger.debug(f"Received {len(data)} bytes from {addr}")
+        response = self.simulator.handle_frame(data, addr)
+        if response is not None:
+            self.transport.sendto(response, addr)
+
+
+def build_fins_tcp_frame(command: int, payload: bytes = b"", error_code: int = 0) -> bytes:
+    """Build a FINS/TCP frame: header + payload"""
+    length = 8 + len(payload)  # command + error code + payload
+    return FINS_TCP_MAGIC + struct.pack(">III", length, command, error_code) + payload
+
+
+class FINSTCPServerProtocol(asyncio.Protocol):
+    """
+    FINS/TCP connection handler for the simulator.
+    
+    The client must first send a node address request (command 0); the
+    server answers with the client and server node addresses (command 1).
+    After that, FINS frames are exchanged with command 2.
+    """
+    
+    # Node addresses handed out to clients that request automatic allocation
+    _next_client_node = 10
+    
+    def __init__(self, simulator: FINSSimulator):
+        self.simulator = simulator
+        self.transport = None
+        self.peer = None
+        self.client_node: Optional[int] = None
+        self._buffer = bytearray()
+    
+    @classmethod
+    def _allocate_node(cls) -> int:
+        node = cls._next_client_node
+        cls._next_client_node = 10 + (cls._next_client_node - 9) % 240  # stay within 10-249
+        return node
+    
+    def connection_made(self, transport):
+        self.transport = transport
+        self.peer = transport.get_extra_info("peername")
+        logger.info(f"FINS/TCP client connected: {self.peer}")
+    
+    def connection_lost(self, exc):
+        logger.info(f"FINS/TCP client disconnected: {self.peer} (node {self.client_node})")
+    
+    def data_received(self, data: bytes):
+        self._buffer.extend(data)
+        while len(self._buffer) >= FINS_TCP_HEADER_SIZE:
+            if bytes(self._buffer[:4]) != FINS_TCP_MAGIC:
+                logger.warning("FINS/TCP: header is not 'FINS'")
+                self._send_error(FINS_TCP_ERR_NOT_FINS)
+                self.transport.close()
+                return
+            
+            length = struct.unpack(">I", self._buffer[4:8])[0]
+            if length < 8 or length > FINS_TCP_MAX_LENGTH:
+                logger.warning(f"FINS/TCP: invalid length {length}")
+                self._send_error(FINS_TCP_ERR_TOO_LONG)
+                self.transport.close()
+                return
+            
+            frame_size = 8 + length  # magic + length field + (command + error + data)
+            if len(self._buffer) < frame_size:
+                return  # wait for the rest of the frame
+            
+            frame = bytes(self._buffer[:frame_size])
+            del self._buffer[:frame_size]
+            self._handle_tcp_frame(frame)
+    
+    def _send_error(self, error_code: int) -> None:
+        self.transport.write(build_fins_tcp_frame(FINS_TCP_CMD_ERROR, error_code=error_code))
+    
+    def _handle_tcp_frame(self, frame: bytes) -> None:
+        command = struct.unpack(">I", frame[8:12])[0]
+        payload = frame[FINS_TCP_HEADER_SIZE:]
         
-        # Check minimum frame size
-        if len(data) < 12:
-            logger.warning("Invalid FINS frame (too short)")
+        if command == FINS_TCP_CMD_NODE_REQUEST:
+            requested = struct.unpack(">I", payload[:4])[0] if len(payload) >= 4 else 0
+            self.client_node = requested if 0 < requested < 255 else self._allocate_node()
+            logger.debug(f"FINS/TCP node allocation: client={self.client_node}, server={FINS_TCP_SERVER_NODE}")
+            self.transport.write(build_fins_tcp_frame(
+                FINS_TCP_CMD_NODE_RESPONSE,
+                struct.pack(">II", self.client_node, FINS_TCP_SERVER_NODE),
+            ))
             return
         
-        # Parse command code
-        cmd_main = data[10]
-        cmd_sub = data[11]
+        if command == FINS_TCP_CMD_FRAME:
+            if self.client_node is None:
+                logger.warning("FINS/TCP: FINS frame before node address exchange")
+                self._send_error(FINS_TCP_ERR_UNSUPPORTED)
+                return
+            response = self.simulator.handle_frame(payload, self.peer)
+            if response is not None:
+                self.transport.write(build_fins_tcp_frame(FINS_TCP_CMD_FRAME, response))
+            return
         
-        if (cmd_main, cmd_sub) == FINS_CMD_MEMORY_READ:
-            response = self.simulator._handle_read_command(data, addr)
-            self.transport.sendto(response, addr)
-        else:
-            logger.warning(f"Unknown command: {cmd_main:02X} {cmd_sub:02X}")
-            response = self.simulator._build_error_response(data, 0x0401)
-            self.transport.sendto(response, addr)
+        logger.warning(f"FINS/TCP: unsupported command 0x{command:08X}")
+        self._send_error(FINS_TCP_ERR_UNSUPPORTED)
 
 
-async def run_fins_simulator(host: str, port: int):
-    """Run FINS simulator server"""
+async def run_fins_simulator(host: str, port: int, transport: str = "both"):
+    """
+    Run FINS simulator server.
+    
+    Args:
+        host: Address to bind
+        port: Port for both UDP and TCP (Omron default 9600)
+        transport: "udp", "tcp" or "both"
+    """
     simulator = FINSSimulator(host, port)
     
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
+    udp_transport = None
+    tcp_server = None
     
-    # Create UDP endpoint
-    transport, protocol = await loop.create_datagram_endpoint(
-        lambda: FINSUDPServerProtocol(simulator),
-        local_addr=(host, port)
-    )
+    if transport in ("udp", "both"):
+        udp_transport, _ = await loop.create_datagram_endpoint(
+            lambda: FINSUDPServerProtocol(simulator),
+            local_addr=(host, port)
+        )
     
-    logger.info(f"FINS Simulator started on {host}:{port}")
+    if transport in ("tcp", "both"):
+        tcp_server = await loop.create_server(
+            lambda: FINSTCPServerProtocol(simulator),
+            host, port
+        )
+    
+    logger.info(f"FINS Simulator started on {host}:{port} ({transport.upper()})")
     logger.info("Memory areas:")
     logger.info(f"  DM Area (0x82): 0-999 (accessible)")
     logger.info(f"  DM Area (0x82): 5000-5100 (INACCESSIBLE)")
@@ -256,7 +390,11 @@ async def run_fins_simulator(host: str, port: int):
     except asyncio.CancelledError:
         logger.info("FINS Simulator shutting down...")
     finally:
-        transport.close()
+        if udp_transport:
+            udp_transport.close()
+        if tcp_server:
+            tcp_server.close()
+            await tcp_server.wait_closed()
 
 
 def main():
@@ -275,6 +413,12 @@ def main():
         help="Port to listen on (default: 9600)"
     )
     parser.add_argument(
+        "--transport",
+        choices=["both", "udp", "tcp"],
+        default="both",
+        help="Transport(s) to serve (default: both)"
+    )
+    parser.add_argument(
         "--debug",
         action="store_true",
         help="Enable debug logging"
@@ -286,7 +430,7 @@ def main():
         logging.getLogger().setLevel(logging.DEBUG)
     
     try:
-        asyncio.run(run_fins_simulator(args.host, args.port))
+        asyncio.run(run_fins_simulator(args.host, args.port, args.transport))
     except KeyboardInterrupt:
         logger.info("Simulator stopped by user")
 

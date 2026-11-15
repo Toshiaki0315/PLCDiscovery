@@ -206,7 +206,9 @@ def fins_simulator() -> Generator[SimulatorProcess, None, None]:
     Yields:
         SimulatorProcess: The running simulator
     """
-    simulator = UDPSimulatorProcess("FINS", 9600, run_fins_simulator)
+    # The simulator serves UDP and TCP on 9600; waiting for the TCP port
+    # also confirms the process (and its UDP endpoint) is up
+    simulator = SimulatorProcess("FINS", 9600, run_fins_simulator)
     
     try:
         simulator.start()
@@ -266,6 +268,13 @@ def fins_plc_info():
         port=9600,
         manufacturer="Test Simulator",
     )
+
+
+@pytest.fixture
+def fins_tcp_handler(network_config):
+    """FINSHandler using FINS/TCP against the simulator (not yet connected)"""
+    from plc_discovery.protocols.fins import FINSHandler
+    return FINSHandler("127.0.0.1", 9600, config=network_config, use_tcp=True)
 
 
 @pytest.fixture

@@ -213,7 +213,7 @@ python plc_scanner.py --mode full --target 192.168.1.10 --no-database
 | `--mode`, `-m` | 動作モード (discover/full/range)。省略時は設定ファイルの `scan.mode`（明示されている場合のみ） | discover |
 | `--target`, `-t` | 対象PLC IPアドレス（カンマ区切りで複数指定可） | - |
 | `--ip-range`, `-r` | スキャン対象IPレンジ | - |
-| `--protocol`, `-p` | プロトコル指定 (slmp/eip/modbus/s7) | 自動検出 |
+| `--protocol`, `-p` | プロトコル指定 (slmp/eip/modbus/s7/fins/fins-tcp)。fins は FINS/UDP、fins-tcp は FINS/TCP | 自動検出 |
 | `--port` | ポート番号 | プロトコルデフォルト |
 | `--device`, `-d` | デバイス種別 (D/M/W/R等) | D |
 | `--range` | アドレス範囲 (例: 0-1000) | 0-999 |
@@ -292,7 +292,7 @@ logging:
 | EtherNet/IP | オムロン、ロックウェル、キーエンス、安川電機 | 44818 | |
 | Modbus/TCP | 横河電機、富士電機、IDEC、デルタ電子 | 502 | |
 | S7通信 | シーメンス | 102 | |
-| FINS通信 | オムロン、キーエンス | 9600 | |
+| FINS通信 | オムロン、キーエンス | 9600 | UDP（`fins`）と TCP（`fins-tcp`）に対応 |
 
 ## 安全上の注意
 

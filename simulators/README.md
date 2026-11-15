@@ -10,7 +10,7 @@ PLCが無い環境でPLC Discoveryツールをテストするためのソフト�
 | Modbus Simulator | Modbus/TCP | 502 | 1502 |
 | EtherNet/IP Simulator | CIP over EtherNet/IP | 44818 | - |
 | S7 Simulator | S7comm over ISO-on-TCP | 102 | 1102 |
-| FINS Simulator | FINS/UDP | 9600 | - |
+| FINS Simulator | FINS/UDP + FINS/TCP | 9600 | - |
 
 > **Note**: ポート502と102は特権ポート（1024未満）のため、root権限なしで実行する場合は代替ポートを使用します。
 
@@ -28,7 +28,7 @@ python run_all.py
 - Modbus/TCP: `localhost:1502`
 - EtherNet/IP: `localhost:44818`
 - S7: `localhost:1102`
-- FINS: `localhost:9600` (UDP)
+- FINS: `localhost:9600` (UDP / TCP)
 
 ### 個別起動
 
@@ -165,15 +165,27 @@ EtherNet/IP（CIP）プロトコルをシミュレート。
 
 ### FINS Simulator
 
-オムロン FINS/UDPプロトコルをシミュレート。
+オムロン FINS プロトコルを UDP と TCP の両方でシミュレート（同じポート、同じメモリ内容）。
+
+```bash
+python simulators/fins_simulator.py --port 9600                  # UDP + TCP（既定）
+python simulators/fins_simulator.py --port 9600 --transport tcp  # TCP のみ
+```
 
 **対応コマンド：**
 - Memory Area Read (0x0101)
+- FINS/TCP: ノードアドレス要求（コマンド 0 → 応答 1）、FINS フレーム送信（コマンド 2）
+  - クライアントノードは要求値が 0 のとき 10〜249 から自動割り当て、PLC ノードは 1
+  - ノードアドレス交換前の FINS フレーム、未対応コマンド、"FINS" 以外のヘッダーには
+    エラー通知（コマンド 3）を返す（ヘッダー不正時は切断）
 
 **サンプルデータ：**
-- DM0-DM999: DM[n] = n * 3
-- HR0-HR499: HR[n] = 500 + n
-- W0-W99: W[n] = n * 7
+- DM0-DM99: 温度データ（200 前後のランダム値）
+- DM100-DM199: DM[n] = n * 10
+- DM200-DM299: ランダム値
+- DM300-DM999: DM[n] = n
+- HR0-HR499: HR[n] = n * 2
+- W0-W199: ランダム値（0〜255）
 
 ## アーキテクチャ
 

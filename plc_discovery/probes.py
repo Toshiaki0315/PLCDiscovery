@@ -89,6 +89,35 @@ def probe_ethernet_ip(ip: str, port: int, timeout: float) -> bool:
     return command == 0x0063 and reply[12:20] == context
 
 
+def probe_fins_udp(ip: str, port: int, timeout: float) -> bool:
+    """FINS/UDP memory area read of DM0 (1 word); any matching FINS reply counts"""
+    sid = os.urandom(1)[0]
+    request = bytes([
+        0x80, 0x00, 0x02,       # ICF (command, response required), RSV, GCT
+        0x00, 0x00, 0x00,       # DNA, DA1, DA2
+        0x00, 0x00, 0x00,       # SNA, SA1, SA2
+        sid,
+        0x01, 0x01,             # memory area read
+        0x82, 0x00, 0x00, 0x00, # DM, address 0, bit 0
+        0x00, 0x01,             # 1 word
+    ])
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.settimeout(timeout)
+            sock.connect((ip, port))
+            sock.send(request)
+            reply = sock.recv(2048)
+    except OSError as e:  # timeout or ICMP port unreachable
+        logger.debug(f"FINS/UDP probe {ip}:{port} failed: {e}")
+        return False
+    return (
+        len(reply) >= 12
+        and (reply[0] & 0x40) != 0
+        and reply[9] == sid
+        and reply[10:12] == b"\x01\x01"
+    )
+
+
 def probe_fins_tcp(ip: str, port: int, timeout: float) -> bool:
     """FINS/TCP node address request; a "FINS" framed reply counts"""
     request = b"FINS" + struct.pack(">III", 12, 0, 0) + struct.pack(">I", 0)
@@ -101,8 +130,12 @@ PROBES: Dict[Protocol, Callable[[str, int, float], bool]] = {
     Protocol.MODBUS_TCP: probe_modbus,
     Protocol.S7: probe_s7,
     Protocol.ETHERNET_IP: probe_ethernet_ip,
-    Protocol.FINS: probe_fins_tcp,
+    Protocol.FINS: probe_fins_udp,
+    Protocol.FINS_TCP: probe_fins_tcp,
 }
+
+# Protocols probed over UDP (no TCP port check beforehand)
+UDP_PROTOCOLS = frozenset({Protocol.FINS})
 
 
 def verify_protocol(ip: str, port: int, protocol: Protocol, timeout: float) -> bool:

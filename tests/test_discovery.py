@@ -60,8 +60,9 @@ class TestPLCDiscovery:
         assert result.protocol == Protocol.SLMP
     
     @pytest.mark.asyncio
+    @patch('plc_discovery.discovery.verify_protocol', return_value=False)
     @patch('plc_discovery.discovery.is_port_open')
-    async def test_probe_host_no_plc(self, mock_port_open, network_config):
+    async def test_probe_host_no_plc(self, mock_port_open, mock_verify, network_config):
         """Test probing host with no PLC ports open"""
         mock_port_open.return_value = False
         

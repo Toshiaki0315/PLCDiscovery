@@ -16,7 +16,7 @@ import logging
 from .config import (
     Protocol, PROTOCOL_PORTS, PLCInfo, NetworkConfig
 )
-from .probes import verify_protocol
+from .probes import UDP_PROTOCOLS, verify_protocol
 from .utils import (
     get_network_info, get_subnet_hosts, parse_ip_range,
     is_port_open, get_manufacturer_from_mac, format_mac_address,
@@ -176,13 +176,15 @@ class PLCDiscovery:
         # Check each protocol port
         for protocol, port in PROTOCOL_PORTS.items():
             try:
-                is_open = await asyncio.get_running_loop().run_in_executor(
-                    None,
-                    lambda p=port: is_port_open(ip, p, self.config.discovery_timeout_ms / 1000)
-                )
-                
-                if not is_open:
-                    continue
+                # TCP protocols: skip the probe if the port is closed.
+                # UDP protocols (FINS) have no connection to check first.
+                if protocol not in UDP_PROTOCOLS:
+                    is_open = await asyncio.get_running_loop().run_in_executor(
+                        None,
+                        lambda p=port: is_port_open(ip, p, self.config.discovery_timeout_ms / 1000)
+                    )
+                    if not is_open:
+                        continue
                 
                 # An open port is not proof of a PLC (e.g. NAS on 5001):
                 # require a valid protocol reply
@@ -232,7 +234,7 @@ class PLCDiscovery:
                 plc_info = await self._query_modbus_info(plc_info)
             elif plc_info.protocol == Protocol.S7:
                 plc_info = await self._query_s7_info(plc_info)
-            elif plc_info.protocol == Protocol.FINS:
+            elif plc_info.protocol in (Protocol.FINS, Protocol.FINS_TCP):
                 plc_info = await self._query_fins_info(plc_info)
         except Exception as e:
             logger.debug(f"Failed to get detailed info for {plc_info.ip_address}: {e}")
@@ -384,7 +386,8 @@ class PLCDiscovery:
             handler = FINSHandler(
                 ip_address=plc_info.ip_address,
                 port=plc_info.port or 9600,
-                config=self.config
+                config=self.config,
+                use_tcp=plc_info.protocol == Protocol.FINS_TCP,
             )
             
             if await handler.connect():
