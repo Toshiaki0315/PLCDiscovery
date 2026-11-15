@@ -84,7 +84,7 @@ class S7Handler(BaseProtocolHandler):
                     client.connect(self.ip_address, self._rack, alt_slot, self.port)
                     return client, alt_slot
             
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             self._client, used_slot = await loop.run_in_executor(None, _connect)
             self._connected = True
             logger.info(
@@ -108,7 +108,7 @@ class S7Handler(BaseProtocolHandler):
                 def _disconnect():
                     self._client.disconnect()
                 
-                loop = asyncio.get_event_loop()
+                loop = asyncio.get_running_loop()
                 await loop.run_in_executor(None, _disconnect)
             except Exception as e:
                 logger.debug(f"S7 disconnect error: {e}")
@@ -207,7 +207,7 @@ class S7Handler(BaseProtocolHandler):
             def _read():
                 return self._client.db_read(db_number, start_byte, size)
             
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             data = await asyncio.wait_for(
                 loop.run_in_executor(None, _read),
                 timeout=self.config.request_timeout_ms / 1000
@@ -245,7 +245,7 @@ class S7Handler(BaseProtocolHandler):
             def _read():
                 return self._client.mb_read(start_byte, size)
             
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             data = await asyncio.wait_for(
                 loop.run_in_executor(None, _read),
                 timeout=self.config.request_timeout_ms / 1000
@@ -283,7 +283,7 @@ class S7Handler(BaseProtocolHandler):
             def _get_info():
                 return self._client.get_cpu_info()
             
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             cpu_info = await loop.run_in_executor(None, _get_info)
             
             if cpu_info:
@@ -311,7 +311,7 @@ class S7Handler(BaseProtocolHandler):
             def _get_state():
                 return self._client.get_cpu_state()
             
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             state = await loop.run_in_executor(None, _get_state)
             
             state_map = {

@@ -188,7 +188,7 @@ class BroadcastDiscovery:
             _, _, broadcast = get_network_info()
             
             # Create UDP socket
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             transport, protocol = await loop.create_datagram_endpoint(
                 lambda: UDPDiscoveryProtocol(responses, timeout),
                 family=socket.AF_INET,
@@ -225,12 +225,12 @@ class BroadcastDiscovery:
         subheader = struct.pack("<H", 0x5000)
         # Network number, PC number, I/O number, station number
         routing = struct.pack("<BBHB", 0x00, 0xFF, 0x03FF, 0x00)
-        # Data length (placeholder)
-        data_length = struct.pack("<H", 4)
-        # Timer
+        # Timer (unit: 250 ms)
         timer = struct.pack("<H", 0x0010)
-        # Command: Read CPU Info (0x0101)
+        # Command: Read Type Name (0x0101), subcommand 0x0000
         command = struct.pack("<HH", 0x0101, 0x0000)
+        # Data length = bytes after this field (timer + command + subcommand)
+        data_length = struct.pack("<H", len(timer) + len(command))
         
         return subheader + routing + data_length + timer + command
     

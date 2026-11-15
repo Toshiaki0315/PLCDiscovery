@@ -70,7 +70,7 @@ class EtherNetIPHandler(BaseProtocolHandler):
                 client.open()
                 return client
             
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             self._client = await loop.run_in_executor(None, _connect)
             self._connected = True
             self._plc_type = 'logix'
@@ -96,7 +96,7 @@ class EtherNetIPHandler(BaseProtocolHandler):
                 client.open()
                 return client
             
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             self._client = await loop.run_in_executor(None, _connect)
             self._connected = True
             self._plc_type = 'slc'
@@ -117,7 +117,7 @@ class EtherNetIPHandler(BaseProtocolHandler):
                 client.open()
                 return client
             
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             self._client = await loop.run_in_executor(None, _connect)
             self._connected = True
             self._plc_type = 'generic'
@@ -136,7 +136,7 @@ class EtherNetIPHandler(BaseProtocolHandler):
                 def _disconnect():
                     self._client.close()
                 
-                loop = asyncio.get_event_loop()
+                loop = asyncio.get_running_loop()
                 await loop.run_in_executor(None, _disconnect)
             except Exception as e:
                 logger.debug(f"EtherNet/IP disconnect error: {e}")
@@ -246,7 +246,7 @@ class EtherNetIPHandler(BaseProtocolHandler):
             def _read():
                 return self._client.read(tag_name)
             
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             result = await asyncio.wait_for(
                 loop.run_in_executor(None, _read),
                 timeout=self.config.request_timeout_ms / 1000
@@ -279,7 +279,7 @@ class EtherNetIPHandler(BaseProtocolHandler):
                     return self._client.info
                 return None
             
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             plc_info = await loop.run_in_executor(None, _get_info)
             
             if plc_info:

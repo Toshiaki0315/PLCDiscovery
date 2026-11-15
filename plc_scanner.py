@@ -44,7 +44,7 @@ from plc_discovery.config import (
 )
 from plc_discovery.discovery import PLCDiscovery, discover_plcs
 from plc_discovery.collector import PLCDataCollector
-from plc_discovery.output import CSVExporter, ReportGenerator
+from plc_discovery.output import CSVExporter
 from plc_discovery.utils import parse_ip_range
 from plc_discovery.config_loader import ConfigLoader, generate_config_template
 from plc_discovery.audit_log import init_audit_logger, get_audit_logger, close_audit_logger
@@ -161,7 +161,7 @@ Examples:
     # Protocol selection
     parser.add_argument(
         "--protocol", "-p",
-        choices=["slmp", "eip", "modbus", "s7"],
+        choices=["slmp", "eip", "modbus", "s7", "fins"],
         help="Force specific protocol (auto-detected if not specified)"
     )
     
@@ -174,7 +174,7 @@ Examples:
     # Device/range specification
     parser.add_argument(
         "--device", "-d",
-        choices=["D", "M", "W", "R", "DM", "HR", "IR", "DB", "X", "Y"],
+        choices=["D", "M", "W", "R", "DM", "HR", "IR", "DB", "X", "Y", "B", "SM"],
         default="D",
         help="Device type to read (default: D)"
     )
@@ -275,9 +275,9 @@ Examples:
     
     parser.add_argument(
         "--db-track-history",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
         default=True,
-        help="Track value changes in database (default: True)"
+        help="Track value changes in database (disable with --no-db-track-history)"
     )
     
     # Report generation
@@ -342,6 +342,7 @@ def get_protocol_from_string(protocol_str: str) -> Optional[Protocol]:
         "eip": Protocol.ETHERNET_IP,
         "modbus": Protocol.MODBUS_TCP,
         "s7": Protocol.S7,
+        "fins": Protocol.FINS,
     }
     return mapping.get(protocol_str.lower())
 
@@ -361,21 +362,38 @@ def get_device_type_from_string(device_str: str) -> Optional[DeviceType]:
         "DB": DeviceType.DB,
         "X": DeviceType.X,
         "Y": DeviceType.Y,
+        "B": DeviceType.B,
+        "SM": DeviceType.SM,
     }
     return mapping.get(device_str.upper())
 
 
 def parse_address_range(range_str: str) -> tuple:
-    """Parse address range string (e.g., '0-1000') to (start, end)"""
+    """
+    Parse address range string (e.g., '0-1000' or '100') to (start, end).
+    
+    Raises:
+        ValueError: if the range is malformed, negative or start > end
+    """
     if not range_str:
         return 0, 999
     
-    parts = range_str.split("-")
-    if len(parts) == 2:
-        return int(parts[0]), int(parts[1])
-    else:
-        addr = int(parts[0])
-        return addr, addr
+    parts = [p.strip() for p in range_str.split("-")]
+    try:
+        if len(parts) == 2:
+            start, end = int(parts[0]), int(parts[1])
+        elif len(parts) == 1:
+            start = end = int(parts[0])
+        else:
+            raise ValueError
+    except ValueError:
+        raise ValueError(
+            f"Invalid address range '{range_str}' (expected e.g. '0-999' or '100')"
+        ) from None
+    
+    if start > end:
+        raise ValueError(f"Invalid address range '{range_str}': start must be <= end")
+    return start, end
 
 
 def create_network_config(args, config_loader: Optional[ConfigLoader] = None) -> NetworkConfig:
@@ -1012,6 +1030,10 @@ async def main():
             all_plcs = discovered if discovered else []
         
         else:
+            # Validate ranges before connecting to anything
+            mode = ScanMode.FULL if mode_name == "full" else ScanMode.RANGE
+            device_ranges = resolve_device_ranges(args, config_loader) if mode == ScanMode.RANGE else None
+            
             # Get targets
             targets = parse_targets(args.target) if args.target else []
             protocol = get_protocol_from_string(args.protocol) if args.protocol else None
@@ -1033,9 +1055,6 @@ async def main():
             if not plc_infos:
                 display.print_error("No targets specified")
                 sys.exit(1)
-            
-            mode = ScanMode.FULL if mode_name == "full" else ScanMode.RANGE
-            device_ranges = resolve_device_ranges(args, config_loader) if mode == ScanMode.RANGE else None
             
             if mode == ScanMode.FULL and interval > 0:
                 display.print_warning("--interval is ignored in full scan mode")

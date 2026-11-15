@@ -107,8 +107,23 @@ class AsyncWorker:
         if self.busy:
             self._future.cancel()
 
-    def shutdown(self) -> None:
-        self.cancel()
+    def shutdown(self, timeout: float = 3.0) -> None:
+        """
+        Cancel running jobs, wait (bounded) until their cleanup such as
+        PLC disconnect has finished, then stop the loop. Stopping the loop
+        right away would leave the PLC connection open.
+        """
+        async def _cancel_all() -> None:
+            current = asyncio.current_task()
+            tasks = [t for t in asyncio.all_tasks() if t is not current]
+            for t in tasks:
+                t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+        try:
+            asyncio.run_coroutine_threadsafe(_cancel_all(), self.loop).result(timeout)
+        except Exception as e:  # timeout etc.: stop anyway
+            logging.getLogger(__name__).debug(f"Worker shutdown incomplete: {e}")
         self.loop.call_soon_threadsafe(self.loop.stop)
 
 

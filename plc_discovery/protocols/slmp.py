@@ -69,7 +69,7 @@ class SLMPHandler(BaseProtocolHandler):
                 client.connect(self.ip_address, self.port)
                 return client
             
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             self._client = await loop.run_in_executor(None, _connect)
             self._connected = True
             logger.info(f"SLMP connected to {self.ip_address}:{self.port}")
@@ -90,7 +90,7 @@ class SLMPHandler(BaseProtocolHandler):
                 def _disconnect():
                     self._client.close()
                 
-                loop = asyncio.get_event_loop()
+                loop = asyncio.get_running_loop()
                 await loop.run_in_executor(None, _disconnect)
             except Exception as e:
                 logger.debug(f"SLMP disconnect error: {e}")
@@ -218,7 +218,7 @@ class SLMPBinaryHandler(SLMPHandler):
                 client.connect(self.ip_address, self.port)
                 return client
             
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             self._client = await loop.run_in_executor(None, _connect)
             self._connected = True
             logger.info(f"SLMP Binary connected to {self.ip_address}:{self.port}")

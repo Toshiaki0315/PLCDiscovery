@@ -93,7 +93,7 @@ class ModbusHandler(BaseProtocolHandler):
                     return client
                 return None
             
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             self._client = await loop.run_in_executor(None, _connect)
             
             if self._client:
@@ -119,7 +119,7 @@ class ModbusHandler(BaseProtocolHandler):
                 def _disconnect():
                     self._client.close()
                 
-                loop = asyncio.get_event_loop()
+                loop = asyncio.get_running_loop()
                 await loop.run_in_executor(None, _disconnect)
             except Exception as e:
                 logger.debug(f"Modbus disconnect error: {e}")

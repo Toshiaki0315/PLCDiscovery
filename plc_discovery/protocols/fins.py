@@ -193,7 +193,7 @@ class FINSHandler(BaseProtocolHandler):
     async def _connect_udp(self) -> bool:
         """Establish UDP connection"""
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             
             # Create UDP endpoint
             self._transport, self._protocol_instance = await loop.create_datagram_endpoint(

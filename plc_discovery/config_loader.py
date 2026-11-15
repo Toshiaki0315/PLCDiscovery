@@ -302,6 +302,8 @@ class ConfigLoader:
             "DB": DeviceType.DB,
             "X": DeviceType.X,
             "Y": DeviceType.Y,
+            "B": DeviceType.B,
+            "SM": DeviceType.SM,
         }
         return mapping.get(device_str.upper())
     
@@ -387,6 +389,10 @@ class ConfigLoader:
         for i, range_def in enumerate(self.config.get("scan", {}).get("device_ranges", [])):
             if range_def.get("start", 0) > range_def.get("end", 0):
                 errors.append(f"scan.device_ranges[{i}]: start must be <= end")
+            if range_def.get("start", 0) < 0:
+                errors.append(f"scan.device_ranges[{i}]: start must be >= 0")
+            if self._parse_device_type(range_def.get("device", "D")) is None:
+                errors.append(f"scan.device_ranges[{i}]: unknown device '{range_def.get('device')}'")
         
         return errors
 

@@ -69,45 +69,49 @@ def parse_ip_range(ip_range: str) -> List[str]:
     
     Supports:
     - CIDR notation: "192.168.1.0/24"
-    - Hyphen notation: "192.168.1.1-255"
+    - Last-octet range: "192.168.1.1-254"
+    - Full range: "192.168.1.10-192.168.1.20"
     - Single IP: "192.168.1.10"
+    
+    Invalid specifications are logged and return an empty list.
     """
-    ips = []
+    ip_range = (ip_range or "").strip()
     
     # CIDR notation
     if "/" in ip_range:
         try:
             network = ipaddress.IPv4Network(ip_range, strict=False)
-            ips = [str(host) for host in network.hosts()]
+            return [str(host) for host in network.hosts()]
         except ValueError as e:
             logger.error(f"Invalid CIDR notation: {ip_range} - {e}")
-            
+            return []
+    
     # Hyphen notation
-    elif "-" in ip_range:
+    if "-" in ip_range:
         try:
-            parts = ip_range.rsplit(".", 1)
-            if len(parts) == 2:
-                base_ip = parts[0]
-                range_part = parts[1]
-                
-                if "-" in range_part:
-                    start, end = range_part.split("-")
-                    for i in range(int(start), int(end) + 1):
-                        ips.append(f"{base_ip}.{i}")
-                else:
-                    ips.append(ip_range)
+            first, last = (p.strip() for p in ip_range.split("-", 1))
+            start = ipaddress.IPv4Address(first)
+            if "." in last:
+                end = ipaddress.IPv4Address(last)
+            else:
+                octet = int(last)
+                if not 0 <= octet <= 255:
+                    raise ValueError(f"last octet {octet} out of range 0-255")
+                end = ipaddress.IPv4Address(int(start) & 0xFFFFFF00 | octet)
+            if int(end) < int(start):
+                raise ValueError("end address is lower than start address")
+            return [str(ipaddress.IPv4Address(i)) for i in range(int(start), int(end) + 1)]
         except ValueError as e:
             logger.error(f"Invalid hyphen notation: {ip_range} - {e}")
-            
-    # Single IP
-    else:
-        try:
-            ipaddress.IPv4Address(ip_range)
-            ips.append(ip_range)
-        except ValueError as e:
-            logger.error(f"Invalid IP address: {ip_range} - {e}")
+            return []
     
-    return ips
+    # Single IP
+    try:
+        ipaddress.IPv4Address(ip_range)
+        return [ip_range]
+    except ValueError as e:
+        logger.error(f"Invalid IP address: {ip_range} - {e}")
+        return []
 
 
 def get_manufacturer_from_mac(mac_address: str) -> Optional[str]:
@@ -188,13 +192,14 @@ class RateLimiter:
         import asyncio
         import time
         
-        now = time.time() * 1000
+        # Monotonic clock: unaffected by system clock changes (NTP, DST)
+        now = time.monotonic() * 1000
         elapsed = now - self._last_call
         
-        if elapsed < self.interval_ms:
+        if self._last_call and elapsed < self.interval_ms:
             await asyncio.sleep((self.interval_ms - elapsed) / 1000.0)
         
-        self._last_call = time.time() * 1000
+        self._last_call = time.monotonic() * 1000
 
 
 class SessionCache:

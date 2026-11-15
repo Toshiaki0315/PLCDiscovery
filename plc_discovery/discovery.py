@@ -31,6 +31,10 @@ except ImportError:
     logger.warning("scapy not available, ARP discovery disabled")
 
 
+# Host count above which a scan-duration warning is logged (larger than a /20)
+LARGE_SCAN_WARNING_HOSTS = 4096
+
+
 class PLCDiscovery:
     """
     PLC Discovery Engine
@@ -73,28 +77,8 @@ class PLCDiscovery:
         if SCAPY_AVAILABLE:
             mac_table = await self._arp_scan(ip, netmask)
         
-        # Then scan each host for PLC protocols
-        tasks = []
-        for i, host_ip in enumerate(hosts):
-            if host_ip != ip:  # Skip self
-                tasks.append(self._probe_host(host_ip, mac_table.get(host_ip)))
-        
-        # Process in batches for rate limiting
-        batch_size = self.config.max_concurrent * 10
-        for i in range(0, len(tasks), batch_size):
-            batch = tasks[i:i + batch_size]
-            results = await asyncio.gather(*batch, return_exceptions=True)
-            
-            for result in results:
-                if isinstance(result, PLCInfo):
-                    self.discovered_plcs[result.ip_address] = result
-            
-            self._report_progress(
-                f"Scanning hosts", 
-                min(i + batch_size, len(tasks)), 
-                len(tasks)
-            )
-        
+        # Then scan each host for PLC protocols (skip self)
+        await self._probe_hosts([h for h in hosts if h != ip], mac_table)
         return list(self.discovered_plcs.values())
     
     async def discover_ip_range(self, ip_range: str) -> List[PLCInfo]:
@@ -114,26 +98,38 @@ class PLCDiscovery:
         logger.info(f"Starting IP range discovery for {total_hosts} hosts")
         self._report_progress(f"Scanning {total_hosts} hosts", 0, total_hosts)
         
-        # Scan each host
-        tasks = [self._probe_host(host_ip, None) for host_ip in hosts]
+        await self._probe_hosts(hosts, {})
+        return list(self.discovered_plcs.values())
+    
+    async def _probe_hosts(self, hosts: List[str], mac_table: Dict[str, str]) -> None:
+        """
+        Probe hosts in batches. Coroutines are created per batch so a large
+        range does not allocate (and leave unawaited) one coroutine per host.
+        """
+        total = len(hosts)
+        batch_size = max(1, self.config.max_concurrent * 10)
         
-        # Process in batches
-        batch_size = self.config.max_concurrent * 10
-        for i in range(0, len(tasks), batch_size):
-            batch = tasks[i:i + batch_size]
-            results = await asyncio.gather(*batch, return_exceptions=True)
+        if total > LARGE_SCAN_WARNING_HOSTS:
+            # Rough worst case: every port on every host times out
+            ports = len(PROTOCOL_PORTS)
+            worst_s = total / batch_size * ports * self.config.discovery_timeout_ms / 1000
+            logger.warning(
+                f"Scanning {total} hosts may take up to ~{worst_s / 60:.0f} minutes; "
+                f"consider a narrower --ip-range"
+            )
+        
+        for i in range(0, total, batch_size):
+            batch = hosts[i:i + batch_size]
+            results = await asyncio.gather(
+                *(self._probe_host(h, mac_table.get(h)) for h in batch),
+                return_exceptions=True
+            )
             
             for result in results:
                 if isinstance(result, PLCInfo):
                     self.discovered_plcs[result.ip_address] = result
             
-            self._report_progress(
-                f"Scanning hosts", 
-                min(i + batch_size, len(tasks)), 
-                len(tasks)
-            )
-        
-        return list(self.discovered_plcs.values())
+            self._report_progress("Scanning hosts", min(i + batch_size, total), total)
     
     async def _arp_scan(self, ip: str, netmask: str) -> Dict[str, str]:
         """
@@ -154,7 +150,7 @@ class PLCDiscovery:
             arp_request = Ether(dst="ff:ff:ff:ff:ff:ff") / ARP(pdst=str(network))
             
             # Run ARP scan with timeout
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             answered, _ = await loop.run_in_executor(
                 None,
                 lambda: srp(arp_request, timeout=self.config.discovery_timeout_ms / 1000, verbose=False)
@@ -179,7 +175,7 @@ class PLCDiscovery:
         # Check each protocol port
         for protocol, port in PROTOCOL_PORTS.items():
             try:
-                is_open = await asyncio.get_event_loop().run_in_executor(
+                is_open = await asyncio.get_running_loop().run_in_executor(
                     None,
                     lambda p=port: is_port_open(ip, p, self.config.discovery_timeout_ms / 1000)
                 )
@@ -249,7 +245,7 @@ class PLCDiscovery:
                     client.close()
                 return plc_info
             
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             return await loop.run_in_executor(None, _query)
         
         except ImportError:
@@ -273,7 +269,7 @@ class PLCDiscovery:
                         plc_info.firmware_version = identity.get('revision', '')
                 return plc_info
             
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             return await loop.run_in_executor(None, _query)
         
         except ImportError:
@@ -320,7 +316,7 @@ class PLCDiscovery:
                 
                 return plc_info
             
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             return await loop.run_in_executor(None, _query)
         
         except ImportError:
@@ -353,7 +349,7 @@ class PLCDiscovery:
                 
                 return plc_info
             
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             return await loop.run_in_executor(None, _query)
         
         except ImportError:
