@@ -8,6 +8,7 @@ Supports:
 """
 
 import asyncio
+import concurrent.futures
 import ipaddress
 import socket
 import struct
@@ -61,6 +62,10 @@ ARP_SKIPPED_MESSAGE = (
 # Host count above which a scan-duration warning is logged (larger than a /22)
 LARGE_SCAN_WARNING_HOSTS = 1022
 
+# Upper bound for the probe thread pool of a batch scan (threads mostly wait
+# on sockets, so this costs little CPU)
+MAX_PROBE_THREADS = 64
+
 # Automatic (same-segment) discovery skips networks larger than this prefix
 # (/22 = 1022 hosts). Control LANs are typically /24; bigger networks are
 # usually office or virtual networks - scan them with an explicit IP range.
@@ -89,6 +94,8 @@ class PLCDiscovery:
         self.protocols = list(protocols) if protocols else list(PROTOCOL_PORTS)
         # Keyed by plc_key(): (ip, protocol, port) - one entry per protocol
         self.discovered_plcs: Dict[tuple, PLCInfo] = {}
+        # Thread pool for blocking probes during a batch scan (see _probe_hosts)
+        self._probe_executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
         self._progress_callback: Optional[Callable[[str, int, int], None]] = None
     
     def set_progress_callback(self, callback: Callable[[str, int, int], None]):
@@ -211,19 +218,32 @@ class PLCDiscovery:
                 f"consider a narrower --ip-range"
             )
         
-        for i in range(0, total, batch_size):
-            batch = hosts[i:i + batch_size]
-            results = await asyncio.gather(
-                *(self._probe_host_all(h, mac_table.get(h)) for h in batch),
-                return_exceptions=True
-            )
-            
-            for result in results:
-                if isinstance(result, list):
-                    for plc in result:
-                        self.discovered_plcs[plc_key(plc)] = plc
-            
-            self._report_progress("Scanning hosts", min(i + batch_size, total), total)
+        # Dedicated pool sized for one batch: every host probes all its
+        # protocols at once (blocking socket calls that mostly wait). The
+        # shared default pool (min(32, CPUs + 4) threads, ~8 on a 4-core PC)
+        # made these calls queue: 5-10 s per batch of 10 silent hosts instead of ~1 s.
+        checks_per_host = len(self.protocols) + sum(len(p) for p in SIMULATOR_PORTS.values())
+        workers = min(MAX_PROBE_THREADS, batch_size * checks_per_host)
+        self._probe_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=workers, thread_name_prefix="plc-probe"
+        )
+        try:
+            for i in range(0, total, batch_size):
+                batch = hosts[i:i + batch_size]
+                results = await asyncio.gather(
+                    *(self._probe_host_all(h, mac_table.get(h)) for h in batch),
+                    return_exceptions=True
+                )
+                
+                for result in results:
+                    if isinstance(result, list):
+                        for plc in result:
+                            self.discovered_plcs[plc_key(plc)] = plc
+                
+                self._report_progress("Scanning hosts", min(i + batch_size, total), total)
+        finally:
+            self._probe_executor.shutdown(wait=False)
+            self._probe_executor = None
     
     async def _arp_scan(self, ip: str, netmask: str) -> Dict[str, str]:
         """
@@ -304,16 +324,20 @@ class PLCDiscovery:
             for port in self._candidate_ports(ip, protocol)
         ]
         
+        # Batch scans use the dedicated pool; a single-host probe (protocol
+        # auto-detection) fits in the default pool
+        executor = self._probe_executor
+        
         async def check(protocol: Protocol, port: int) -> bool:
             try:
                 # TCP protocols: skip the probe if the port is closed.
                 # UDP protocols (FINS) have no connection to check first.
                 if protocol not in UDP_PROTOCOLS:
-                    if not await loop.run_in_executor(None, is_port_open, ip, port, timeout):
+                    if not await loop.run_in_executor(executor, is_port_open, ip, port, timeout):
                         return False
                 # An open port is not proof of a PLC (e.g. NAS on 5001):
                 # require a valid protocol reply
-                if await loop.run_in_executor(None, verify_protocol, ip, port, protocol, timeout):
+                if await loop.run_in_executor(executor, verify_protocol, ip, port, protocol, timeout):
                     logger.debug(f"Verified {protocol.name} on {ip}:{port}")
                     return True
                 logger.debug(f"Open port {ip}:{port} did not answer as {protocol.name}")
