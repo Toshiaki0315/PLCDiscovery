@@ -19,7 +19,7 @@ from .config import (
 )
 from .probes import UDP_PROTOCOLS, read_eip_identity, verify_protocol
 from .utils import (
-    get_network_info, get_subnet_hosts, parse_ip_range, read_arp_cache,
+    get_local_networks, get_subnet_hosts, parse_ip_range, read_arp_cache,
     is_port_open, get_manufacturer_from_mac, format_mac_address,
     get_timestamp, logger
 )
@@ -99,25 +99,33 @@ class PLCDiscovery:
     
     async def discover_same_segment(self) -> List[PLCInfo]:
         """
-        Discover PLCs on the same network segment.
-        Uses ARP for MAC discovery and port scanning for protocol detection.
+        Discover PLCs on every network this PC is connected to.
+        
+        All IPv4 interfaces are scanned (e.g. an office LAN and a separate
+        control LAN), and isolated networks without a default gateway work.
+        Uses ARP for MAC discovery and protocol probes for detection.
         """
-        ip, netmask, broadcast = get_network_info()
-        logger.info(f"Starting same-segment discovery from {ip}/{netmask}")
+        networks = get_local_networks()
+        if not networks:
+            logger.warning(
+                "No IPv4 network found on this PC (only loopback / link-local). "
+                "Specify the PLC network with an IP range instead."
+            )
+            return []
         
-        # Get all hosts in subnet
-        hosts = list(get_subnet_hosts(ip, netmask))
-        total_hosts = len(hosts)
+        labels = [str(ipaddress.IPv4Interface(f"{ip}/{mask}").network) for ip, mask in networks]
+        logger.info(f"Starting same-segment discovery on: {', '.join(labels)}")
         
-        self._report_progress(f"Scanning {total_hosts} hosts in subnet", 0, total_hosts)
+        for (ip, netmask), label in zip(networks, labels):
+            hosts = [h for h in get_subnet_hosts(ip, netmask) if h != ip]   # skip this PC
+            self._report_progress(f"Scanning {len(hosts)} hosts in {label}", 0, len(hosts))
+            
+            mac_table = {}
+            if SCAPY_AVAILABLE:
+                mac_table = await self._arp_scan(ip, netmask)
+            
+            await self._probe_hosts(hosts, mac_table)
         
-        # First, do ARP scan if scapy is available
-        mac_table = {}
-        if SCAPY_AVAILABLE:
-            mac_table = await self._arp_scan(ip, netmask)
-        
-        # Then scan each host for PLC protocols (skip self)
-        await self._probe_hosts([h for h in hosts if h != ip], mac_table)
         await self._fill_macs_from_arp_cache()
         return list(self.discovered_plcs.values())
     

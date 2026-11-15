@@ -6,13 +6,14 @@ This is faster than TCP port scanning for same-segment discovery.
 """
 
 import asyncio
+import ipaddress
 import socket
 import struct
 from typing import Dict, List, Optional, Tuple, Callable
 import logging
 
 from .config import Protocol, PLCInfo, NetworkConfig, PROTOCOL_PORTS
-from .utils import get_network_info, get_manufacturer_from_mac
+from .utils import get_local_networks, get_manufacturer_from_mac
 
 logger = logging.getLogger(__name__)
 
@@ -184,8 +185,13 @@ class BroadcastDiscovery:
         responses = {}
         
         try:
-            # Get broadcast address
-            _, _, broadcast = get_network_info()
+            # Directed broadcast address of every connected network (a PC may
+            # have several, and 255.255.255.255 alone leaves only one interface)
+            broadcasts = []
+            for ip, netmask in get_local_networks():
+                address = str(ipaddress.IPv4Network(f"{ip}/{netmask}", strict=False).broadcast_address)
+                if address not in broadcasts:
+                    broadcasts.append(address)
             
             # Create UDP socket
             loop = asyncio.get_running_loop()
@@ -200,12 +206,12 @@ class BroadcastDiscovery:
                 sock = transport.get_extra_info('socket')
                 sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
                 
-                # Send broadcast
-                logger.debug(f"Sending UDP broadcast to {broadcast}:{port}")
-                transport.sendto(data, (broadcast, port))
-                
-                # Also send to 255.255.255.255
-                transport.sendto(data, ("255.255.255.255", port))
+                for broadcast in broadcasts + ["255.255.255.255"]:
+                    logger.debug(f"Sending UDP broadcast to {broadcast}:{port}")
+                    try:
+                        transport.sendto(data, (broadcast, port))
+                    except OSError as e:
+                        logger.debug(f"Broadcast to {broadcast} failed: {e}")
                 
                 # Wait for responses
                 await asyncio.sleep(timeout)

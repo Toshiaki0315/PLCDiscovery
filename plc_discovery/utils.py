@@ -30,29 +30,117 @@ def get_local_ip() -> str:
         return "127.0.0.1"
 
 
-def get_network_info() -> Tuple[str, str, str]:
-    """Get local network information (IP, netmask, broadcast)"""
+def _networks_from_netifaces() -> Optional[List[Tuple[str, str]]]:
     try:
         import netifaces
-        
-        # Get the default gateway interface
-        gws = netifaces.gateways()
-        default_iface = gws.get('default', {}).get(netifaces.AF_INET, [None, None])[1]
-        
-        if default_iface:
-            addrs = netifaces.ifaddresses(default_iface)
-            if netifaces.AF_INET in addrs:
-                info = addrs[netifaces.AF_INET][0]
-                ip = info.get('addr', get_local_ip())
-                netmask = info.get('netmask', '255.255.255.0')
-                broadcast = info.get('broadcast', '255.255.255.255')
-                return ip, netmask, broadcast
     except ImportError:
-        logger.warning("netifaces not installed, using basic network detection")
-    except Exception as e:
-        logger.warning(f"Error getting network info: {e}")
+        return None
+    result = []
+    for iface in netifaces.interfaces():
+        for info in netifaces.ifaddresses(iface).get(netifaces.AF_INET, []):
+            if info.get("addr") and info.get("netmask"):
+                result.append((info["addr"], info["netmask"]))
+    return result
+
+
+_IFCONFIG_INET = re.compile(
+    r"\binet (?:addr:)?(\d+\.\d+\.\d+\.\d+)\b.*?(?:netmask|Mask:)\s*(0x[0-9a-fA-F]{8}|\d+\.\d+\.\d+\.\d+)"
+)
+_CIDR = re.compile(r"\b(\d+\.\d+\.\d+\.\d+)/(\d{1,2})\b")
+
+
+def parse_interface_listing(text: str) -> List[Tuple[str, str]]:
+    """
+    Parse IPv4 address/netmask pairs from "ifconfig" (macOS/BSD, also the
+    old Linux "inet addr: ... Mask:" form), "ip -o -4 addr" (Linux) or
+    "address/prefix" lines (Windows PowerShell Get-NetIPAddress).
+    """
+    result = []
+    for line in text.splitlines():
+        match = _IFCONFIG_INET.search(line)
+        if match:
+            address, mask = match.groups()
+            if mask.lower().startswith("0x"):
+                mask = str(ipaddress.IPv4Address(int(mask, 16)))
+            result.append((address, mask))
+            continue
+        match = _CIDR.search(line)
+        if match and int(match.group(2)) <= 32:
+            address, prefix = match.groups()
+            result.append((address, str(ipaddress.IPv4Network(f"0.0.0.0/{prefix}").netmask)))
+    return result
+
+
+def _networks_from_os() -> List[Tuple[str, str]]:
+    """IPv4 interfaces via the OS's own tools (no extra packages, no admin rights)"""
+    import subprocess
+    import sys
     
-    # Fallback
+    if sys.platform.startswith("win"):
+        commands = [[
+            "powershell", "-NoProfile", "-NonInteractive", "-Command",
+            "Get-NetIPAddress -AddressFamily IPv4 | ForEach-Object { $_.IPAddress + '/' + $_.PrefixLength }",
+        ]]
+    elif sys.platform.startswith("linux"):
+        commands = [["ip", "-o", "-4", "addr", "show"], ["ifconfig"]]
+    else:
+        commands = [["ifconfig"]]
+    for command in commands:
+        try:
+            result = subprocess.run(command, capture_output=True, timeout=10)
+        except (OSError, subprocess.SubprocessError) as e:
+            logger.debug(f"{command[0]} failed: {e}")
+            continue
+        networks = parse_interface_listing(result.stdout.decode("ascii", errors="ignore"))
+        if networks:
+            return networks
+    return []
+
+
+def get_local_networks() -> List[Tuple[str, str]]:
+    """
+    All IPv4 networks this PC is connected to, as (local IP, netmask).
+    
+    Considers every interface (e.g. an office LAN and a separate control
+    LAN) and works without a default gateway (isolated factory networks).
+    Loopback, link-local (169.254.x.x, an unconfigured interface) and
+    point-to-point /31-/32 addresses are excluded.
+    """
+    candidates = _networks_from_netifaces()
+    if not candidates:
+        candidates = _networks_from_os()
+    if not candidates:
+        # Last resort: the interface of the default route, assuming /24
+        local_ip = get_local_ip()
+        candidates = [(local_ip, "255.255.255.0")]
+    
+    networks: List[Tuple[str, str]] = []
+    seen = set()
+    for address, netmask in candidates:
+        try:
+            interface = ipaddress.IPv4Interface(f"{address}/{netmask}")
+        except ValueError:
+            continue
+        if interface.ip.is_loopback or interface.ip.is_link_local or interface.network.prefixlen >= 31:
+            continue
+        if interface.network in seen:
+            continue
+        seen.add(interface.network)
+        networks.append((str(interface.ip), str(interface.netmask)))
+    return networks
+
+
+def get_network_info() -> Tuple[str, str, str]:
+    """
+    Local network information (IP, netmask, broadcast) of the first
+    connected network; see get_local_networks() for all of them.
+    Falls back to the default-route address with /24.
+    """
+    networks = get_local_networks()
+    if networks:
+        ip, netmask = networks[0]
+        broadcast = str(ipaddress.IPv4Network(f"{ip}/{netmask}", strict=False).broadcast_address)
+        return ip, netmask, broadcast
     local_ip = get_local_ip()
     return local_ip, "255.255.255.0", "255.255.255.255"
 

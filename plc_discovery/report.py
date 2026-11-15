@@ -12,8 +12,20 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 from enum import Enum
 import html
+import math
 
 from .config import PLCInfo, DataPoint, StatusCode
+
+
+def json_safe(value):
+    """Recursively replace non-finite floats (NaN, Infinity) with None"""
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if isinstance(value, dict):
+        return {k: json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [json_safe(v) for v in value]
+    return value
 
 
 class ReportFormat(Enum):
@@ -237,7 +249,9 @@ class ReportGenerator:
             "errors": data.errors,
             "metadata": data.metadata
         }
-        return json.dumps(report_dict, indent=2, ensure_ascii=False)
+        # NaN / Infinity (e.g. a FLOAT decoded from 0xFFFF 0xFFFF) are not valid
+        # JSON; write them as null so strict parsers (JSON.parse, jq) accept the file
+        return json.dumps(json_safe(report_dict), indent=2, ensure_ascii=False, allow_nan=False)
     
     def _get_theme_css(self) -> str:
         """テーマCSSを取得"""

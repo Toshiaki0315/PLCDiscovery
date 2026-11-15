@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from .config import PLCInfo, DataPoint, StatusCode
+from .report import json_safe
 
 logger = logging.getLogger(__name__)
 
@@ -443,7 +444,9 @@ class DatabaseExporter:
                         dp.value,
                         dp.raw_hex,
                         dp.data_type,
-                        json.dumps(dp.converted_value) if dp.converted_value is not None else None,
+                        # NaN / Infinity stored as JSON null (valid JSON for any reader)
+                        json.dumps(json_safe(dp.converted_value), allow_nan=False)
+                        if dp.converted_value is not None else None,
                         dp.display_value,
                         dp.status.value if isinstance(dp.status, StatusCode) else dp.status,
                         dp.timestamp
