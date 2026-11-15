@@ -47,7 +47,8 @@ DEFAULT_CONFIG = {
         "enabled": True,
         "ip_ranges": [],  # List of IP ranges to scan
         "scan_same_segment": True,
-        "protocols": ["slmp", "ethernet_ip", "modbus", "s7"],
+        # Protocols probed during discovery (applies only when set in the file)
+        "protocols": ["slmp", "ethernet_ip", "modbus", "s7", "fins", "fins_tcp"],
     },
     
     # Target PLCs (for direct connection without discovery)
@@ -94,6 +95,20 @@ DEFAULT_CONFIG = {
         "default_byte_order": "little",
         "mappings": [],
     },
+}
+
+
+# Minimum periodic interval (same as the GUI): protects the PLC and keeps
+# per-cycle CSV files from colliding
+MIN_INTERVAL_SECONDS = 1.0
+
+# Protocol-specific handler options allowed in targets[].options
+TARGET_OPTIONS: Dict[Optional[Protocol], set] = {
+    Protocol.FINS: {"dest_node", "source_node"},
+    Protocol.FINS_TCP: {"dest_node", "source_node"},
+    Protocol.S7: {"rack", "slot", "db_number"},
+    Protocol.ETHERNET_IP: {"slot"},
+    Protocol.MODBUS_TCP: {"unit_id"},
 }
 
 
@@ -172,6 +187,10 @@ class ConfigLoader:
         def merge_dict(base: Dict, override: Dict) -> Dict:
             result = base.copy()
             for key, value in override.items():
+                if value is None and key in result:
+                    # An empty YAML section ("targets:" with only comments)
+                    # loads as None: keep the default ([] / {}) instead
+                    continue
                 if key in result and isinstance(result[key], dict) and isinstance(value, dict):
                     result[key] = merge_dict(result[key], value)
                 else:
@@ -223,6 +242,7 @@ class ConfigLoader:
                 port=target.get("port"),
                 manufacturer=target.get("manufacturer"),
                 model=target.get("model"),
+                options=dict(target.get("options") or {}),
             )
             targets.append(plc)
         
@@ -258,6 +278,15 @@ class ConfigLoader:
     def get_ip_ranges(self) -> List[str]:
         """Get IP ranges for discovery"""
         return self.config.get("discovery", {}).get("ip_ranges", [])
+    
+    def get_discovery_protocols(self) -> Optional[List[Protocol]]:
+        """
+        Protocols to probe during discovery, or None for all.
+        Only an explicit discovery.protocols in the file restricts discovery.
+        """
+        if not self.is_set("discovery", "protocols"):
+            return None
+        return [p for p in (self._parse_protocol(n) for n in self.config["discovery"]["protocols"]) if p]
     
     def get_output_settings(self) -> Dict[str, Any]:
         """Get output settings"""
@@ -387,6 +416,37 @@ class ConfigLoader:
         for i, target in enumerate(self.config.get("targets", [])):
             if not target.get("ip"):
                 errors.append(f"targets[{i}].ip is required")
+            protocol_str = target.get("protocol")
+            protocol = self._parse_protocol(protocol_str)
+            if protocol_str and protocol is None:
+                errors.append(
+                    f"targets[{i}].protocol: unknown protocol '{protocol_str}' "
+                    f"(omit it to auto-detect)"
+                )
+            options = target.get("options") or {}
+            if not isinstance(options, dict):
+                errors.append(f"targets[{i}].options must be a mapping")
+            elif options:
+                allowed = TARGET_OPTIONS.get(protocol, set())
+                unknown = sorted(set(options) - allowed)
+                if unknown:
+                    errors.append(
+                        f"targets[{i}].options: {', '.join(unknown)} not supported for "
+                        f"{protocol.name if protocol else 'auto-detected protocol'} "
+                        f"(allowed: {', '.join(sorted(allowed)) or 'none'})"
+                    )
+        
+        # Validate discovery protocol filter
+        for name in self.config.get("discovery", {}).get("protocols", []) or []:
+            if self._parse_protocol(name) is None:
+                errors.append(f"discovery.protocols: unknown protocol '{name}'")
+        
+        # Validate periodic interval
+        interval = self.config.get("scan", {}).get("interval_seconds", 0) or 0
+        if 0 < interval < MIN_INTERVAL_SECONDS:
+            errors.append(
+                f"scan.interval_seconds must be 0 (single scan) or >= {MIN_INTERVAL_SECONDS:g}"
+            )
         
         # Validate device ranges
         for i, range_def in enumerate(self.config.get("scan", {}).get("device_ranges", [])):

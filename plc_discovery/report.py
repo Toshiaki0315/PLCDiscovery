@@ -536,7 +536,7 @@ class ReportGenerator:
             <h2>📊 スキャン概要</h2>
             <div class="summary-grid">
                 <div class="stat-card">
-                    <div class="value">{summary.scan_mode}</div>
+                    <div class="value">{html.escape(summary.scan_mode)}</div>
                     <div class="label">スキャンモード</div>
                 </div>
                 <div class="stat-card">

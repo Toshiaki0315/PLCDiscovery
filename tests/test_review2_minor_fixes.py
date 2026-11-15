@@ -225,6 +225,7 @@ class TestNotifications:
         assert exc.value.code == 1
         manager.notify_error.assert_awaited_once()
         assert manager.notify_error.await_args.kwargs["plc_ip"] == "127.0.0.1"
+        assert manager.notify_error.await_args.kwargs["failed_targets"] == ["127.0.0.1"]
         args = manager.notify_scan_complete.await_args.args
         assert args[:3] == (1, 0, 1)  # plc_count, success, errors
 

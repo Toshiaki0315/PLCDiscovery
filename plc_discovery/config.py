@@ -262,6 +262,9 @@ class PLCInfo:
     port: Optional[int] = None
     cpu_type: Optional[str] = None
     firmware_version: Optional[str] = None
+    # Protocol-specific handler options (e.g. FINS node numbers, S7 rack/slot);
+    # passed to the protocol handler, not exported
+    options: Dict[str, Any] = field(default_factory=dict)
     
     def to_dict(self) -> Dict[str, Any]:
         """

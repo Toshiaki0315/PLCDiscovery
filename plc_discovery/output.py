@@ -94,6 +94,19 @@ class _SafeDictWriter(csv.DictWriter):
         return super().writerow({k: csv_safe(v) for k, v in rowdict.items()})
 
 
+def _unique_path(path: Path) -> Path:
+    """Return path, or path with _1, _2, ... appended if it already exists
+    (file names have one-second resolution)"""
+    if not path.exists():
+        return path
+    n = 1
+    while True:
+        candidate = path.with_name(f"{path.stem}_{n}{path.suffix}")
+        if not candidate.exists():
+            return candidate
+        n += 1
+
+
 class CSVExporter:
     """
     CSV Exporter for PLC scan results.
@@ -137,8 +150,9 @@ class CSVExporter:
         if not filename:
             timestamp = get_file_timestamp()
             filename = f"discovery_result_{timestamp}.csv"
-        
-        filepath = self.output_dir / filename
+            filepath = _unique_path(self.output_dir / filename)
+        else:
+            filepath = self.output_dir / filename
         
         try:
             with open(filepath, 'w', newline='', encoding=self.encoding) as f:
@@ -183,8 +197,9 @@ class CSVExporter:
             # Sanitize IP for filename
             safe_ip = plc_ip.replace(".", "_")
             filename = f"plc_data_{safe_ip}_{timestamp}.csv"
-        
-        filepath = self.output_dir / filename
+            filepath = _unique_path(self.output_dir / filename)
+        else:
+            filepath = self.output_dir / filename
         
         # Check if any data point has type conversion info
         has_type_info = any(
@@ -287,8 +302,9 @@ class CSVExporter:
         if not filename:
             timestamp = get_file_timestamp()
             filename = f"scan_summary_{timestamp}.csv"
-        
-        filepath = self.output_dir / filename
+            filepath = _unique_path(self.output_dir / filename)
+        else:
+            filepath = self.output_dir / filename
         
         summary_headers = [
             "ip_address",

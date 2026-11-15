@@ -213,11 +213,12 @@ python plc_scanner.py --mode full --target 192.168.1.10 --no-database
 | `--mode`, `-m` | 動作モード (discover/full/range)。省略時は設定ファイルの `scan.mode`（明示されている場合のみ） | discover |
 | `--target`, `-t` | 対象PLC IPアドレス（カンマ区切りで複数指定可） | - |
 | `--ip-range`, `-r` | スキャン対象IPレンジ | - |
+| `--discover-protocols` | 探索で確認するプロトコル（カンマ区切り、例: `slmp,modbus`）。省略時は設定ファイルの `discovery.protocols`、なければ全プロトコル | 全プロトコル |
 | `--protocol`, `-p` | プロトコル指定 (slmp/eip/modbus/s7/fins/fins-tcp)。fins は FINS/UDP、fins-tcp は FINS/TCP | 自動検出 |
 | `--port` | ポート番号 | プロトコルデフォルト |
 | `--device`, `-d` | デバイス種別 (D/M/W/R等) | D |
 | `--range` | アドレス範囲 (例: 0-1000) | 0-999 |
-| `--interval`, `-i` | 範囲指定モードの周期（秒）。省略時は設定ファイルの `scan.interval_seconds` | 0 (単発) |
+| `--interval`, `-i` | 範囲指定モードの周期（秒、1以上）。省略時は設定ファイルの `scan.interval_seconds` | 0 (単発) |
 | `--packet-interval` | パケット間隔(ms)。指定すると設定ファイルの値より優先 | 50 |
 | `--retry-interval` | リトライ間隔(ms)。指定すると設定ファイルの値より優先 | 200 |
 | `--request-timeout` | タイムアウト(ms)。指定すると設定ファイルの値より優先 | 5000 |

@@ -43,8 +43,19 @@ class PLCDiscovery:
     Scans network for PLCs using multiple protocols and methods.
     """
     
-    def __init__(self, config: Optional[NetworkConfig] = None):
+    def __init__(
+        self,
+        config: Optional[NetworkConfig] = None,
+        protocols: Optional[List[Protocol]] = None
+    ):
+        """
+        Args:
+            config: Network configuration
+            protocols: Protocols to probe (default: all). Restricting this
+                shortens discovery, e.g. skipping the per-host FINS/UDP probe.
+        """
         self.config = config or NetworkConfig()
+        self.protocols = list(protocols) if protocols else list(PROTOCOL_PORTS)
         self.discovered_plcs: Dict[str, PLCInfo] = {}
         self._progress_callback: Optional[Callable[[str, int, int], None]] = None
     
@@ -175,6 +186,8 @@ class PLCDiscovery:
         
         # Check each protocol port
         for protocol, port in PROTOCOL_PORTS.items():
+            if protocol not in self.protocols:
+                continue
             try:
                 # TCP protocols: skip the probe if the port is closed.
                 # UDP protocols (FINS) have no connection to check first.
@@ -321,11 +334,13 @@ class PLCDiscovery:
                         
                         if response and not response.isError():
                             info = response.information
-                            plc_info.manufacturer = info.get(0, b'').decode('utf-8', errors='ignore')
-                            plc_info.model = info.get(1, b'').decode('utf-8', errors='ignore')
-                            plc_info.firmware_version = info.get(2, b'').decode('utf-8', errors='ignore')
+                            text = lambda key: info.get(key, b'').decode('utf-8', errors='ignore').strip()
+                            # Keep values found earlier (e.g. MAC OUI) when a field is empty
+                            plc_info.manufacturer = text(0) or plc_info.manufacturer
+                            plc_info.model = text(1) or plc_info.model or "Modbus/TCP対応機器"
+                            plc_info.firmware_version = text(2) or plc_info.firmware_version
                         else:
-                            plc_info.model = "Modbus/TCP対応機器"
+                            plc_info.model = plc_info.model or "Modbus/TCP対応機器"
                     except Exception:
                         plc_info.model = "Modbus/TCP対応機器"
                     finally:
@@ -415,7 +430,8 @@ class PLCDiscovery:
 async def discover_plcs(
     ip_range: Optional[str] = None,
     config: Optional[NetworkConfig] = None,
-    progress_callback: Optional[Callable[[str, int, int], None]] = None
+    progress_callback: Optional[Callable[[str, int, int], None]] = None,
+    protocols: Optional[List[Protocol]] = None
 ) -> List[PLCInfo]:
     """
     Convenience function to discover PLCs.
@@ -428,7 +444,7 @@ async def discover_plcs(
     Returns:
         List of discovered PLCInfo objects.
     """
-    discovery = PLCDiscovery(config)
+    discovery = PLCDiscovery(config, protocols)
     
     if progress_callback:
         discovery.set_progress_callback(progress_callback)

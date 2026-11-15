@@ -47,7 +47,7 @@ from plc_discovery.discovery import PLCDiscovery, discover_plcs
 from plc_discovery.collector import PLCDataCollector
 from plc_discovery.output import CSVExporter
 from plc_discovery.utils import parse_ip_range
-from plc_discovery.config_loader import ConfigLoader, generate_config_template
+from plc_discovery.config_loader import MIN_INTERVAL_SECONDS, ConfigLoader, generate_config_template
 from plc_discovery.audit_log import init_audit_logger, get_audit_logger, close_audit_logger
 from plc_discovery.parallel import ParallelPLCScanner, scan_plcs_parallel
 from plc_discovery.broadcast_discovery import BroadcastDiscovery
@@ -169,6 +169,12 @@ Examples:
     )
     
     parser.add_argument(
+        "--discover-protocols",
+        help="Comma-separated protocols to probe in discover mode, e.g. slmp,modbus "
+             "(default: discovery.protocols from --config, otherwise all)"
+    )
+    
+    parser.add_argument(
         "--port",
         type=int,
         help="Override default port for the protocol"
@@ -212,7 +218,7 @@ Examples:
         "--interval", "-i",
         type=float,
         default=None,
-        help="Interval between scans in seconds for continuous range mode "
+        help="Interval between scans in seconds for continuous range mode, >= 1 "
              "(default: scan.interval_seconds from --config, otherwise 0 = single scan)"
     )
     
@@ -582,12 +588,15 @@ async def run_discovery(
     config: NetworkConfig,
     exporter: CSVExporter,
     display: RichProgressDisplay,
-    db_exporter: DatabaseExporter = None
+    db_exporter: DatabaseExporter = None,
+    protocols: Optional[List[Protocol]] = None
 ) -> List[PLCInfo]:
     """Run PLC discovery (same segment when ip_ranges is empty)"""
     audit = get_audit_logger()
     
     display.print_info("Starting PLC Discovery...")
+    if protocols:
+        display.print_info(f"Probing protocols: {', '.join(p.name for p in protocols)}")
     audit.log_discovery_start(ip_ranges)
     
     plcs = []
@@ -606,10 +615,14 @@ async def run_discovery(
     if ip_ranges:
         for ip_range in ip_ranges:
             display.print_info(f"Scanning IP range: {ip_range}")
-            tcp_plcs.extend(await discover_plcs(ip_range, config))
+            tcp_plcs.extend(await discover_plcs(ip_range, config, protocols=protocols))
     else:
         display.print_info("Scanning same network segment...")
-        tcp_plcs = await discover_plcs(None, config)
+        tcp_plcs = await discover_plcs(None, config, protocols=protocols)
+    
+    # Broadcast results are limited to the requested protocols too
+    if protocols:
+        plcs = [p for p in plcs if p.protocol in protocols]
     
     # Merge results (deduplicate by IP)
     existing_ips = {p.ip_address for p in plcs}
@@ -1023,6 +1036,7 @@ async def resolve_target(
         if base:
             detected.manufacturer = base.manufacturer or detected.manufacturer
             detected.model = base.model or detected.model
+            detected.options = dict(base.options)
         return detected
     
     display.print_warning(f"Could not detect protocol for {ip}, defaulting to SLMP")
@@ -1058,6 +1072,23 @@ def resolve_mode_and_interval(args, config_loader: Optional[ConfigLoader]) -> tu
     if interval is None:
         interval = config_loader.get_scan_interval() if config_loader else 0.0
     return mode_name, interval
+
+
+def resolve_discovery_protocols(args, config_loader: Optional[ConfigLoader]) -> Optional[List[Protocol]]:
+    """Protocols for discover mode: --discover-protocols, then config, then all (None)"""
+    if args.discover_protocols:
+        protocols = []
+        for name in args.discover_protocols.split(","):
+            protocol = get_protocol_from_string(name.strip()) or (
+                config_loader._parse_protocol(name.strip()) if config_loader else None
+            )
+            if protocol is None:
+                raise ValueError(f"Unknown protocol in --discover-protocols: '{name.strip()}'")
+            protocols.append(protocol)
+        return protocols
+    if config_loader:
+        return config_loader.get_discovery_protocols()
+    return None
 
 
 def resolve_device_ranges(args, config_loader: Optional[ConfigLoader]) -> List[DeviceRange]:
@@ -1111,6 +1142,9 @@ async def main():
             sys.exit(1)
     
     mode_name, interval = resolve_mode_and_interval(args, config_loader)
+    if mode_name == "range" and 0 < interval < MIN_INTERVAL_SECONDS:
+        print(f"Error: --interval must be 0 (single scan) or >= {MIN_INTERVAL_SECONDS:g} seconds")
+        sys.exit(1)
     
     # Create network config
     config = create_network_config(args, config_loader)
@@ -1219,7 +1253,10 @@ async def main():
             ip_ranges = [args.ip_range] if args.ip_range else (
                 config_loader.get_ip_ranges() if config_loader else []
             )
-            discovered = await run_discovery(ip_ranges, config, exporter, display, db_exporter)
+            discovered = await run_discovery(
+                ip_ranges, config, exporter, display, db_exporter,
+                resolve_discovery_protocols(args, config_loader)
+            )
             all_plcs = discovered if discovered else []
             await _notify(notifier, lambda n: n.notify_discovery(
                 len(all_plcs), [p.to_dict() for p in all_plcs]
@@ -1305,9 +1342,13 @@ async def main():
         
         scan_end_time = datetime.now()
         if mode_name != "discover":
-            for ip in failed_targets:
-                await _notify(notifier, lambda n, ip=ip: n.notify_error(
-                    f"Scan of {ip} failed", plc_ip=ip
+            # One error notification for all failed targets (each send can take
+            # several seconds when the endpoint is unreachable)
+            if failed_targets:
+                await _notify(notifier, lambda n: n.notify_error(
+                    f"Scan failed for {len(failed_targets)} target(s): {', '.join(failed_targets)}",
+                    plc_ip=failed_targets[0] if len(failed_targets) == 1 else None,
+                    failed_targets=failed_targets,
                 ))
             await _notify(notifier, lambda n: n.notify_scan_complete(
                 len(all_plcs),
@@ -1348,11 +1389,17 @@ async def main():
                 theme=args.report_theme,
             )
             
+            report_mode = mode_name
+            if mode_name == "range" and interval > 0:
+                # Periodic monitoring: data_points hold the last cycle only
+                report_mode = f"range (periodic every {interval:g}s, last cycle)"
+                display.print_info("Report contains the last monitoring cycle; per-cycle data is in the CSV files")
+            
             generator, report_data = create_report(
                 plcs=all_plcs,
                 data_points=all_data_points,
                 denied_addresses=all_denied_addresses,
-                scan_mode=mode_name,
+                scan_mode=report_mode,
                 started_at=scan_start_time,
                 completed_at=scan_end_time,
                 config=report_config

@@ -91,11 +91,16 @@ class PLCDataCollector:
             logger.error(f"No handler for protocol: {protocol}")
             return False
         
-        self._handler = handler_class(
-            ip_address=self.plc_info.ip_address,
-            port=self.plc_info.port,
-            config=self.config
-        )
+        try:
+            self._handler = handler_class(
+                ip_address=self.plc_info.ip_address,
+                port=self.plc_info.port,
+                config=self.config,
+                **(self.plc_info.options or {})
+            )
+        except TypeError as e:
+            logger.error(f"Invalid options for {protocol.name}: {self.plc_info.options} ({e})")
+            return False
         
         return await self._handler.connect()
     

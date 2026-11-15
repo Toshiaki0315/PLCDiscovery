@@ -6,6 +6,7 @@ CS/CJ/CP/NJ/NX series PLCs.
 """
 
 import asyncio
+import ipaddress
 import struct
 import logging
 from typing import List, Optional, Tuple
@@ -80,6 +81,14 @@ FINS_ERROR_CODES = {
 }
 
 
+def _last_octet(ip_address: str) -> int:
+    """Last octet of an IPv4 address (FINS node by automatic conversion); 0 if not IPv4"""
+    try:
+        return int(ipaddress.IPv4Address(ip_address)) & 0xFF
+    except ValueError:
+        return 0
+
+
 class FINSHandler(BaseProtocolHandler):
     """
     FINS protocol handler for Omron PLCs.
@@ -102,8 +111,8 @@ class FINSHandler(BaseProtocolHandler):
         port: Optional[int] = None,
         config: Optional[NetworkConfig] = None,
         use_tcp: bool = False,
-        source_node: int = 0,
-        dest_node: int = 0
+        source_node: Optional[int] = None,
+        dest_node: Optional[int] = None
     ):
         """
         Initialize FINS handler.
@@ -113,8 +122,11 @@ class FINSHandler(BaseProtocolHandler):
             port: Port number (default 9600)
             config: Network configuration
             use_tcp: Use TCP instead of UDP
-            source_node: Source node address (0-255)
-            dest_node: Destination node address (0-255)
+            source_node: FINS node of this PC (SA1). Default: FINS/UDP uses the
+                last octet of the local IP address, FINS/TCP lets the PLC assign it.
+            dest_node: FINS node of the PLC (DA1). Default: last octet of the
+                PLC's IP address (Omron automatic address conversion); with
+                FINS/TCP the PLC reports its node during the handshake.
         """
         super().__init__(
             ip_address,
@@ -126,8 +138,12 @@ class FINSHandler(BaseProtocolHandler):
         if use_tcp:
             # Per-instance protocol so max_read_size/logging reflect FINS/TCP
             self.protocol = Protocol.FINS_TCP
-        self.source_node = source_node
-        self.dest_node = dest_node
+        for name, value in (("source_node", source_node), ("dest_node", dest_node)):
+            if value is not None and not 0 <= value <= 254:
+                raise ValueError(f"{name} must be 0-254, got {value}")
+        self._source_node_explicit = source_node is not None
+        self.source_node = source_node if source_node is not None else 0
+        self.dest_node = dest_node if dest_node is not None else _last_octet(ip_address)
         
         self._transport = None
         self._protocol_instance = None
@@ -213,6 +229,11 @@ class FINSHandler(BaseProtocolHandler):
                 lambda: FINSUDPProtocol(self),
                 remote_addr=(self.ip_address, self.port)
             )
+            
+            # Default SA1: last octet of the local address used to reach the PLC
+            if not self._source_node_explicit:
+                sockname = self._transport.get_extra_info("sockname")
+                self.source_node = _last_octet(sockname[0]) if sockname else 0
             
             # UDP has no handshake: confirm a FINS node answers (any FINS
             # reply, even an error end code) with a read-only 1-word DM read
@@ -346,15 +367,12 @@ class FINSHandler(BaseProtocolHandler):
     
     def _build_tcp_handshake(self) -> bytes:
         """Build FINS/TCP node address negotiation request"""
-        # FINS/TCP header
-        header = bytes([
-            0x46, 0x49, 0x4E, 0x53,  # "FINS"
-            0x00, 0x00, 0x00, 0x0C,  # Length (12 bytes)
-            0x00, 0x00, 0x00, 0x00,  # Command: Node address data send
-            0x00, 0x00, 0x00, 0x00,  # Error code
-            0x00, 0x00, 0x00, 0x00,  # Client node address (0 = auto)
-        ])
-        return header
+        client_node = self.source_node if self._source_node_explicit else 0  # 0 = auto
+        return (
+            b"FINS"
+            + struct.pack(">III", 12, 0x00000000, 0)  # length, node address data send, error
+            + struct.pack(">I", client_node)
+        )
     
     def _wrap_tcp_frame(self, fins_frame: bytes) -> bytes:
         """Wrap FINS frame with TCP header"""
