@@ -206,6 +206,9 @@ class FakeCollector:
     def get_denied_addresses(self):
         return set()
 
+    def get_denied_statuses(self):
+        return {}
+
     def get_statistics(self):
         return {"total_points": 1, "success_count": 1, "error_count": 0}
 

@@ -94,7 +94,7 @@ class FINSHandler(BaseProtocolHandler):
     protocol = Protocol.FINS
     DEFAULT_PORT_UDP = 9600
     DEFAULT_PORT_TCP = 9600
-    MAX_READ_WORDS = 499  # FINS limit per read
+    MAX_READ_WORDS = 499  # FINS protocol limit per read (reads use SAFE_READ_WORDS)
     
     def __init__(
         self,
@@ -132,10 +132,6 @@ class FINSHandler(BaseProtocolHandler):
         self._writer = None
         self._sid = 0  # Service ID counter
     
-    @property
-    def max_read_size(self) -> int:
-        return self.MAX_READ_WORDS
-    
     async def connect(self) -> bool:
         """Establish connection to PLC"""
         try:
@@ -168,10 +164,12 @@ class FINSHandler(BaseProtocolHandler):
                 )
             except asyncio.IncompleteReadError:
                 logger.error("Invalid FINS/TCP handshake response")
+                await self._close_tcp()
                 return False
             
             if response[:4] != b"FINS" or struct.unpack(">I", response[12:16])[0] != 0:
                 logger.error("FINS/TCP handshake rejected")
+                await self._close_tcp()
                 return False
             
             # Parse response to get node addresses
@@ -185,10 +183,22 @@ class FINSHandler(BaseProtocolHandler):
             
         except asyncio.TimeoutError:
             logger.error("FINS/TCP connection timeout")
+            await self._close_tcp()
             return False
         except Exception as e:
             logger.error(f"FINS/TCP connection error: {e}")
+            await self._close_tcp()
             return False
+    
+    async def _close_tcp(self) -> None:
+        """Close a (possibly half-open) TCP stream without raising"""
+        writer, self._reader, self._writer = self._writer, None, None
+        if writer is not None:
+            try:
+                writer.close()
+                await writer.wait_closed()
+            except Exception as e:
+                logger.debug(f"FINS/TCP close error: {e}")
     
     async def _connect_udp(self) -> bool:
         """Establish UDP connection"""
@@ -200,6 +210,16 @@ class FINSHandler(BaseProtocolHandler):
                 lambda: FINSUDPProtocol(self),
                 remote_addr=(self.ip_address, self.port)
             )
+            
+            # UDP has no handshake: confirm a FINS node answers (any FINS
+            # reply, even an error end code) with a read-only 1-word DM read
+            frame = self._build_read_command(DeviceType.DM, 0, 1)
+            if await self._send_udp(frame, self._sid) is None:
+                logger.error(f"FINS/UDP: no response from {self.ip_address}:{self.port}")
+                self._transport.close()
+                self._transport = None
+                self._protocol_instance = None
+                return False
             
             self._connected = True
             logger.info(f"FINS/UDP connected to {self.ip_address}:{self.port}")
@@ -213,19 +233,14 @@ class FINSHandler(BaseProtocolHandler):
         """Close connection"""
         try:
             if self.use_tcp:
-                if self._writer:
-                    self._writer.close()
-                    await self._writer.wait_closed()
-            else:
-                if self._transport:
-                    self._transport.close()
-            
-            self._connected = False
+                await self._close_tcp()
+            elif self._transport:
+                self._transport.close()
             logger.info(f"FINS disconnected from {self.ip_address}")
-            
         except Exception as e:
             logger.warning(f"FINS disconnect error: {e}")
         finally:
+            self._connected = False
             self._reader = None
             self._writer = None
             self._transport = None

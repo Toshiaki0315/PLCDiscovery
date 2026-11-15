@@ -53,6 +53,7 @@ class PLCDataCollector:
         self._handler: Optional[BaseProtocolHandler] = None
         self._collected_data: List[DataPoint] = []
         self._denied_addresses: set = set()
+        self._denied_statuses: Dict[str, StatusCode] = {}
         self._progress_callback: Optional[Callable[[str, int, int], None]] = None
     
     def set_progress_callback(self, callback: Callable[[str, int, int], None]):
@@ -101,6 +102,7 @@ class PLCDataCollector:
         if self._handler:
             # Save denied addresses before disconnect
             self._denied_addresses = self._handler.get_denied_addresses()
+            self._denied_statuses = self._handler.get_denied_statuses()
             await self._handler.disconnect()
             self._handler = None
     
@@ -258,6 +260,12 @@ class PLCDataCollector:
             return self._handler.get_denied_addresses()
         return self._denied_addresses
     
+    def get_denied_statuses(self) -> Dict[str, StatusCode]:
+        """Get inaccessible addresses with their status"""
+        if self._handler:
+            return self._handler.get_denied_statuses()
+        return dict(self._denied_statuses)
+    
     def get_statistics(self) -> Dict:
         """
         Get collection statistics.
@@ -270,6 +278,7 @@ class PLCDataCollector:
         illegal = sum(1 for dp in self._collected_data if dp.status == StatusCode.NG_ILLEGAL_ADDR)
         timeout = sum(1 for dp in self._collected_data if dp.status == StatusCode.NG_TIMEOUT)
         error = sum(1 for dp in self._collected_data if dp.status == StatusCode.NG_COMM_ERROR)
+        unsupported = sum(1 for dp in self._collected_data if dp.status == StatusCode.NG_UNSUPPORTED)
         
         return {
             "total_points": total,
@@ -277,6 +286,7 @@ class PLCDataCollector:
             "illegal_address_count": illegal,
             "timeout_count": timeout,
             "error_count": error,
+            "unsupported_count": unsupported,
             "success_rate": f"{(success / total * 100):.2f}%" if total > 0 else "N/A",
             "denied_addresses": len(self.get_denied_addresses()),
         }

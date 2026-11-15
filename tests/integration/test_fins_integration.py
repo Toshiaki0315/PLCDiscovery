@@ -38,14 +38,11 @@ class TestFINSConnection:
             port=59999,  # Wrong port
         )
         
-        # Connection to a closed UDP port on localhost usually does not fail on connect()
-        # but the read request will fail. We assert that reading fails or connection fails.
-        # Actually UDP connect() never fails, so we test reading instead.
+        # UDP itself has no handshake; connect() verifies that a FINS node
+        # answers, so a port without a FINS server must not be "connected".
         async with PLCDataCollector(plc_info, network_config) as collector:
-            assert collector._handler.is_connected is True  # UDP connect is always True
-            data_points = await collector.collect_range(DeviceType.DM, 0, 0)
-            assert len(data_points) == 1
-            assert data_points[0].status == StatusCode.NG_TIMEOUT
+            assert collector._handler.is_connected is False
+            assert await collector.collect_range(DeviceType.DM, 0, 0) == []
 
 
 class TestFINSDataRead:

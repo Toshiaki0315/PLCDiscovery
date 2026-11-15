@@ -70,16 +70,9 @@ class AuditLogger:
     Thread-safe implementation.
     """
     
-    _instance = None
-    _lock = threading.Lock()
-    
-    def __new__(cls, *args, **kwargs):
-        """Singleton pattern for global audit logger"""
-        if cls._instance is None:
-            with cls._lock:
-                if cls._instance is None:
-                    cls._instance = super().__new__(cls)
-        return cls._instance
+    # The process-wide instance is managed by init_audit_logger() /
+    # get_audit_logger(). The class itself is not a singleton: a singleton
+    # silently ignored the log file passed to a later init_audit_logger().
     
     def __init__(
         self,
@@ -87,10 +80,6 @@ class AuditLogger:
         enabled: bool = True,
         console_output: bool = False
     ):
-        # Only initialize once
-        if hasattr(self, '_initialized') and self._initialized:
-            return
-        
         self.log_file = log_file
         self.enabled = enabled
         self.console_output = console_output
@@ -377,8 +366,10 @@ def init_audit_logger(
     enabled: bool = True,
     console_output: bool = False
 ) -> AuditLogger:
-    """Initialize global audit logger"""
+    """Initialize (or re-initialize) the global audit logger"""
     global _audit_logger
+    if _audit_logger is not None:
+        _audit_logger.close()
     _audit_logger = AuditLogger(
         log_file=log_file,
         enabled=enabled,

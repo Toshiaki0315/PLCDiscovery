@@ -106,6 +106,7 @@ CREATE TABLE IF NOT EXISTS data_history (
 
 -- Indexes for performance
 CREATE INDEX IF NOT EXISTS idx_data_points_plc_ip ON data_points(plc_ip);
+CREATE INDEX IF NOT EXISTS idx_data_points_plc_addr_id ON data_points(plc_ip, address, id);
 CREATE INDEX IF NOT EXISTS idx_data_points_address ON data_points(address);
 CREATE INDEX IF NOT EXISTS idx_data_points_timestamp ON data_points(timestamp);
 CREATE INDEX IF NOT EXISTS idx_data_points_session ON data_points(session_id);
@@ -166,6 +167,10 @@ class DatabaseExporter:
         self.config = config or DatabaseConfig()
         self._connection: Optional[sqlite3.Connection] = None
         self._current_session_id: Optional[int] = None
+        # Latest value per address, per PLC: loaded from the database once,
+        # then kept up to date in memory so periodic exports do not re-scan
+        # the whole data_points table every cycle
+        self._latest_values: Dict[str, Dict[str, int]] = {}
         
         if self.config.enabled:
             self._initialize_database()
@@ -257,6 +262,21 @@ class DatabaseExporter:
         except Exception as e:
             self._complete_session(session_id, f"error: {str(e)}")
             raise
+    
+    def begin_session(self, mode: str) -> Optional[int]:
+        """
+        Start a scan session explicitly (for callers that cannot use the
+        session() context manager). Exports made until end_session() are
+        tagged with this session id.
+        """
+        if not self.is_enabled:
+            return None
+        return self._start_session(mode)
+    
+    def end_session(self, status: str = "completed") -> None:
+        """Complete the session started with begin_session()"""
+        if self.is_enabled and self._current_session_id is not None:
+            self._complete_session(self._current_session_id, status)
     
     def _start_session(self, mode: str) -> int:
         """Start a new scan session"""
@@ -399,9 +419,11 @@ class DatabaseExporter:
         count = 0
         
         # Get previous values for history tracking
-        previous_values = {}
+        previous_values: Dict[str, int] = {}
         if self.config.track_history:
-            previous_values = self._get_latest_values(plc_ip)
+            if plc_ip not in self._latest_values:
+                self._latest_values[plc_ip] = self._get_latest_values(plc_ip)
+            previous_values = self._latest_values[plc_ip]
         
         for dp in data_points:
             try:
@@ -434,6 +456,7 @@ class DatabaseExporter:
                     old_value = previous_values.get(dp.address)
                     if old_value is not None and old_value != dp.value:
                         self._record_change(plc_ip, dp.address, old_value, dp.value)
+                    previous_values[dp.address] = dp.value
                 
             except Exception as e:
                 logger.warning(f"Failed to export data point {dp.address}: {e}")
@@ -446,7 +469,8 @@ class DatabaseExporter:
         self,
         denied_addresses: Set[str],
         plc_ip: str,
-        session_id: Optional[int] = None
+        session_id: Optional[int] = None,
+        statuses: Optional[Dict[str, StatusCode]] = None
     ) -> int:
         """
         Export denied addresses.
@@ -455,6 +479,7 @@ class DatabaseExporter:
             denied_addresses: Set of denied address strings
             plc_ip: PLC IP address
             session_id: Optional session ID
+            statuses: Optional per-address status (stored instead of "DENIED")
         
         Returns:
             Number of records inserted
@@ -474,7 +499,9 @@ class DatabaseExporter:
                         session_id, plc_ip, address, status, timestamp
                     ) VALUES (?, ?, ?, ?, ?)
                     """,
-                    (session_id, plc_ip, address, "DENIED", now)
+                    (session_id, plc_ip, address,
+                     statuses[address].value if statuses and address in statuses else "DENIED",
+                     now)
                 )
                 count += 1
             except Exception as e:
@@ -679,6 +706,10 @@ class DatabaseExporter:
         return stats
     
     def cleanup_old_data(self, days: int = None):
+        self._latest_values.clear()
+        return self._cleanup_old_data(days)
+    
+    def _cleanup_old_data(self, days: int = None):
         """
         Clean up old data to manage database size.
         

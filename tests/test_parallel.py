@@ -48,6 +48,9 @@ class MockCollector:
     
     def get_denied_addresses(self):
         return self._denied_addresses
+    
+    def get_denied_statuses(self):
+        return {a: StatusCode.NG_ILLEGAL_ADDR for a in self._denied_addresses}
 
 
 class TestPLCScanResult:

@@ -55,6 +55,7 @@ from plc_discovery.progress import RichProgressDisplay, get_display, is_rich_ava
 from plc_discovery.data_types import (
     DataType, ByteOrder, DataTypeConverter, DataTypeManager, DataTypeMapping
 )
+from plc_discovery.notifications import NotificationManager
 from plc_discovery.database import (
     DatabaseExporter, DatabaseConfig, get_database_exporter
 )
@@ -217,29 +218,29 @@ Examples:
     parser.add_argument(
         "--packet-interval",
         type=int,
-        default=50,
-        help="Wait time between packets in ms (default: 50)"
+        default=None,
+        help="Wait time between packets in ms (default: 50, or network.packet_interval_ms from --config)"
     )
     
     parser.add_argument(
         "--retry-interval",
         type=int,
-        default=200,
-        help="Wait time before retry in ms (default: 200)"
+        default=None,
+        help="Wait time before retry in ms (default: 200, or network.retry_interval_ms from --config)"
     )
     
     parser.add_argument(
         "--request-timeout",
         type=int,
-        default=5000,
-        help="Request timeout in ms (default: 5000)"
+        default=None,
+        help="Request timeout in ms (default: 5000, or network.request_timeout_ms from --config)"
     )
     
     parser.add_argument(
         "--max-concurrent",
         type=int,
-        default=1,
-        help="Maximum concurrent PLC connections (default: 1)"
+        default=None,
+        help="Maximum concurrent PLC connections (default: 1, or network.max_concurrent from --config)"
     )
     
     # Output options
@@ -290,7 +291,7 @@ Examples:
     
     parser.add_argument(
         "--report-output",
-        help="Report output path (auto-generated if not specified)"
+        help="Report output path, used as given (default: plc_report_<timestamp> in the output directory)"
     )
     
     parser.add_argument(
@@ -398,16 +399,18 @@ def parse_address_range(range_str: str) -> tuple:
 
 
 def create_network_config(args, config_loader: Optional[ConfigLoader] = None) -> NetworkConfig:
-    """Create NetworkConfig from command line arguments or config file"""
-    if config_loader:
-        return config_loader.get_network_config()
-    
-    return NetworkConfig(
-        packet_interval_ms=args.packet_interval,
-        retry_interval_ms=args.retry_interval,
-        request_timeout_ms=args.request_timeout,
-        max_concurrent=args.max_concurrent,
-    )
+    """
+    Create NetworkConfig: defaults, then the config file's network section,
+    then any timing option given explicitly on the command line.
+    """
+    config = config_loader.get_network_config() if config_loader else NetworkConfig()
+    overrides = {
+        "packet_interval_ms": args.packet_interval,
+        "retry_interval_ms": args.retry_interval,
+        "request_timeout_ms": args.request_timeout,
+        "max_concurrent": args.max_concurrent,
+    }
+    return dataclasses.replace(config, **{k: v for k, v in overrides.items() if v is not None})
 
 
 def parse_targets(target_str: str) -> List[str]:
@@ -639,11 +642,15 @@ async def run_parallel_scan(
                 db_exporter.export_plc_data(converted_points, ip)
         
         if result.denied_addresses:
-            exporter.export_denied_addresses(result.denied_addresses, ip)
+            exporter.export_denied_addresses(
+                result.denied_addresses, ip, statuses=result.denied_statuses
+            )
             
             # Save denied addresses to database
             if db_exporter and db_exporter.is_enabled:
-                db_exporter.export_denied_addresses(result.denied_addresses, ip)
+                db_exporter.export_denied_addresses(
+                    result.denied_addresses, ip, statuses=result.denied_statuses
+                )
     
     # Display results
     result_dicts = {
@@ -718,15 +725,16 @@ class _ResultWriter:
             self.display.print_info(f"Saved {db_count} records to database")
         return path
     
-    def export_new_denied(self, denied: Set[str]) -> Optional[str]:
+    def export_new_denied(self, denied: Set[str],
+                          statuses: Optional[Dict[str, StatusCode]] = None) -> Optional[str]:
         """Append only addresses not yet written in this session"""
         new = set(denied) - self._exported_denied
         if not new:
             return None
         self._exported_denied.update(new)
-        path = self.exporter.export_denied_addresses(new, self.ip)
+        path = self.exporter.export_denied_addresses(new, self.ip, statuses=statuses)
         if self.db_exporter and self.db_exporter.is_enabled:
-            self.db_exporter.export_denied_addresses(new, self.ip)
+            self.db_exporter.export_denied_addresses(new, self.ip, statuses=statuses)
         return path
 
 
@@ -801,6 +809,7 @@ async def run_single_scan(
                 outcome.data_points = await _collect_ranges(collector, device_ranges or [])
             
             outcome.denied_addresses = collector.get_denied_addresses()
+            denied_statuses = collector.get_denied_statuses()
             stats = collector.get_statistics()
             audit.log_scan_complete(
                 ip, stats["total_points"], stats["success_count"], stats["error_count"],
@@ -823,7 +832,7 @@ async def run_single_scan(
             if dp.converted_value is not None:
                 display.print(f"  {dp.address}: {dp.display_value} ({dp.data_type})")
     
-    denied_path = writer.export_new_denied(outcome.denied_addresses)
+    denied_path = writer.export_new_denied(outcome.denied_addresses, denied_statuses)
     if denied_path:
         display.print_info(f"Denied addresses logged to: {denied_path}")
     
@@ -892,7 +901,9 @@ async def run_periodic_scan(
                     points = apply_data_type_conversion(points, data_type, byte_order, type_manager)
                     outcomes[ip].data_points = points
                     writers[ip].export_points(points)
-                    writers[ip].export_new_denied(collector.get_denied_addresses())
+                    writers[ip].export_new_denied(
+                        collector.get_denied_addresses(), collector.get_denied_statuses()
+                    )
                 
                 wait = max(0.0, interval - (loop.time() - cycle_started))
                 if wait == 0.0:
@@ -911,7 +922,7 @@ async def run_periodic_scan(
             outcome = outcomes[ip]
             outcome.interrupted = interrupted
             outcome.denied_addresses = collector.get_denied_addresses()
-            writers[ip].export_new_denied(outcome.denied_addresses)
+            writers[ip].export_new_denied(outcome.denied_addresses, collector.get_denied_statuses())
             stats = collector.get_statistics()
             audit.log_scan_complete(
                 ip, stats["total_points"], stats["success_count"], stats["error_count"],
@@ -956,6 +967,16 @@ async def resolve_target(
         protocol=Protocol.SLMP,
         port=port or PROTOCOL_PORTS[Protocol.SLMP]
     )
+
+
+async def _notify(notifier: Optional[NotificationManager], send) -> None:
+    """Send a notification if configured; never let it break the scan"""
+    if notifier is None:
+        return
+    try:
+        await send(notifier)
+    except Exception as e:
+        logger.warning(f"Notification failed: {e}")
 
 
 def resolve_mode_and_interval(args, config_loader: Optional[ConfigLoader]) -> tuple:
@@ -1008,8 +1029,15 @@ async def main():
     # Load configuration file if specified
     config_loader = None
     if args.config:
+        if not Path(args.config).is_file():
+            print(f"Config error: file not found: {args.config}")
+            sys.exit(1)
         config_loader = ConfigLoader(args.config)
-        config_loader.load()
+        try:
+            config_loader.load()
+        except Exception as e:
+            print(f"Config error: {e}")
+            sys.exit(1)
         
         # Validate configuration
         errors = config_loader.validate()
@@ -1073,6 +1101,12 @@ async def main():
             except Exception as e:
                 display.print_warning(f"Failed to initialize database: {e}")
     
+    # Notifications (webhook / Slack / Teams) from the config file
+    notifier: Optional[NotificationManager] = None
+    if config_loader and config_loader.config.get("notifications"):
+        notifier = NotificationManager.from_config(config_loader.config)
+        display.print_info(f"Notifications enabled: {len(notifier._handlers)} handler(s)")
+    
     # Parse data type options
     data_type = DATA_TYPE_MAP.get(args.data_type) if args.data_type else None
     byte_order = BYTE_ORDER_MAP.get(args.byte_order, ByteOrder.LITTLE_ENDIAN)
@@ -1113,12 +1147,19 @@ async def main():
         from datetime import datetime
         scan_start_time = datetime.now()
         
+        # Tag all database rows of this run with one scan session
+        if db_exporter and db_exporter.is_enabled:
+            db_exporter.begin_session(mode_name)
+        
         if mode_name == "discover":
             ip_ranges = [args.ip_range] if args.ip_range else (
                 config_loader.get_ip_ranges() if config_loader else []
             )
             discovered = await run_discovery(ip_ranges, config, exporter, display, db_exporter)
             all_plcs = discovered if discovered else []
+            await _notify(notifier, lambda n: n.notify_discovery(
+                len(all_plcs), [p.to_dict() for p in all_plcs]
+            ))
         
         else:
             # Validate ranges before connecting to anything
@@ -1139,12 +1180,14 @@ async def main():
             else:
                 if not targets:
                     display.print_error("--target is required for full/range modes")
+                    exit_code = 1
                     sys.exit(1)
                 for ip in targets:
                     plc_infos.append(await resolve_target(ip, protocol, args.port, config, display))
             
             if not plc_infos:
                 display.print_error("No targets specified")
+                exit_code = 1
                 sys.exit(1)
             
             if mode == ScanMode.FULL and interval > 0:
@@ -1197,6 +1240,20 @@ async def main():
                         all_denied_addresses[plc_info.ip_address] = list(outcome.denied_addresses)
         
         scan_end_time = datetime.now()
+        if mode_name != "discover":
+            for ip in failed_targets:
+                await _notify(notifier, lambda n, ip=ip: n.notify_error(
+                    f"Scan of {ip} failed", plc_ip=ip
+                ))
+            await _notify(notifier, lambda n: n.notify_scan_complete(
+                len(all_plcs),
+                len(all_plcs) - len(failed_targets),
+                len(failed_targets),
+                (scan_end_time - scan_start_time).total_seconds(),
+                mode=mode_name,
+                interrupted=interrupted,
+            ))
+        
         if interrupted:
             display.print_warning("Scan stopped by user.")
             exit_code = 130
@@ -1255,9 +1312,18 @@ async def main():
             import traceback
             traceback.print_exc()
         exit_code = 1
+        await _notify(notifier, lambda n: n.notify_error(str(e)))
     finally:
         # Close database
         if db_exporter:
+            try:
+                db_exporter.end_session({
+                    0: "completed",
+                    1: "completed with errors",
+                    130: "interrupted",
+                }.get(exit_code, f"exit {exit_code}"))
+            except Exception as e:
+                logger.warning(f"Failed to close database session: {e}")
             db_exporter.close()
         
         # Close audit logger

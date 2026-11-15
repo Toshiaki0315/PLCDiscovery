@@ -83,6 +83,9 @@ class FakeCollector:
     def get_denied_addresses(self):
         return set(self._denied)
 
+    def get_denied_statuses(self):
+        return {a: StatusCode.NG_ILLEGAL_ADDR for a in self._denied}
+
     def get_statistics(self):
         return {"total_points": 1, "success_count": 1, "error_count": 0}
 
@@ -251,7 +254,9 @@ async def test_interrupt_finalizes_and_denied_logged_once():
     assert outcome.success is True
     assert collector.exited  # disconnected
     assert collector.cleared == collector.collect_calls  # no accumulation
-    exporter.export_denied_addresses.assert_called_once_with({"D5"}, "127.0.0.1")
+    exporter.export_denied_addresses.assert_called_once_with(
+        {"D5"}, "127.0.0.1", statuses={"D5": StatusCode.NG_ILLEGAL_ADDR}
+    )
     # one CSV per iteration, none duplicated after the loop
     assert exporter.export_plc_data.call_count == collector.collect_calls
 

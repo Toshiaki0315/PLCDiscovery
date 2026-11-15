@@ -218,10 +218,10 @@ python plc_scanner.py --mode full --target 192.168.1.10 --no-database
 | `--device`, `-d` | デバイス種別 (D/M/W/R等) | D |
 | `--range` | アドレス範囲 (例: 0-1000) | 0-999 |
 | `--interval`, `-i` | 範囲指定モードの周期（秒）。省略時は設定ファイルの `scan.interval_seconds` | 0 (単発) |
-| `--packet-interval` | パケット間隔(ms) | 50 |
-| `--retry-interval` | リトライ間隔(ms) | 200 |
-| `--request-timeout` | タイムアウト(ms) | 5000 |
-| `--max-concurrent` | 最大同時接続数 | 1 |
+| `--packet-interval` | パケット間隔(ms)。指定すると設定ファイルの値より優先 | 50 |
+| `--retry-interval` | リトライ間隔(ms)。指定すると設定ファイルの値より優先 | 200 |
+| `--request-timeout` | タイムアウト(ms)。指定すると設定ファイルの値より優先 | 5000 |
+| `--max-concurrent` | 最大同時接続数。指定すると設定ファイルの値より優先 | 1 |
 | `--output-dir`, `-o` | 出力ディレクトリ | ./plc_scan_results |
 | `--encoding` | 出力エンコーディング | utf-8 |
 | `--audit-log` | 監査ログファイルパス | - |
@@ -229,7 +229,7 @@ python plc_scanner.py --mode full --target 192.168.1.10 --no-database
 | `--no-database` | データベース出力を無効化 | - |
 | `--db-track-history` | データベースの変更履歴追跡を有効化 | - |
 | `--report` | レポート形式 (html/pdf/json) | - |
-| `--report-output` | レポート出力パス | 自動生成 |
+| `--report-output` | レポート出力パス（指定したパスをそのまま使用） | 出力ディレクトリ内に自動生成 |
 | `--report-title` | レポートタイトル | "PLC Discovery レポート" |
 | `--report-company` | レポート記載会社名 | - |
 | `--report-theme` | レポートテーマ (default/dark/light) | default |

@@ -48,7 +48,7 @@ def modbus_unit_kwargs(method, unit_id: int) -> dict:
 
 # Modbus TCP constants
 MODBUS_PORT = 502
-MODBUS_MAX_READ_REGISTERS = 125  # Maximum registers per request
+MODBUS_MAX_READ_REGISTERS = 125  # Protocol maximum (reads use SAFE_READ_WORDS = 100)
 MODBUS_MAX_READ_COILS = 2000     # Maximum coils per request
 
 
@@ -72,11 +72,6 @@ class ModbusHandler(BaseProtocolHandler):
         super().__init__(ip_address, port or PROTOCOL_PORTS.get(Protocol.MODBUS_TCP, MODBUS_PORT), **kwargs)
         self._client = None
         self._unit_id = unit_id
-    
-    @property
-    def max_read_size(self) -> int:
-        """Maximum registers that can be read in a single request"""
-        return MODBUS_MAX_READ_REGISTERS
     
     async def connect(self) -> bool:
         """Establish Modbus/TCP connection"""

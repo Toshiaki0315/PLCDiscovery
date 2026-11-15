@@ -692,7 +692,9 @@ class PLCScannerApp:
                 path = exporter.export_plc_data(points, ip) if points else None
                 # Append only addresses not yet logged (avoid duplicates every cycle)
                 new_denied = collector.get_denied_addresses() - exported_denied
-                denied_path = exporter.export_denied_addresses(new_denied, ip) if new_denied else None
+                denied_path = exporter.export_denied_addresses(
+                    new_denied, ip, statuses=collector.get_denied_statuses()
+                ) if new_denied else None
                 exported_denied |= new_denied
                 self._post("data", points, collector.get_statistics(), path, denied_path, iteration)
 

@@ -89,12 +89,16 @@ class TestPLCDataCollector:
         mock_handler = AsyncMock()
         mock_handler.disconnect = AsyncMock()
         mock_handler.get_denied_addresses = MagicMock(return_value={"D100"})
+        mock_handler.get_denied_statuses = MagicMock(
+            return_value={"D100": StatusCode.NG_ILLEGAL_ADDR}
+        )
         collector._handler = mock_handler
-        
+
         await collector.disconnect()
-        
+
         mock_handler.disconnect.assert_called_once()
         assert collector._denied_addresses == {"D100"}
+        assert collector.get_denied_statuses() == {"D100": StatusCode.NG_ILLEGAL_ADDR}
     
     @pytest.mark.asyncio
     async def test_collect_range(self, sample_plc_info, network_config, sample_data_points):
@@ -156,8 +160,9 @@ class TestPLCDataCollector:
         mock_handler.connect = AsyncMock(return_value=True)
         mock_handler.disconnect = AsyncMock()
         mock_handler.get_denied_addresses = MagicMock(return_value=set())
+        mock_handler.get_denied_statuses = MagicMock(return_value={})
         mock_handler.is_connected = True
-        
+
         with patch.dict('plc_discovery.collector.PROTOCOL_HANDLERS', {Protocol.SLMP: MagicMock(return_value=mock_handler)}):
             async with PLCDataCollector(sample_plc_info, network_config) as collector:
                 assert collector._handler is not None

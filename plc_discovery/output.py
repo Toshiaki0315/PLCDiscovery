@@ -10,7 +10,7 @@ Provides CSV file generation for:
 import csv
 import os
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Mapping, Optional, Set
 import logging
 
 from .config import PLCInfo, DataPoint, StatusCode
@@ -185,7 +185,8 @@ class CSVExporter:
         denied_addresses: Set[str],
         plc_ip: str,
         status: StatusCode = StatusCode.NG_ILLEGAL_ADDR,
-        filename: Optional[str] = None
+        filename: Optional[str] = None,
+        statuses: Optional[Mapping[str, StatusCode]] = None
     ) -> str:
         """
         Export inaccessible addresses log to CSV.
@@ -193,8 +194,9 @@ class CSVExporter:
         Args:
             denied_addresses: Set of address strings
             plc_ip: IP address of the PLC
-            status: Status code for the addresses
+            status: Status code for addresses missing from ``statuses``
             filename: Optional custom filename
+            statuses: Per-address status (e.g. NG_UNSUPPORTED)
         
         Returns:
             Path to the created file
@@ -218,9 +220,10 @@ class CSVExporter:
                 timestamp = get_timestamp()
                 
                 for address in sorted(denied_addresses):
+                    address_status = (statuses or {}).get(address) or status
                     writer.writerow({
                         "address": address,
-                        "status": status.value,
+                        "status": address_status.value,
                         "last_attempt": timestamp,
                         "plc_ip": plc_ip
                     })

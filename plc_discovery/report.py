@@ -107,7 +107,8 @@ class ReportGenerator:
         
         Args:
             data: レポートデータ
-            output_path: 出力パス（指定しない場合は自動生成）
+            output_path: 出力パス。指定時はそのまま使う。省略時は
+                config.output_path 内に plc_report_<日時>.<拡張子> を作る
         
         Returns:
             保存されたファイルパス
@@ -115,12 +116,13 @@ class ReportGenerator:
         content = self.generate(data)
         
         if output_path is None:
+            # Auto-generated name goes into the configured output directory;
+            # an explicit path is used exactly as given
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             ext = self.config.format.value
             output_path = f"plc_report_{timestamp}.{ext}"
-        
-        if self.config.output_path:
-            output_path = os.path.join(self.config.output_path, output_path)
+            if self.config.output_path:
+                output_path = os.path.join(self.config.output_path, output_path)
         
         # ディレクトリ作成
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)

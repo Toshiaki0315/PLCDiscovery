@@ -32,7 +32,7 @@ try:
     AIOHTTP_AVAILABLE = True
 except ImportError:
     AIOHTTP_AVAILABLE = False
-    logger.warning("aiohttp not available, using urllib for notifications")
+    logger.debug("aiohttp not available, using urllib for notifications")
 
 
 class NotificationType(Enum):
@@ -95,6 +95,14 @@ class NotificationConfig:
     retry_count: int = 3
     # Custom handler function (for type="custom")
     handler: Optional[Callable] = None
+
+
+def _urlopen_status(req, timeout: float) -> int:
+    """Blocking urllib POST; run via asyncio.to_thread so the event loop
+    (and any PLC communication on it) is not blocked"""
+    import urllib.request
+    with urllib.request.urlopen(req, timeout=timeout) as response:
+        return response.status
 
 
 class NotificationHandler(ABC):
@@ -170,11 +178,11 @@ class WebhookHandler(NotificationHandler):
                         method='POST'
                     )
                     
-                    with urllib.request.urlopen(req, timeout=self.config.timeout_seconds) as response:
-                        if response.status < 400:
-                            logger.debug(f"Webhook sent successfully: {self.config.name}")
-                            return True
-                
+                    status = await asyncio.to_thread(_urlopen_status, req, self.config.timeout_seconds)
+                    if status < 400:
+                        logger.debug(f"Webhook sent successfully: {self.config.name}")
+                        return True
+
             except Exception as e:
                 logger.warning(f"Webhook attempt {attempt + 1} failed: {e}")
                 if attempt < self.config.retry_count - 1:
@@ -250,9 +258,9 @@ class SlackHandler(NotificationHandler):
                         headers={"Content-Type": "application/json"},
                         method='POST'
                     )
-                    with urllib.request.urlopen(req, timeout=self.config.timeout_seconds) as response:
-                        if response.status == 200:
-                            return True
+                    status = await asyncio.to_thread(_urlopen_status, req, self.config.timeout_seconds)
+                    if status == 200:
+                        return True
                             
             except Exception as e:
                 logger.warning(f"Slack attempt {attempt + 1} failed: {e}")
@@ -328,9 +336,9 @@ class TeamsHandler(NotificationHandler):
                         headers={"Content-Type": "application/json"},
                         method='POST'
                     )
-                    with urllib.request.urlopen(req, timeout=self.config.timeout_seconds) as response:
-                        if response.status == 200:
-                            return True
+                    status = await asyncio.to_thread(_urlopen_status, req, self.config.timeout_seconds)
+                    if status == 200:
+                        return True
                             
             except Exception as e:
                 logger.warning(f"Teams attempt {attempt + 1} failed: {e}")

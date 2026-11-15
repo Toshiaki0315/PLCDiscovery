@@ -8,7 +8,7 @@ and proper error isolation.
 import asyncio
 from typing import Callable, Dict, List, Optional, Tuple, Any
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from .config import (
@@ -31,6 +31,7 @@ class PLCScanResult:
     error_message: Optional[str]
     start_time: datetime
     end_time: datetime
+    denied_statuses: Dict[str, StatusCode] = field(default_factory=dict)
     
     @property
     def duration_ms(self) -> float:
@@ -165,6 +166,7 @@ class ParallelPLCScanner:
         start_time = datetime.now()
         data_points = []
         denied_addresses = set()
+        denied_statuses: Dict[str, StatusCode] = {}
         error_message = None
         success = False
         
@@ -198,6 +200,7 @@ class ParallelPLCScanner:
                         data_points.extend(points)
                 
                 denied_addresses = collector.get_denied_addresses()
+                denied_statuses = collector.get_denied_statuses()
                 success = True
                 
         except Exception as e:
@@ -215,6 +218,7 @@ class ParallelPLCScanner:
             error_message=error_message,
             start_time=start_time,
             end_time=end_time,
+            denied_statuses=denied_statuses,
         )
         
         # Log scan completion

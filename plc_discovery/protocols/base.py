@@ -157,10 +157,10 @@ class BaseProtocolHandler(ABC):
             # Skip known-bad addresses
             address_key = f"{device_type.value}{start}"
             if self._session_cache.is_denied(address_key):
-                # Mark as denied and move to next
+                # Report with the status that was learned and move to next
                 results.append(DataPoint(
                     address=address_key,
-                    status=StatusCode.NG_ILLEGAL_ADDR,
+                    status=self._session_cache.get_status(address_key),
                     timestamp=get_timestamp()
                 ))
                 start += 1
@@ -245,7 +245,7 @@ class BaseProtocolHandler(ABC):
         for addr in range(start, end + 1):
             address_key = f"{device_type.value}{addr}"
             if learn:
-                self._session_cache.add_denied(address_key)
+                self._session_cache.add_denied(address_key, status)
             results.append(DataPoint(
                 address=address_key,
                 status=status,
@@ -466,6 +466,10 @@ class BaseProtocolHandler(ABC):
     def get_denied_addresses(self) -> set:
         """Get all addresses marked as inaccessible in this session"""
         return self._session_cache.get_all_denied()
+    
+    def get_denied_statuses(self) -> Dict[str, StatusCode]:
+        """Get inaccessible addresses with the status that caused it"""
+        return self._session_cache.get_all_statuses()
     
     def clear_session_cache(self):
         """Clear the session cache of denied addresses"""

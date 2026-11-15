@@ -7,9 +7,9 @@ import logging
 import socket
 import struct
 from datetime import datetime
-from typing import Generator, List, Optional, Tuple
+from typing import Dict, Generator, List, Optional, Tuple
 
-from .config import MANUFACTURER_OUI
+from .config import MANUFACTURER_OUI, StatusCode
 
 # Library code must not configure the root logger; applications
 # (plc_scanner.py, plc_gui.py) set up handlers and levels themselves.
@@ -203,28 +203,39 @@ class RateLimiter:
 
 
 class SessionCache:
-    """Cache for inaccessible addresses within a session"""
+    """
+    Cache for inaccessible addresses within a session.
+    
+    Stores the status that made each address inaccessible
+    (NG_ILLEGAL_ADDR or NG_UNSUPPORTED) so it can be reported accurately.
+    """
     
     def __init__(self):
-        self._denied_addresses: set = set()
+        self._denied_addresses: Dict[str, Optional[StatusCode]] = {}
     
-    def add_denied(self, address: str):
-        """Mark an address as inaccessible"""
-        self._denied_addresses.add(address)
+    def add_denied(self, address: str, status: Optional[StatusCode] = None):
+        """Mark an address as inaccessible (status defaults to NG_ILLEGAL_ADDR)"""
+        self._denied_addresses[address] = status or StatusCode.NG_ILLEGAL_ADDR
     
     def is_denied(self, address: str) -> bool:
         """Check if an address is known to be inaccessible"""
         return address in self._denied_addresses
+    
+    def get_status(self, address: str) -> Optional[StatusCode]:
+        """Status recorded for a denied address (None if not denied)"""
+        return self._denied_addresses.get(address)
     
     def __len__(self) -> int:
         return len(self._denied_addresses)
     
     def get_all_denied(self) -> set:
         """Get all denied addresses"""
-        return self._denied_addresses.copy()
+        return set(self._denied_addresses)
+    
+    def get_all_statuses(self) -> Dict[str, StatusCode]:
+        """Get denied addresses with their status"""
+        return dict(self._denied_addresses)
     
     def clear(self):
         """Clear the cache"""
         self._denied_addresses.clear()
-
-
