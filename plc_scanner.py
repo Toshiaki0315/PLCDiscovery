@@ -137,8 +137,11 @@ Examples:
     
     parser.add_argument(
         "--generate-config",
-        action="store_true",
-        help="Generate a configuration file template"
+        nargs="?",
+        const="plc_config.yaml",
+        metavar="PATH",
+        help="Write a configuration template to PATH (default: plc_config.yaml); "
+             "an existing file is never overwritten"
     )
     
     # Mode selection
@@ -260,9 +263,10 @@ Examples:
     
     parser.add_argument(
         "--encoding",
-        choices=["utf-8", "shift-jis"],
-        default="utf-8",
-        help="Output file encoding (default: utf-8)"
+        choices=["utf-8-sig", "utf-8", "shift-jis"],
+        default="utf-8-sig",
+        help="CSV encoding: utf-8-sig = UTF-8 with BOM, opens correctly in Excel (default); "
+             "utf-8 = without BOM; shift-jis = CP932, unrepresentable characters become '?'"
     )
     
     # Audit logging
@@ -605,9 +609,15 @@ async def run_discovery(
     exporter: CSVExporter,
     display: RichProgressDisplay,
     db_exporter: DatabaseExporter = None,
-    protocols: Optional[List[Protocol]] = None
+    protocols: Optional[List[Protocol]] = None,
+    errors: Optional[List[str]] = None
 ) -> List[PLCInfo]:
-    """Run PLC discovery (same segment when ip_ranges is empty)"""
+    """
+    Run PLC discovery (same segment when ip_ranges is empty).
+    
+    Output failures (CSV/database) are reported and appended to ``errors``;
+    the discovered PLCs are still displayed and returned.
+    """
     audit = get_audit_logger()
     
     display.print_info("Starting PLC Discovery...")
@@ -654,14 +664,26 @@ async def run_discovery(
     )
     
     if plcs:
-        filepath = exporter.export_discovery_results(plcs)
         display.print_success(f"Discovered {len(plcs)} PLC(s)")
-        display.print_info(f"Results saved to: {filepath}")
+        try:
+            filepath = exporter.export_discovery_results(plcs)
+            display.print_info(f"Results saved to: {filepath}")
+        except Exception as e:
+            message = f"Failed to write discovery CSV: {e}"
+            display.print_error(message)
+            if errors is not None:
+                errors.append(message)
         
         # Save to database if enabled
         if db_exporter and db_exporter.is_enabled:
-            db_count = db_exporter.export_discovery_results(plcs)
-            display.print_info(f"Saved {db_count} PLCs to database")
+            try:
+                db_count = db_exporter.export_discovery_results(plcs)
+                display.print_info(f"Saved {db_count} PLCs to database")
+            except Exception as e:
+                message = f"Failed to save discovery results to database: {e}"
+                display.print_error(message)
+                if errors is not None:
+                    errors.append(message)
         
         display.print_discovery_results([p.to_dict() for p in plcs])
     else:
@@ -1129,7 +1151,11 @@ async def main():
     
     # Handle generate-config
     if args.generate_config:
-        generate_config_template("plc_config.yaml")
+        try:
+            generate_config_template(args.generate_config)
+        except FileExistsError as e:
+            print(f"Error: {e}")
+            sys.exit(1)
         return
     
     # Configure logging
@@ -1257,6 +1283,7 @@ async def main():
     all_data_points: Dict[str, List[DataPoint]] = {}
     all_denied_addresses: Dict[str, List[str]] = {}
     failed_targets: List[str] = []
+    output_errors: List[str] = []
     interrupted = False
     exit_code = 0
     
@@ -1274,7 +1301,8 @@ async def main():
             )
             discovered = await run_discovery(
                 ip_ranges, config, exporter, display, db_exporter,
-                resolve_discovery_protocols(args, config_loader)
+                resolve_discovery_protocols(args, config_loader),
+                errors=output_errors,
             )
             all_plcs = discovered if discovered else []
             await _notify(notifier, lambda n: n.notify_discovery(
@@ -1381,6 +1409,9 @@ async def main():
         if interrupted:
             display.print_warning("Scan stopped by user.")
             exit_code = 130
+        elif output_errors:
+            display.print_error(f"Finished, but {len(output_errors)} output error(s) occurred")
+            exit_code = 1
         elif failed_targets:
             display.print_error(
                 f"Scan finished with errors: {len(failed_targets)} target(s) failed "

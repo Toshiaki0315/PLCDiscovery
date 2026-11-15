@@ -200,7 +200,7 @@ class PLCScannerApp:
         self.var_retry_interval = tk.StringVar(value="200")
         self.var_timeout = tk.StringVar(value="5000")
         self.var_output_dir = tk.StringVar(value=str(Path(DEFAULT_OUTPUT_DIR).resolve()))
-        self.var_encoding = tk.StringVar(value="utf-8")
+        self.var_encoding = tk.StringVar(value="utf-8-sig")
 
         # ステータス表示
         self.var_status = tk.StringVar(value="準備完了")
@@ -409,9 +409,12 @@ class PLCScannerApp:
         ttk.Label(out, text="文字コード", width=16).grid(row=1, column=0, sticky=tk.W, pady=(6, 0))
         enc = ttk.Frame(out)
         enc.grid(row=1, column=1, sticky=tk.W, pady=(6, 0))
-        ttk.Radiobutton(enc, text="UTF-8", value="utf-8", variable=self.var_encoding).pack(side=tk.LEFT)
-        ttk.Radiobutton(enc, text="Shift-JIS（Excelで直接開く場合）", value="shift_jis",
+        ttk.Radiobutton(enc, text="UTF-8（Excelでそのまま開ける・標準）", value="utf-8-sig",
+                        variable=self.var_encoding).pack(side=tk.LEFT)
+        ttk.Radiobutton(enc, text="UTF-8（BOMなし）", value="utf-8",
                         variable=self.var_encoding).pack(side=tk.LEFT, padx=12)
+        ttk.Radiobutton(enc, text="Shift-JIS", value="shift-jis",
+                        variable=self.var_encoding).pack(side=tk.LEFT)
 
     def _make_tree(self, parent, cols, headings, widths) -> ttk.Treeview:
         """スクロールバー付きの一覧表（Treeview）を作る"""
@@ -576,7 +579,12 @@ class PLCScannerApp:
         known = {p.ip_address for p in plcs}
         plcs.extend(p for p in tcp_plcs if p.ip_address not in known)
 
-        path = exporter.export_discovery_results(plcs) if plcs else None
+        path = None
+        if plcs:
+            try:
+                path = exporter.export_discovery_results(plcs)
+            except Exception as e:  # 一覧は表示する
+                logging.error(f"探索結果CSVの書き込みに失敗しました: {e}")
         self._post("discovered", plcs, path)
 
     def _show_discovered(self, plcs: List[PLCInfo], path: Optional[str]) -> None:

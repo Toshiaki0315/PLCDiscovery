@@ -213,7 +213,7 @@ class TestFINSTCPSelection:
         plc_scanner.cli()   # returns normally on success (no SystemExit)
 
         (data_file,) = tmp_path.glob("plc_data_127_0_0_1_*.csv")
-        rows = list(csv.DictReader(open(data_file, encoding="utf-8")))
+        rows = list(csv.DictReader(open(data_file, encoding="utf-8-sig")))   # CLI default: UTF-8 with BOM
         assert [(r["address"], r["value"], r["status"]) for r in rows] == [
             (f"DM{i}", str(i), "OK") for i in range(300, 305)
         ]

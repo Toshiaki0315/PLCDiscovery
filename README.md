@@ -234,7 +234,7 @@ python plc_scanner.py --mode full --target 192.168.1.10 --no-database
 | オプション | 説明 | デフォルト |
 |------------|------|------------|
 | `--config`, `-c` | 設定ファイルパス (YAML/JSON) | - |
-| `--generate-config` | 設定ファイルテンプレートを生成 | - |
+| `--generate-config [PATH]` | 設定ファイルテンプレートを生成（既存ファイルは上書きしません） | plc_config.yaml |
 | `--mode`, `-m` | 動作モード (discover/full/range)。省略時は設定ファイルの `scan.mode`（明示されている場合のみ） | discover |
 | `--target`, `-t` | 対象PLC IPアドレス（カンマ区切りで複数指定可） | - |
 | `--ip-range`, `-r` | スキャン対象IPレンジ | - |
@@ -249,7 +249,7 @@ python plc_scanner.py --mode full --target 192.168.1.10 --no-database
 | `--request-timeout` | タイムアウト(ms)。指定すると設定ファイルの値より優先 | 5000 |
 | `--max-concurrent` | 最大同時接続数。指定すると設定ファイルの値より優先 | 1 |
 | `--output-dir`, `-o` | 出力ディレクトリ | ./plc_scan_results |
-| `--encoding` | 出力エンコーディング | utf-8 |
+| `--encoding` | CSV の文字コード。`utf-8-sig`（BOM 付き UTF-8、Excel でそのまま開ける）／`utf-8`（BOM なし）／`shift-jis`（CP932。表せない文字は `?` に置き換え） | utf-8-sig |
 | `--audit-log` | 監査ログファイルパス | - |
 | `--database` | SQLiteデータベースパス | - |
 | `--no-database` | データベース出力を無効化 | - |
@@ -285,7 +285,7 @@ targets:
     name: "Main PLC"
 
 scan:
-  mode: full
+  mode: range        # full（全デバイス読み取り）は工場停止時のみ
   device_ranges:
     - device: D
       start: 0
@@ -293,7 +293,7 @@ scan:
 
 output:
   directory: "./plc_scan_results"
-  encoding: utf-8
+  encoding: utf-8-sig
 
 logging:
   level: INFO

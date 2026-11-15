@@ -64,7 +64,9 @@ DEFAULT_CONFIG = {
     
     # Scan settings
     "scan": {
-        "mode": "full",  # "full", "range", or "discover"
+        # "range" (production-safe), "discover", or "full" (factory downtime only:
+        # reads every device range and causes much more traffic)
+        "mode": "range",
         "device_ranges": [
             # Example:
             # {"device": "D", "start": 0, "end": 8191},
@@ -76,7 +78,8 @@ DEFAULT_CONFIG = {
     # Output settings
     "output": {
         "directory": "./plc_scan_results",
-        "encoding": "utf-8",  # "utf-8" or "shift-jis"
+        # "utf-8-sig" (UTF-8 with BOM, opens correctly in Excel), "utf-8" or "shift-jis"
+        "encoding": "utf-8-sig",
         "format": "csv",  # "csv" or "json"
         "include_timestamp": True,
     },
@@ -489,8 +492,19 @@ def load_config(config_path: Optional[str] = None) -> ConfigLoader:
     return loader
 
 
-def generate_config_template(path: str = "plc_config.yaml"):
-    """Generate a configuration template file"""
+def generate_config_template(path: str = "plc_config.yaml", overwrite: bool = False):
+    """
+    Generate a configuration template file.
+    
+    Raises:
+        FileExistsError: if the file exists and overwrite is False, so an
+            edited configuration is never replaced by accident
+    """
+    if Path(path).exists() and not overwrite:
+        raise FileExistsError(
+            f"{path} already exists; not overwriting it. "
+            f"Choose another file name or delete the existing file first."
+        )
     loader = ConfigLoader()
     loader.save_template(path)
     print(f"Configuration template saved to: {path}")

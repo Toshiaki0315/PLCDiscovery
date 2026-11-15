@@ -94,6 +94,22 @@ class _SafeDictWriter(csv.DictWriter):
         return super().writerow({k: csv_safe(v) for k, v in rowdict.items()})
 
 
+# Encodings accepted for CSV output. Shift-JIS variants are written as CP932
+# (what Excel and Japanese Windows actually use; Python's "shift_jis" lacks
+# characters such as ① ㈱ ～).
+_ENCODING_ALIASES = {
+    "shift-jis": "cp932", "shift_jis": "cp932", "sjis": "cp932", "cp932": "cp932",
+    "ms932": "cp932", "windows-31j": "cp932",
+    "utf-8-sig": "utf-8-sig", "utf8-sig": "utf-8-sig", "utf-8-bom": "utf-8-sig",
+    "utf-8": "utf-8", "utf8": "utf-8",
+}
+
+
+def normalize_csv_encoding(encoding: str) -> str:
+    """Map a user-facing encoding name to the codec used for CSV files"""
+    return _ENCODING_ALIASES.get((encoding or "utf-8").lower(), encoding)
+
+
 def _unique_path(path: Path) -> Path:
     """Return path, or path with _1, _2, ... appended if it already exists
     (file names have one-second resolution)"""
@@ -121,8 +137,23 @@ class CSVExporter:
         encoding: str = "utf-8"
     ):
         self.output_dir = Path(output_dir)
-        self.encoding = encoding
+        self.encoding = normalize_csv_encoding(encoding)
         self._ensure_output_dir()
+    
+    def _open_csv(self, filepath: Path, mode: str = "w"):
+        """
+        Open a CSV file for writing.
+        
+        - CP932: characters that cannot be represented (e.g. "ü" in a device
+          name) are replaced with "?" instead of failing the whole file.
+        - UTF-8 with BOM (Excel-friendly): the BOM is written only when the
+          file is created, never again when appending.
+        """
+        encoding = self.encoding
+        if encoding == "utf-8-sig" and mode == "a" and filepath.exists() and filepath.stat().st_size > 0:
+            encoding = "utf-8"
+        errors = "replace" if encoding == "cp932" else "strict"
+        return open(filepath, mode, newline="", encoding=encoding, errors=errors)
     
     def _ensure_output_dir(self):
         """Create output directory if it doesn't exist"""
@@ -155,7 +186,7 @@ class CSVExporter:
             filepath = self.output_dir / filename
         
         try:
-            with open(filepath, 'w', newline='', encoding=self.encoding) as f:
+            with self._open_csv(filepath, 'w') as f:
                 writer = _SafeDictWriter(f, fieldnames=DISCOVERY_HEADERS)
                 writer.writeheader()
                 
@@ -212,7 +243,7 @@ class CSVExporter:
         headers = DATA_HEADERS_EXTENDED if use_extended else DATA_HEADERS
         
         try:
-            with open(filepath, 'w', newline='', encoding=self.encoding) as f:
+            with self._open_csv(filepath, 'w') as f:
                 writer = _SafeDictWriter(f, fieldnames=headers, extrasaction='ignore')
                 writer.writeheader()
                 
@@ -258,7 +289,7 @@ class CSVExporter:
         
         try:
             mode = 'a' if file_exists else 'w'
-            with open(filepath, mode, newline='', encoding=self.encoding) as f:
+            with self._open_csv(filepath, mode) as f:
                 writer = _SafeDictWriter(f, fieldnames=DENIED_HEADERS)
                 
                 if not file_exists:
@@ -319,7 +350,7 @@ class CSVExporter:
         ]
         
         try:
-            with open(filepath, 'w', newline='', encoding=self.encoding) as f:
+            with self._open_csv(filepath, 'w') as f:
                 writer = _SafeDictWriter(f, fieldnames=summary_headers)
                 writer.writeheader()
                 
@@ -362,7 +393,7 @@ def load_denied_addresses(
     denied = set()
     
     try:
-        with open(filepath, 'r', encoding='utf-8') as f:
+        with open(filepath, 'r', encoding='utf-8-sig') as f:   # also strips a BOM
             reader = csv.DictReader(f)
             for row in reader:
                 if plc_ip is None or row.get("plc_ip") == plc_ip:

@@ -80,8 +80,9 @@ targets:
 
 # Scan settings
 scan:
-  # Mode: "discover", "full", or "range"
-  mode: full
+  # Mode: "range" (production-safe: reads only device_ranges), "discover",
+  # or "full" (factory downtime only: reads every device range, heavy traffic)
+  mode: range
   
   # Device ranges to scan (for range mode)
   device_ranges:
@@ -103,8 +104,11 @@ output:
   # Output directory for result files
   directory: "./plc_scan_results"
   
-  # File encoding: "utf-8" or "shift-jis"
-  encoding: utf-8
+  # CSV encoding:
+  #   utf-8-sig = UTF-8 with BOM, opens correctly in Excel (recommended)
+  #   utf-8     = UTF-8 without BOM (for other tools)
+  #   shift-jis = CP932; characters it cannot represent are written as "?"
+  encoding: utf-8-sig
   
   # Output format: "csv" or "json"
   format: csv
