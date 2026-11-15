@@ -88,7 +88,21 @@ class EtherNetIPHandler(BaseProtocolHandler):
         return path
     
     async def connect(self) -> bool:
-        """Establish EtherNet/IP connection"""
+        """
+        Establish EtherNet/IP connection.
+        
+        The first connection tries Logix, then SLC, then generic CIP. A
+        reconnect (e.g. after a timeout) goes straight to the driver that
+        worked before instead of repeating the whole fallback chain.
+        """
+        if self._plc_type == "slc":
+            return await self._connect_slc()
+        if self._plc_type == "generic":
+            return await self._connect_generic()
+        return await self._connect_logix_first()
+    
+    async def _connect_logix_first(self) -> bool:
+        """Try LogixDriver, falling back to SLC and generic CIP"""
         try:
             from pycomm3 import LogixDriver
             
@@ -108,7 +122,8 @@ class EtherNetIPHandler(BaseProtocolHandler):
             logger.error("pycomm3 library not installed")
             return False
         except Exception as e:
-            logger.warning(f"LogixDriver connection failed: {e}, trying SLCDriver")
+            # Expected for non-Logix controllers: not worth a warning
+            logger.info(f"Not a Logix controller ({e}); trying SLC driver")
             if await self._connect_slc():
                 return True
             return await self._connect_generic()
@@ -143,7 +158,7 @@ class EtherNetIPHandler(BaseProtocolHandler):
             logger.info(f"EtherNet/IP (SLC) connected to {self.ip_address}:{self.port}")
             return True
         except Exception as e:
-            logger.warning(f"SLCDriver connection rejected: {e}, trying CIPDriver")
+            logger.info(f"Not an SLC/PLC-5/MicroLogix controller ({e}); using generic CIP")
             self._client = None
             return False
     

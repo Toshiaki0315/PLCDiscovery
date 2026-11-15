@@ -1172,6 +1172,7 @@ async def main():
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         force=True,
     )
+    quiet_third_party_loggers(args.verbose)
     
     # Load configuration file if specified
     config_loader = None
@@ -1212,7 +1213,7 @@ async def main():
         get_audit_logger().log_session_start({"args": vars(args)})
     
     # Create display
-    display = RichProgressDisplay()
+    display = RichProgressDisplay(use_rich=not args.no_rich)
     if not args.quiet and not args.no_rich:
         display.print_header()
     
@@ -1503,8 +1504,36 @@ async def main():
         sys.exit(exit_code)
 
 
+def make_streams_safe() -> None:
+    """
+    Never crash on characters the console/file encoding cannot represent:
+    e.g. output redirected to a file on Japanese Windows is CP932, which has
+    no ✓/ℹ and no "ü" in some device names. Such characters become "?".
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(errors="replace")
+            except (ValueError, OSError):
+                pass
+
+
+def quiet_third_party_loggers(verbose: bool) -> None:
+    """
+    Communication libraries log their own expected failures as ERROR with
+    full tracebacks (e.g. pycomm3 while EtherNet/IP falls back from the
+    Logix to the SLC driver, pymodbus for a refused connection). This tool
+    reports those outcomes itself, so show the libraries' logs only with -v.
+    """
+    level = logging.DEBUG if verbose else logging.CRITICAL
+    for name in ("pycomm3", "pymodbus"):
+        logging.getLogger(name).setLevel(level)
+
+
 def cli():
     """Console-script entry point (``plc-scanner``)"""
+    make_streams_safe()
     try:
         asyncio.run(main())
     except KeyboardInterrupt:

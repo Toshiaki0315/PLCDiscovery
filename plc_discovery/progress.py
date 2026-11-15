@@ -26,6 +26,7 @@ try:
     from rich.layout import Layout
     from rich.text import Text
     from rich import box
+    from rich.markup import escape
     RICH_AVAILABLE = True
 except ImportError:
     RICH_AVAILABLE = False
@@ -57,7 +58,8 @@ class SimpleProgress:
             percent = current / total * 100
             bar_width = 30
             filled = int(bar_width * current / total)
-            bar = "█" * filled + "░" * (bar_width - filled)
+            full, empty = ("█", "░") if _stream_can_encode("█░") else ("#", "-")
+            bar = full * filled + empty * (bar_width - filled)
             print(f"\r[{bar}] {percent:5.1f}% {message}", end="", flush=True)
         else:
             print(f"\r{message}...", end="", flush=True)
@@ -68,15 +70,41 @@ class SimpleProgress:
     
     def error(self, message: str):
         """Display error"""
-        print(f"\r✗ {message}" + " " * 30)
+        marker = "✗" if _stream_can_encode("✗") else "[ERROR]"
+        print(f"\r{marker} {message}" + " " * 30)
+
+
+def _stream_can_encode(text: str, stream=None) -> bool:
+    """True if the output stream's encoding can represent text"""
+    stream = stream or sys.stdout
+    encoding = getattr(stream, "encoding", None) or "ascii"
+    try:
+        text.encode(encoding)
+        return True
+    except (UnicodeEncodeError, LookupError):
+        return False
+
+
+# Status markers; ASCII fallbacks for consoles/files whose encoding lacks the
+# symbols (e.g. CP932 when output is redirected on Japanese Windows)
+_SYMBOL_MARKERS = {"ok": "✓", "info": "ℹ", "warning": "⚠", "error": "✗"}
+_ASCII_MARKERS = {"ok": "[OK]", "info": "[INFO]", "warning": "[WARN]", "error": "[ERROR]"}
 
 
 class RichProgressDisplay:
     """Rich progress display with detailed status"""
     
-    def __init__(self, title: str = "PLC Scanner"):
+    def __init__(self, title: str = "PLC Scanner", use_rich: bool = True):
+        """
+        Args:
+            title: Display title
+            use_rich: False for plain text output (--no-rich), e.g. for log files
+        """
         self.title = title
-        self.console = Console() if RICH_AVAILABLE else None
+        self.console = Console() if (RICH_AVAILABLE and use_rich) else None
+        self.markers = (
+            _SYMBOL_MARKERS if _stream_can_encode("".join(_SYMBOL_MARKERS.values())) else _ASCII_MARKERS
+        )
         self._progress = None
         self._task_id = None
         self._status_table = None
@@ -144,7 +172,8 @@ class RichProgressDisplay:
             
             for ip, result in results.items():
                 stats = result.get("statistics", {})
-                status = "✓ OK" if result.get("success") else "✗ Failed"
+                status = (f"{self.markers['ok']} OK" if result.get("success")
+                          else f"{self.markers['error']} Failed")
                 status_style = "green" if result.get("success") else "red"
                 
                 table.add_row(
@@ -185,7 +214,7 @@ class RichProgressDisplay:
     @contextmanager
     def progress_context(self, description: str = "Processing"):
         """Context manager for progress tracking"""
-        if RICH_AVAILABLE:
+        if self.console:
             with Progress(
                 SpinnerColumn(),
                 TextColumn("[bold blue]{task.description}"),
@@ -216,33 +245,31 @@ class RichProgressDisplay:
                 kwargs["description"] = description
             self._progress.update(task_id, **kwargs)
     
+    def _print_marked(self, kind: str, style: str, message: str, label: str = "") -> None:
+        marker = self.markers[kind]
+        if self.markers is _ASCII_MARKERS:
+            label = ""          # "[ERROR]" already says it
+        prefix = f"{marker} {label}".rstrip()
+        if self.console:
+            self.console.print(f"[{style}]{escape(prefix)}[/{style}] {escape(message)}")
+        else:
+            print(f"{prefix} {message}")
+    
     def print_error(self, message: str):
         """Print error message"""
-        if self.console:
-            self.console.print(f"[bold red]✗ Error:[/bold red] {message}")
-        else:
-            print(f"✗ Error: {message}")
+        self._print_marked("error", "bold red", message, "Error:")
     
     def print_warning(self, message: str):
         """Print warning message"""
-        if self.console:
-            self.console.print(f"[yellow]⚠ Warning:[/yellow] {message}")
-        else:
-            print(f"⚠ Warning: {message}")
+        self._print_marked("warning", "yellow", message, "Warning:")
     
     def print_success(self, message: str):
         """Print success message"""
-        if self.console:
-            self.console.print(f"[bold green]✓[/bold green] {message}")
-        else:
-            print(f"✓ {message}")
+        self._print_marked("ok", "bold green", message)
     
     def print_info(self, message: str):
         """Print info message"""
-        if self.console:
-            self.console.print(f"[blue]ℹ[/blue] {message}")
-        else:
-            print(f"ℹ {message}")
+        self._print_marked("info", "blue", message)
 
 
 def create_progress_callback(display: RichProgressDisplay, task_id: int):

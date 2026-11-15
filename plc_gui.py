@@ -163,6 +163,10 @@ class PLCScannerApp:
 
         logging.getLogger().addHandler(QueueLogHandler(self.ui_queue))
         logging.getLogger().setLevel(logging.INFO)
+        # Libraries' own expected-failure logs (with tracebacks) are not shown
+        # in the log pane; the tool reports the outcome itself
+        for name in ("pycomm3", "pymodbus"):
+            logging.getLogger(name).setLevel(logging.CRITICAL)
 
         self._init_vars()
         self._build_style()
