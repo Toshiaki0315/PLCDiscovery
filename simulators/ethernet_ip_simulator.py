@@ -211,6 +211,10 @@ class EtherNetIPProtocol(asyncio.Protocol):
         socket_addr += struct.pack(">I", 0)  # sin_addr
         socket_addr += b"\x00" * 8  # padding
         
+        # ListIdentity ends the identity with a State byte (USINT);
+        # 0x03 = "operational"
+        identity_data += bytes([0x03])
+        
         # Item: Type ID (0x0C) + Length + Protocol Version + Socket + Identity
         item = struct.pack("<HH", 0x000C, len(identity_data) + 2 + 16)
         item += struct.pack("<H", 1)  # Protocol version

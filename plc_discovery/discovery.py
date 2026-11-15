@@ -17,7 +17,7 @@ import logging
 from .config import (
     Protocol, PROTOCOL_PORTS, PLCInfo, NetworkConfig
 )
-from .probes import UDP_PROTOCOLS, verify_protocol
+from .probes import UDP_PROTOCOLS, read_eip_identity, verify_protocol
 from .utils import (
     get_network_info, get_subnet_hosts, parse_ip_range, read_arp_cache,
     is_port_open, get_manufacturer_from_mac, format_mac_address,
@@ -368,27 +368,27 @@ class PLCDiscovery:
         return plc_info
     
     async def _query_eip_info(self, plc_info: PLCInfo) -> PLCInfo:
-        """Query EtherNet/IP device for Identity Object information"""
+        """
+        Query EtherNet/IP device for its Identity Object (ListIdentity).
+        
+        Uses our own tolerant parser: pycomm3's CIPDriver has no
+        get_plc_info() (that was the AttributeError logged by pycomm3) and its
+        list_identity() rejects replies without the optional State byte.
+        """
         try:
-            from pycomm3 import CIPDriver
-            
-            def _query():
-                with CIPDriver(f"{plc_info.ip_address}:{plc_info.port or 44818}") as plc:
-                    identity = plc.get_plc_info()
-                    if identity:
-                        plc_info.manufacturer = identity.get('vendor', plc_info.manufacturer)
-                        plc_info.model = identity.get('product_name', plc_info.model)
-                        plc_info.firmware_version = identity.get('revision', '')
-                return plc_info
-            
-            loop = asyncio.get_running_loop()
-            return await loop.run_in_executor(None, _query)
-        
-        except ImportError:
-            logger.debug("pycomm3 not available")
+            identity = await asyncio.get_running_loop().run_in_executor(
+                None, read_eip_identity,
+                plc_info.ip_address, plc_info.port or 44818, self.config.discovery_timeout_ms / 1000
+            )
         except Exception as e:
-            logger.debug(f"EtherNet/IP query failed: {e}")
-        
+            logger.debug(f"EtherNet/IP identity query failed: {e}")
+            return plc_info
+        if identity:
+            plc_info.manufacturer = (
+                identity.get("vendor") or plc_info.manufacturer or f"Vendor {identity['vendor_id']}"
+            )
+            plc_info.model = identity.get("product_name") or plc_info.model
+            plc_info.firmware_version = identity.get("revision") or plc_info.firmware_version
         return plc_info
     
     async def _query_modbus_info(self, plc_info: PLCInfo) -> PLCInfo:

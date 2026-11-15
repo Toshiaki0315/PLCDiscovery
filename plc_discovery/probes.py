@@ -132,6 +132,79 @@ def probe_fins_udp(ip: str, port: int, timeout: float) -> bool:
     )
 
 
+def parse_eip_identity(reply: bytes) -> Optional[dict]:
+    """
+    Parse an EtherNet/IP ListIdentity reply (CIP identity item 0x0C).
+    
+    Returns vendor_id, device_type, product_code, revision ("major.minor"),
+    serial, product_name and - when names are known to pycomm3 - vendor and
+    product_type. The trailing State byte is optional (some devices and the
+    bundled simulator omit it), so this is more tolerant than pycomm3.
+    """
+    try:
+        if len(reply) < 26 or struct.unpack("<H", reply[:2])[0] != 0x0063:
+            return None
+        item_count = struct.unpack("<H", reply[24:26])[0]
+        offset = 26
+        for _ in range(item_count):
+            item_type, item_len = struct.unpack("<HH", reply[offset:offset + 4])
+            offset += 4
+            item = reply[offset:offset + item_len]
+            offset += item_len
+            if item_type != 0x000C or len(item) < 2 + 16 + 15:
+                continue
+            body = item[2 + 16:]   # skip protocol version and socket address
+            vendor_id, device_type, product_code = struct.unpack("<HHH", body[:6])
+            revision = f"{body[6]}.{body[7]}"
+            serial = struct.unpack("<I", body[10:14])[0]
+            name_len = body[14]
+            product_name = body[15:15 + name_len].decode("ascii", errors="replace").strip()
+            identity = {
+                "vendor_id": vendor_id,
+                "device_type": device_type,
+                "product_code": product_code,
+                "revision": revision,
+                "serial": f"{serial:08x}",
+                "product_name": product_name,
+            }
+            try:
+                from pycomm3.custom_types import PRODUCT_TYPES, VENDORS
+                identity["vendor"] = VENDORS.get(vendor_id)
+                identity["product_type"] = PRODUCT_TYPES.get(device_type)
+            except ImportError:
+                pass
+            return identity
+    except (struct.error, IndexError):
+        return None
+    return None
+
+
+def read_eip_identity(ip: str, port: int, timeout: float) -> Optional[dict]:
+    """Send ListIdentity over TCP and return the parsed identity (or None)"""
+    context = os.urandom(8)
+    request = struct.pack("<HHII", 0x0063, 0, 0, 0) + context + struct.pack("<I", 0)
+    reply = _exchange(ip, port, request, timeout, 24)
+    if not reply or len(reply) < 24 or reply[12:20] != context:
+        return None
+    length = struct.unpack("<H", reply[2:4])[0]
+    # read the rest of the reply if it arrived in pieces
+    if len(reply) < 24 + length:
+        try:
+            with socket.create_connection((ip, port), timeout=timeout) as sock:
+                sock.settimeout(timeout)
+                sock.sendall(request)
+                data = b""
+                while len(data) < 24 + length:
+                    chunk = sock.recv(4096)
+                    if not chunk:
+                        break
+                    data += chunk
+                reply = data if data[12:20] == context else reply
+        except OSError:
+            pass
+    return parse_eip_identity(reply)
+
+
 def probe_fins_tcp(ip: str, port: int, timeout: float) -> bool:
     """FINS/TCP node address request; a "FINS" framed reply counts"""
     request = b"FINS" + struct.pack(">III", 12, 0, 0) + struct.pack(">I", 0)
