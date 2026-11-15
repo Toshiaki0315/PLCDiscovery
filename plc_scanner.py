@@ -53,7 +53,7 @@ from plc_discovery.parallel import ParallelPLCScanner, scan_plcs_parallel
 from plc_discovery.broadcast_discovery import BroadcastDiscovery
 from plc_discovery.progress import RichProgressDisplay, get_display, is_rich_available
 from plc_discovery.data_types import (
-    DataType, ByteOrder, DataTypeConverter, DataTypeManager, DataTypeMapping
+    BIT_DEVICES, DataType, ByteOrder, DataTypeConverter, DataTypeManager, DataTypeMapping
 )
 from plc_discovery.notifications import NotificationManager
 from plc_discovery.database import (
@@ -460,12 +460,17 @@ def apply_data_type_conversion(
     """
     Apply data type conversion to data points.
     
-    Multi-word types (DWORD, FLOAT, DOUBLE, ...) combine the value with the
-    following points, but only when they are consecutive addresses that were
-    read successfully. The combined value is stored on the first address
-    (with all words in raw_words). The following addresses stay in the output
-    with their own raw value/hex and a display_value pointing to the first
-    address, so no raw data is lost from the CSV.
+    Multi-word types (DWORD, FLOAT, DOUBLE, ...) combine consecutive,
+    successfully read words. Values are aligned to a fixed grid so a failed
+    or missing word never shifts the pairing of the following values:
+    - with a type mapping: relative to the mapping's start address
+    - otherwise: relative to the start of each contiguous address run
+      (normally the start of the requested range)
+    
+    The combined value is stored on the first address (all words in
+    raw_words). The other words stay in the output with their own raw
+    value/hex and a display_value pointing to the first address, so no raw
+    data is lost. Multi-word types are never applied to bit devices.
     
     Args:
         data_points: List of data points to convert
@@ -480,46 +485,74 @@ def apply_data_type_conversion(
     if not data_type and not type_manager:
         return data_points
     
+    # Parse addresses and find the start of each contiguous run
+    parsed: List[Optional[tuple]] = [_split_address(dp.address) for dp in data_points]
+    run_start: List[Optional[int]] = []
+    for idx, addr in enumerate(parsed):
+        prev = parsed[idx - 1] if idx else None
+        if addr and prev and prev[0] == addr[0] and prev[1] + 1 == addr[1]:
+            run_start.append(run_start[-1])
+        else:
+            run_start.append(addr[1] if addr else None)
+    
     result: List[DataPoint] = []
     i = 0
     while i < len(data_points):
         dp = data_points[i]
-        parsed = _split_address(dp.address)
+        addr = parsed[i]
         
-        if dp.value is None or dp.status != StatusCode.OK:
+        if addr is None or dp.value is None or dp.status != StatusCode.OK:
             result.append(dp)
             i += 1
             continue
         
-        # Determine data type for this address
-        if type_manager and parsed:
-            dt, bo = type_manager.get_type_for_address(parsed[1])
+        prefix, number = addr
+        
+        # Determine data type and alignment base for this address
+        align_base = run_start[i]
+        if type_manager:
+            mapping = type_manager.get_mapping_for_address(number, prefix)
+            if mapping:
+                dt, bo, align_base = mapping.data_type, mapping.byte_order, mapping.start_address
+            else:
+                dt, bo = type_manager.default_type, type_manager.default_byte_order
         else:
             dt, bo = data_type, byte_order
         
-        if dt is None:
+        word_count = max(DataTypeConverter.get_word_count(dt) or 1, 1) if dt else 1
+        
+        if dt is None or (word_count > 1 and prefix.upper() in BIT_DEVICES):
             result.append(dp)
             i += 1
             continue
         
-        word_count = max(DataTypeConverter.get_word_count(dt) or 1, 1)
+        offset = (number - align_base) % word_count
+        if offset:
+            # Second/later word of a value whose first word failed or is missing
+            result.append(dataclasses.replace(
+                dp, data_type=dt.value,
+                display_value=f"(part of {prefix}{number - offset}, incomplete)",
+            ))
+            i += 1
+            continue
         
         # Collect the following consecutive, successfully read words
         group = [dp]
-        if word_count > 1 and parsed:
-            prefix, number = parsed
-            for j in range(1, word_count):
-                if i + j >= len(data_points):
-                    break
-                nxt = data_points[i + j]
-                if (nxt.value is None or nxt.status != StatusCode.OK
-                        or _split_address(nxt.address) != (prefix, number + j)):
-                    break
-                group.append(nxt)
+        for j in range(1, word_count):
+            if i + j >= len(data_points):
+                break
+            nxt = data_points[i + j]
+            if (nxt.value is None or nxt.status != StatusCode.OK
+                    or parsed[i + j] != (prefix, number + j)):
+                break
+            group.append(nxt)
         
         if len(group) < word_count:
-            # Not enough consecutive valid words: keep the raw point
-            result.append(dp)
+            # Not all words of this value were read: keep the raw point
+            result.append(dataclasses.replace(
+                dp, data_type=dt.value,
+                display_value=f"(incomplete {dt.value}: {len(group)}/{word_count} words)",
+            ))
             i += 1
             continue
         
@@ -631,28 +664,20 @@ async def run_parallel_scan(
         if not result.success:
             display.print_error(f"{ip}: {result.error_message}")
         
+        writer = _ResultWriter(ip, exporter, display, db_exporter)
         if result.data_points:
             # Apply data type conversion
-            converted_points = apply_data_type_conversion(
+            result.data_points = apply_data_type_conversion(
                 result.data_points, data_type, byte_order, type_manager
             )
-            result.data_points = converted_points
-            exporter.export_plc_data(converted_points, ip)
-            
-            # Save to database if enabled
-            if db_exporter and db_exporter.is_enabled:
-                db_exporter.export_plc_data(converted_points, ip)
+            writer.export_points(result.data_points)
         
         if result.denied_addresses:
-            exporter.export_denied_addresses(
-                result.denied_addresses, ip, statuses=result.denied_statuses
-            )
-            
-            # Save denied addresses to database
-            if db_exporter and db_exporter.is_enabled:
-                db_exporter.export_denied_addresses(
-                    result.denied_addresses, ip, statuses=result.denied_statuses
-                )
+            writer.export_new_denied(result.denied_addresses, result.denied_statuses)
+        
+        if writer.errors and result.success:
+            result.success = False
+            result.error_message = f"{len(writer.errors)} write error(s); first: {writer.errors[0]}"
     
     # Display results
     result_dicts = {
@@ -708,7 +733,14 @@ async def _collect_ranges(
 
 
 class _ResultWriter:
-    """Writes one PLC's data / newly denied addresses to CSV and the database"""
+    """
+    Writes one PLC's data / newly denied addresses to CSV and the database.
+    
+    Write failures (e.g. a CSV locked by Excel on Windows, a full disk) are
+    reported and counted but never raised, so a scan or a long periodic
+    monitoring run keeps going. Denied addresses that could not be written
+    are retried on the next call.
+    """
     
     def __init__(self, ip: str, exporter: CSVExporter, display: RichProgressDisplay,
                  db_exporter: Optional[DatabaseExporter] = None):
@@ -717,14 +749,28 @@ class _ResultWriter:
         self.display = display
         self.db_exporter = db_exporter
         self._exported_denied: Set[str] = set()
+        self.errors: List[str] = []
+    
+    def _failed(self, what: str, error: Exception) -> None:
+        message = f"{self.ip}: failed to write {what}: {error}"
+        self.errors.append(message)
+        self.display.print_error(message)
+        logger.error(message)
     
     def export_points(self, points: List[DataPoint]) -> Optional[str]:
         if not points:
             return None
-        path = self.exporter.export_plc_data(points, self.ip)
+        path = None
+        try:
+            path = self.exporter.export_plc_data(points, self.ip)
+        except Exception as e:
+            self._failed("data CSV", e)
         if self.db_exporter and self.db_exporter.is_enabled:
-            db_count = self.db_exporter.export_plc_data(points, self.ip)
-            self.display.print_info(f"Saved {db_count} records to database")
+            try:
+                db_count = self.db_exporter.export_plc_data(points, self.ip)
+                self.display.print_info(f"Saved {db_count} records to database")
+            except Exception as e:
+                self._failed("data to database", e)
         return path
     
     def export_new_denied(self, denied: Set[str],
@@ -733,10 +779,17 @@ class _ResultWriter:
         new = set(denied) - self._exported_denied
         if not new:
             return None
+        try:
+            path = self.exporter.export_denied_addresses(new, self.ip, statuses=statuses)
+        except Exception as e:
+            self._failed("access denied log", e)
+            return None  # not marked as exported: retried next time
         self._exported_denied.update(new)
-        path = self.exporter.export_denied_addresses(new, self.ip, statuses=statuses)
         if self.db_exporter and self.db_exporter.is_enabled:
-            self.db_exporter.export_denied_addresses(new, self.ip, statuses=statuses)
+            try:
+                self.db_exporter.export_denied_addresses(new, self.ip, statuses=statuses)
+            except Exception as e:
+                self._failed("denied addresses to database", e)
         return path
 
 
@@ -839,7 +892,10 @@ async def run_single_scan(
         display.print_info(f"Denied addresses logged to: {denied_path}")
     
     display.print_statistics(stats)
-    outcome.success = True
+    if writer.errors:
+        outcome.error = f"{len(writer.errors)} write error(s); first: {writer.errors[0]}"
+    else:
+        outcome.success = True
     return outcome
 
 
@@ -932,7 +988,13 @@ async def run_periodic_scan(
             )
             display.print_info(f"Last cycle statistics for {ip}:")
             display.print_statistics(stats)
-            outcome.success = True
+            if writers[ip].errors:
+                outcome.error = (
+                    f"{len(writers[ip].errors)} write error(s) during monitoring; "
+                    f"first: {writers[ip].errors[0]}"
+                )
+            else:
+                outcome.success = True
     
     return list(outcomes.values())
 

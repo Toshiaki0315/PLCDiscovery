@@ -62,6 +62,38 @@ DENIED_HEADERS = [
 ]
 
 
+# Leading characters that make spreadsheet applications treat a cell as a
+# formula (CSV/formula injection, OWASP). Device-reported strings such as
+# Modbus/EtherNet/IP identity names end up in CSVs opened in Excel.
+_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _is_number(text: str) -> bool:
+    try:
+        float(text)
+        return True
+    except ValueError:
+        return False
+
+
+def csv_safe(value):
+    """
+    Neutralize a value that a spreadsheet would evaluate as a formula by
+    prefixing it with a single quote. Numbers (including negative numbers
+    and numeric strings like "-12.5") are left unchanged.
+    """
+    if isinstance(value, str) and value.startswith(_FORMULA_PREFIXES) and not _is_number(value):
+        return "'" + value
+    return value
+
+
+class _SafeDictWriter(csv.DictWriter):
+    """csv.DictWriter that applies csv_safe() to every cell"""
+    
+    def writerow(self, rowdict):
+        return super().writerow({k: csv_safe(v) for k, v in rowdict.items()})
+
+
 class CSVExporter:
     """
     CSV Exporter for PLC scan results.
@@ -110,7 +142,7 @@ class CSVExporter:
         
         try:
             with open(filepath, 'w', newline='', encoding=self.encoding) as f:
-                writer = csv.DictWriter(f, fieldnames=DISCOVERY_HEADERS)
+                writer = _SafeDictWriter(f, fieldnames=DISCOVERY_HEADERS)
                 writer.writeheader()
                 
                 discovered_at = get_timestamp()
@@ -166,7 +198,7 @@ class CSVExporter:
         
         try:
             with open(filepath, 'w', newline='', encoding=self.encoding) as f:
-                writer = csv.DictWriter(f, fieldnames=headers, extrasaction='ignore')
+                writer = _SafeDictWriter(f, fieldnames=headers, extrasaction='ignore')
                 writer.writeheader()
                 
                 for dp in data_points:
@@ -212,7 +244,7 @@ class CSVExporter:
         try:
             mode = 'a' if file_exists else 'w'
             with open(filepath, mode, newline='', encoding=self.encoding) as f:
-                writer = csv.DictWriter(f, fieldnames=DENIED_HEADERS)
+                writer = _SafeDictWriter(f, fieldnames=DENIED_HEADERS)
                 
                 if not file_exists:
                     writer.writeheader()
@@ -272,7 +304,7 @@ class CSVExporter:
         
         try:
             with open(filepath, 'w', newline='', encoding=self.encoding) as f:
-                writer = csv.DictWriter(f, fieldnames=summary_headers)
+                writer = _SafeDictWriter(f, fieldnames=summary_headers)
                 writer.writeheader()
                 
                 for plc in plc_list:

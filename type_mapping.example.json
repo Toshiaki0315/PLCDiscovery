@@ -1,9 +1,10 @@
 {
-  "description": "Data Type Mapping Example - Maps address ranges to specific data types",
+  "description": "Data Type Mapping Example - Maps address ranges to specific data types. 'device' limits a mapping to one device type (mappings without it apply to word devices only); multi-word values are paired from 'start' (e.g. FLOAT at 100: 100-101, 102-103, ...)",
   "default_type": "WORD",
   "default_byte_order": "little",
   "mappings": [
     {
+      "device": "D",
       "start": 100,
       "end": 199,
       "type": "FLOAT",
@@ -11,6 +12,7 @@
       "description": "Temperature sensors (°C)"
     },
     {
+      "device": "D",
       "start": 200,
       "end": 299,
       "type": "FLOAT",
@@ -18,6 +20,7 @@
       "description": "Pressure sensors (MPa)"
     },
     {
+      "device": "D",
       "start": 300,
       "end": 399,
       "type": "DWORD",
@@ -25,6 +28,7 @@
       "description": "Production counters"
     },
     {
+      "device": "D",
       "start": 400,
       "end": 499,
       "type": "INT32",
@@ -32,6 +36,7 @@
       "description": "Speed values (signed)"
     },
     {
+      "device": "D",
       "start": 500,
       "end": 599,
       "type": "INT16",
@@ -39,6 +44,7 @@
       "description": "Position values (signed)"
     },
     {
+      "device": "D",
       "start": 600,
       "end": 699,
       "type": "BCD32",
@@ -46,6 +52,7 @@
       "description": "Timer values (BCD format)"
     },
     {
+      "device": "D",
       "start": 1000,
       "end": 1099,
       "type": "STRING",
@@ -53,5 +60,3 @@
     }
   ]
 }
-
-

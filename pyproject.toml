@@ -28,15 +28,19 @@ classifiers = [
 ]
 
 dependencies = [
-    "pymcprotocol>=0.4.0",
-    "pycomm3>=0.32.0",
+    "pymcprotocol>=0.3.0",   # latest release on PyPI is 0.3.0
+    "pycomm3>=1.2.0",        # SLCDriver / ListIdentity used by the EtherNet/IP handler
     "pymodbus>=3.0.0",
     "python-snap7>=1.4.0",
     "scapy>=2.5.0",
     "netifaces>=0.11.0",
+    "PyYAML>=6.0",           # YAML config and type mapping files
 ]
 
 [project.optional-dependencies]
+rich = [
+    "rich>=13.0.0",          # optional rich console output (plain output without it)
+]
 dev = [
     "pytest>=7.4.0",
     "pytest-asyncio>=0.21.0",

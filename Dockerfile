@@ -74,8 +74,8 @@ RUN pip install -r requirements.txt
 COPY simulators/ ./simulators/
 COPY plc_discovery/ ./plc_discovery/
 
-# Expose simulator ports
-EXPOSE 5001 5502 5503 102
+# Simulator ports (see simulators/run_all.py): SLMP, Modbus, EtherNet/IP, S7, FINS
+EXPOSE 5001 1502 44818 1102 9600/tcp 9600/udp
 
 CMD ["python", "simulators/run_all.py"]
 

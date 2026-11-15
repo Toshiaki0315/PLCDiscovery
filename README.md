@@ -438,8 +438,12 @@ Docker Composeを使用した環境構築:
 # シミュレータとスキャナーを起動
 docker-compose up -d
 
-# スキャナーを実行
+# スキャナーを実行（シミュレータは一部が標準と異なるポート: Modbus 1502, S7 1102）
 docker-compose run scanner --mode full --target simulators
+docker-compose run scanner --mode range --target simulators --protocol modbus --port 1502 --device HR --range 0-99
+
+# 実際の工場 LAN を探索する場合はブロードキャスト/ARP が必要なため、
+# docker-compose.yml の scanner に network_mode: host を設定（Linux のみ）
 
 # 統合テスト
 docker-compose run integration-test
@@ -604,15 +608,20 @@ data_types:
   default_type: WORD
   default_byte_order: little
   mappings:
-    - start: 100
+    - device: D          # 省略時はワードデバイスのみに適用（M/X/Y/B/SM には適用しない）
+      start: 100
       end: 199
       type: FLOAT
       description: "温度データ"
-    - start: 200
+    - device: D
+      start: 200
       end: 299
       type: DWORD
       description: "生産カウンター"
 ```
+
+複数ワードの型（FLOAT、DWORD など）は `start` を起点に組を作ります（FLOAT が 100 からなら 100-101, 102-103, …）。
+途中のワードが読めなかった場合も、後続の組はずれません。値を構成する2ワード目以降の行も、元の値と16進表記のまま出力されます。
 
 ### プログラムからの使用
 

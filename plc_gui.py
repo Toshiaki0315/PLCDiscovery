@@ -689,13 +689,25 @@ class PLCScannerApp:
                 if data_type:
                     points = apply_data_type_conversion(points, data_type, byte_order, None)
 
-                path = exporter.export_plc_data(points, ip) if points else None
+                # Write failures (e.g. CSV opened in Excel) are logged and the
+                # collection continues; unwritten denied addresses are retried
+                path = None
+                if points:
+                    try:
+                        path = exporter.export_plc_data(points, ip)
+                    except Exception as e:
+                        logging.error(f"CSVの書き込みに失敗しました（収集は継続します）: {e}")
                 # Append only addresses not yet logged (avoid duplicates every cycle)
                 new_denied = collector.get_denied_addresses() - exported_denied
-                denied_path = exporter.export_denied_addresses(
-                    new_denied, ip, statuses=collector.get_denied_statuses()
-                ) if new_denied else None
-                exported_denied |= new_denied
+                denied_path = None
+                if new_denied:
+                    try:
+                        denied_path = exporter.export_denied_addresses(
+                            new_denied, ip, statuses=collector.get_denied_statuses()
+                        )
+                        exported_denied |= new_denied
+                    except Exception as e:
+                        logging.error(f"アクセス不可ログの書き込みに失敗しました（次回再試行）: {e}")
                 self._post("data", points, collector.get_statistics(), path, denied_path, iteration)
 
                 if not interval:

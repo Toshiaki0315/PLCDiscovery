@@ -5,7 +5,7 @@
 pymcprotocol>=0.3.0
 
 # EtherNet/IP Protocol (Omron/Rockwell)
-pycomm3>=0.32.0
+pycomm3>=1.2.0
 
 # Modbus/TCP Protocol (Yokogawa/Fuji/IDEC)
 pymodbus>=3.0.0
@@ -18,7 +18,6 @@ scapy>=2.5.0
 
 # Utility Libraries
 netifaces>=0.11.0
-ipaddress>=1.0.23
 
 # Configuration
 PyYAML>=6.0

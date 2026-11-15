@@ -6,8 +6,6 @@
 #   docker-compose up -d               # Start all services
 #   docker-compose run scanner --mode discover  # Run with custom args
 
-version: '3.8'
-
 services:
   # =========================================
   # PLC Scanner Service
@@ -29,8 +27,17 @@ services:
       - plc-network
     depends_on:
       - simulators
-    # Override command for custom scan
-    # command: ["--config", "/app/config.yaml", "--mode", "full", "--target", "simulators"]
+    # Scan the simulators (note the non-standard simulator ports):
+    #   docker-compose run scanner --mode range --target simulators --protocol modbus --port 1502 --device HR --range 0-99
+    #   docker-compose run scanner --mode range --target simulators --protocol fins-tcp --device DM --range 0-99
+    #
+    # Real factory LAN: discovery uses broadcast/ARP, which does not leave a
+    # bridge network. Use the host network instead (Linux only) and remove
+    # "networks"/"depends_on" above:
+    #   network_mode: host
+    #
+    # Note: the config/type-mapping files below must exist on the host,
+    # otherwise Docker creates empty directories in their place.
 
   # =========================================
   # PLC Simulators Service
@@ -40,21 +47,22 @@ services:
       context: .
       target: simulator
     container_name: plc-simulators
+    # Ports used by simulators/run_all.py (non-privileged where the standard
+    # port is < 1024): connect with e.g. --protocol modbus --port 1502
     ports:
       # SLMP Simulator
       - "5001:5001"
-      # Modbus Simulator
-      - "5502:502"
+      # Modbus/TCP Simulator (standard 502)
+      - "1502:1502"
       # EtherNet/IP Simulator
-      - "5503:44818"
-      # S7 Simulator
-      - "5102:102"
+      - "44818:44818"
+      # S7 Simulator (standard 102)
+      - "1102:1102"
+      # FINS Simulator (UDP and TCP)
+      - "9600:9600/udp"
+      - "9600:9600/tcp"
     environment:
       - TZ=Asia/Tokyo
-      - SLMP_PORT=5001
-      - MODBUS_PORT=502
-      - ETHERNET_IP_PORT=44818
-      - S7_PORT=102
     networks:
       - plc-network
     healthcheck:

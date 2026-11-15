@@ -145,16 +145,21 @@ data_types:
   default_byte_order: little
   
   # Address-specific type mappings
+  #   device: limits the mapping to one device type (D, DM, HR, ...).
+  #           Without it, a mapping applies to word devices only (never M/X/Y/B/SM).
+  #   Multi-word types are paired from "start": FLOAT at 100 -> 100-101, 102-103, ...
   mappings:
     # Temperature sensors (D100-D199) as FLOAT
-    - start: 100
+    - device: D
+      start: 100
       end: 199
       type: FLOAT
       byte_order: little
       description: "Temperature sensors"
     
     # Pressure sensors (D200-D299) as FLOAT
-    - start: 200
+    - device: D
+      start: 200
       end: 299
       type: FLOAT
       description: "Pressure sensors"

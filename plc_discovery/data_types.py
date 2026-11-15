@@ -429,18 +429,39 @@ class DataTypeConverter:
         return results
 
 
+# Bit devices: multi-word types are never applied to them, and mappings
+# without an explicit device do not apply to them
+BIT_DEVICES = frozenset({"M", "X", "Y", "B", "SM"})
+
+
 @dataclass
 class DataTypeMapping:
-    """Mapping for address range to data type"""
+    """
+    Mapping for an address range to a data type.
+    
+    ``device`` (e.g. "D", "DM", "HR") restricts the mapping to one device
+    type. A mapping without a device applies to word devices only, so a
+    "100-199 = FLOAT" mapping is never applied to M100-M199.
+    Multi-word values are aligned to ``start_address``: with FLOAT at
+    100-199 the words are paired as 100-101, 102-103, ...
+    """
     start_address: int
     end_address: int
     data_type: DataType
     byte_order: ByteOrder = ByteOrder.LITTLE_ENDIAN
     description: str = ""
+    device: Optional[str] = None
     
-    def contains(self, address: int) -> bool:
-        """Check if address is within this mapping"""
-        return self.start_address <= address <= self.end_address
+    def contains(self, address: int, device: Optional[str] = None) -> bool:
+        """Check if address (of the given device type) is within this mapping"""
+        if not self.start_address <= address <= self.end_address:
+            return False
+        if device is None:
+            return True  # legacy call without device information
+        device = device.upper()
+        if self.device:
+            return self.device.upper() == device
+        return device not in BIT_DEVICES
 
 
 class DataTypeManager:
@@ -462,11 +483,22 @@ class DataTypeManager:
         # Sort by start address
         self.mappings.sort(key=lambda m: m.start_address)
     
-    def get_type_for_address(self, address: int) -> Tuple[DataType, ByteOrder]:
-        """Get data type for a specific address"""
+    def get_mapping_for_address(
+        self, address: int, device: Optional[str] = None
+    ) -> Optional[DataTypeMapping]:
+        """Get the mapping covering an address (None if only the default applies)"""
         for mapping in self.mappings:
-            if mapping.contains(address):
-                return mapping.data_type, mapping.byte_order
+            if mapping.contains(address, device):
+                return mapping
+        return None
+    
+    def get_type_for_address(
+        self, address: int, device: Optional[str] = None
+    ) -> Tuple[DataType, ByteOrder]:
+        """Get data type for a specific address"""
+        mapping = self.get_mapping_for_address(address, device)
+        if mapping:
+            return mapping.data_type, mapping.byte_order
         return self.default_type, self.default_byte_order
     
     def set_default(self, data_type: DataType, byte_order: Optional[ByteOrder] = None) -> None:
@@ -498,6 +530,7 @@ class DataTypeManager:
                 data_type=DataType(mapping_config["type"]),
                 byte_order=ByteOrder(mapping_config.get("byte_order", "little")),
                 description=mapping_config.get("description", ""),
+                device=mapping_config.get("device"),
             )
             manager.add_mapping(mapping)
         

@@ -54,8 +54,8 @@ Each protocol has maximum communication limits that are automatically handled:
 ### Development Setup
 ```bash
 # Install dependencies
-pip install pymcprotocol>=0.4.0      # SLMP (Mitsubishi/Keyence)
-pip install pycomm3>=0.32.0          # EtherNet/IP (Omron/Rockwell)
+pip install pymcprotocol>=0.3.0      # SLMP (Mitsubishi/Keyence)
+pip install pycomm3>=1.2.0           # EtherNet/IP (Omron/Rockwell)
 pip install pymodbus>=3.0.0          # Modbus/TCP (Yokogawa/Fuji)
 pip install python-snap7>=1.4.0      # S7 (Siemens)
 pip install scapy>=2.5.0             # ARP/low-level discovery
