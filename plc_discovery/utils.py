@@ -4,6 +4,7 @@ Utility functions for PLC Discovery Tool
 
 import ipaddress
 import logging
+import re
 import socket
 import struct
 from datetime import datetime
@@ -124,6 +125,72 @@ def get_manufacturer_from_mac(mac_address: str) -> Optional[str]:
     oui = mac[:8]  # First 3 bytes (XX:XX:XX)
     
     return MANUFACTURER_OUI.get(oui)
+
+
+# An IPv4 address followed later on the same line by a MAC address; other
+# columns (e.g. "at", or HW type/flags in /proc/net/arp) may lie in between
+_ARP_IP_MAC = re.compile(
+    r"(?<![\d.])(?P<ip>\d{1,3}(?:\.\d{1,3}){3})(?![\d.]).*?"
+    r"(?<![0-9A-Fa-f:-])(?P<mac>[0-9A-Fa-f]{1,2}(?:[:-][0-9A-Fa-f]{1,2}){5})(?![0-9A-Fa-f:-])"
+)
+
+
+def normalize_mac(mac: str) -> Optional[str]:
+    """
+    Normalize "0:1c:42:a:b:c" / "00-1C-42-0A-0B-0C" to "00:1C:42:0A:0B:0C".
+    Returns None for invalid, all-zero and broadcast addresses.
+    """
+    parts = re.split(r"[:-]", mac.strip())
+    if len(parts) != 6 or not all(re.fullmatch(r"[0-9A-Fa-f]{1,2}", p) for p in parts):
+        return None
+    normalized = ":".join(p.zfill(2).upper() for p in parts)
+    if normalized in ("00:00:00:00:00:00", "FF:FF:FF:FF:FF:FF"):
+        return None
+    return normalized
+
+
+def parse_arp_table(text: str) -> Dict[str, str]:
+    """
+    Parse ARP cache listings into {ip: mac}. Understands the output of
+    "arp -an" (macOS/BSD/Linux), "arp -a" (Windows) and /proc/net/arp.
+    Incomplete entries are skipped.
+    """
+    table: Dict[str, str] = {}
+    for line in text.splitlines():
+        match = _ARP_IP_MAC.search(line)
+        if not match:
+            continue
+        mac = normalize_mac(match.group("mac"))
+        if mac:
+            table[match.group("ip")] = mac
+    return table
+
+
+def read_arp_cache(timeout: float = 5.0) -> Dict[str, str]:
+    """
+    Read the operating system's ARP cache ({ip: mac}) without special
+    privileges. Hosts on the local segment appear here once they have been
+    contacted (e.g. by the protocol probes of a discovery run).
+    Returns an empty dict if the cache cannot be read.
+    """
+    import subprocess
+    import sys
+    
+    if sys.platform.startswith("linux"):
+        try:
+            with open("/proc/net/arp", encoding="ascii", errors="ignore") as f:
+                return parse_arp_table(f.read())
+        except OSError:
+            pass  # fall back to the arp command
+    
+    command = ["arp", "-a"] if sys.platform.startswith("win") else ["arp", "-an"]
+    try:
+        result = subprocess.run(command, capture_output=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError) as e:
+        logger.debug(f"Could not read ARP cache: {e}")
+        return {}
+    # Only IP and MAC (ASCII) are parsed; localized headers are ignored
+    return parse_arp_table(result.stdout.decode("ascii", errors="ignore"))
 
 
 def format_mac_address(mac_bytes: bytes) -> str:

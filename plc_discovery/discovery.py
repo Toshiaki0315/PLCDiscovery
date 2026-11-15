@@ -18,7 +18,7 @@ from .config import (
 )
 from .probes import UDP_PROTOCOLS, verify_protocol
 from .utils import (
-    get_network_info, get_subnet_hosts, parse_ip_range,
+    get_network_info, get_subnet_hosts, parse_ip_range, read_arp_cache,
     is_port_open, get_manufacturer_from_mac, format_mac_address,
     get_timestamp, logger
 )
@@ -31,6 +31,11 @@ except ImportError:
     SCAPY_AVAILABLE = False
     logger.warning("scapy not available, ARP discovery disabled")
 
+
+ARP_SKIPPED_MESSAGE = (
+    "ARP scan skipped: administrator (root) rights are required for raw packets. "
+    "PLC discovery continues; MAC addresses are read from the OS ARP cache instead."
+)
 
 # Host count above which a scan-duration warning is logged (larger than a /20)
 LARGE_SCAN_WARNING_HOSTS = 4096
@@ -91,6 +96,7 @@ class PLCDiscovery:
         
         # Then scan each host for PLC protocols (skip self)
         await self._probe_hosts([h for h in hosts if h != ip], mac_table)
+        await self._fill_macs_from_arp_cache()
         return list(self.discovered_plcs.values())
     
     async def discover_ip_range(self, ip_range: str) -> List[PLCInfo]:
@@ -111,7 +117,35 @@ class PLCDiscovery:
         self._report_progress(f"Scanning {total_hosts} hosts", 0, total_hosts)
         
         await self._probe_hosts(hosts, {})
+        await self._fill_macs_from_arp_cache()
         return list(self.discovered_plcs.values())
+    
+    async def _fill_macs_from_arp_cache(self) -> None:
+        """
+        Fill in missing MAC addresses (and the manufacturer from the MAC OUI)
+        from the operating system's ARP cache. The protocol probes have just
+        contacted every detected PLC, so PLCs on the local segment are in the
+        cache; reading it needs no administrator rights (unlike the scapy
+        ARP scan). Hosts behind a router never appear there.
+        """
+        missing = [plc for plc in self.discovered_plcs.values() if not plc.mac_address]
+        if not missing:
+            return
+        cache = await asyncio.get_running_loop().run_in_executor(None, read_arp_cache)
+        filled = 0
+        for plc in missing:
+            mac = cache.get(plc.ip_address)
+            if mac:
+                plc.mac_address = mac
+                plc.manufacturer = plc.manufacturer or get_manufacturer_from_mac(mac)
+                filled += 1
+        if filled:
+            logger.info(f"MAC addresses of {filled} PLC(s) taken from the OS ARP cache")
+        elif not cache:
+            logger.info(
+                "OS ARP cache is not readable or empty; MAC addresses stay blank "
+                "(on recent macOS the ARP table is hidden from apps without Local Network access)"
+            )
     
     async def _probe_hosts(self, hosts: List[str], mac_table: Dict[str, str]) -> None:
         """
@@ -173,7 +207,15 @@ class PLCDiscovery:
                 logger.debug(f"ARP: {received.psrc} -> {received.hwsrc}")
         
         except Exception as e:
-            logger.warning(f"ARP scan failed: {e}")
+            # Raw packet access needs administrator/root rights (scapy raises
+            # PermissionError or its own exception mentioning the permission).
+            # That is the normal case for a non-elevated GUI/CLI, not an error.
+            text = str(e).lower()
+            if isinstance(e, PermissionError) or "permission" in text or "not permitted" in text:
+                logger.info(ARP_SKIPPED_MESSAGE)
+                logger.debug(f"ARP scan permission error: {e}")
+            else:
+                logger.warning(f"ARP scan failed: {e}")
         
         return mac_table
     
