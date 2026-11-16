@@ -5,11 +5,18 @@ Regression tests for the third review's findings (T1-T6).
 import asyncio
 import csv
 import re
-import tomllib
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+# tomllib is in the standard library from Python 3.11; 3.10 (still
+# supported, tested in CI) uses the identical tomli package
+if sys.version_info >= (3, 11):
+    import tomllib
+else:
+    tomllib = pytest.importorskip("tomli")
 
 import plc_scanner
 from plc_discovery.config import (
