@@ -104,7 +104,8 @@ def run_s7_simulator():
     import asyncio
     from simulators.s7_simulator import run_server
     
-    asyncio.run(run_server("127.0.0.1", 1102, [(500, 550)]))
+    # Denied byte offsets 1000-1101 = word addresses 500-550 (byte = word * 2)
+    asyncio.run(run_server("127.0.0.1", 1102, [(1000, 1101)]))
 
 
 def run_fins_simulator():

@@ -3,10 +3,9 @@ S7 Integration Tests
 
 Tests actual communication with Siemens S7 simulator.
 
-Note: snap7 library always connects to port 102 (ISO-on-TCP standard).
-Custom port configuration is not supported by snap7, so these tests
-require the simulator to run on port 102 (requires elevated privileges
-on some systems). Tests are skipped in CI environments.
+The simulator listens on the non-privileged port 1102 (python-snap7
+connects to any port). Addresses are word indexes (byte offset =
+address * 2), so the simulator denies bytes 1000-1101 = words 500-550.
 """
 
 import asyncio
@@ -21,7 +20,6 @@ from plc_discovery.collector import PLCDataCollector
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.asyncio,
-    pytest.mark.skip(reason="snap7 only supports port 102; S7 simulator cannot bind to privileged port in test environment"),
 ]
 
 class TestS7Connection:
