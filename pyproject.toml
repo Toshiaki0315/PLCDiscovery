@@ -4,7 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "plc-discovery"
-version = "1.0.0"
+# Single source of truth: plc_discovery.__version__
+dynamic = ["version"]
 description = "Multi-vendor PLC auto-detection and data collection tool"
 readme = "README.md"
 license = {text = "MIT"}
@@ -65,6 +66,9 @@ plc-scanner = "plc_scanner:cli"
 [tool.setuptools]
 # Top-level scripts imported by the console entry point
 py-modules = ["plc_scanner", "plc_gui"]
+
+[tool.setuptools.dynamic]
+version = {attr = "plc_discovery.__version__"}
 
 [tool.setuptools.packages.find]
 include = ["plc_discovery*"]
