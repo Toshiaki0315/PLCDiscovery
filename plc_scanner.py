@@ -48,7 +48,7 @@ from plc_discovery.discovery import (
 )
 from plc_discovery.collector import PLCDataCollector
 from plc_discovery.output import DEFAULT_OUTPUT_DIR, CSVExporter
-from plc_discovery.utils import ip_range_error, parse_ip_range, sorted_addresses
+from plc_discovery.utils import ip_range_error, parse_ip_range, sorted_addresses, target_address_error
 from plc_discovery.config_loader import (
     MIN_INTERVAL_SECONDS, NETWORK_MINIMUMS, ConfigLoader, generate_config_template, integer_error
 )
@@ -458,10 +458,20 @@ def network_option_errors(args) -> List[str]:
 
 
 def parse_targets(target_str: str) -> List[str]:
-    """Parse comma-separated target IPs"""
+    """
+    Parse comma-separated target IPs (empty entries such as a trailing
+    comma are ignored).
+    
+    Raises:
+        ValueError: if an entry is not an IPv4 address
+    """
     if not target_str:
         return []
-    return [ip.strip() for ip in target_str.split(",")]
+    targets = [ip.strip() for ip in target_str.split(",") if ip.strip()]
+    errors = [e for e in map(target_address_error, targets) if e]
+    if errors:
+        raise ValueError(f"Invalid --target: {'; '.join(errors)}")
+    return targets
 
 
 def load_type_mapping(path: str, overrides: Optional[Dict[str, str]] = None) -> DataTypeManager:

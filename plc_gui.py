@@ -42,7 +42,7 @@ from plc_discovery.config import (
 from plc_discovery.data_types import ByteOrder
 from plc_discovery.discovery import PLCDiscovery, discover_plcs, merge_discovery_results
 from plc_discovery.output import DEFAULT_OUTPUT_DIR, CSVExporter
-from plc_discovery.utils import MAX_IP_RANGE_HOSTS, ip_range_error
+from plc_discovery.utils import MAX_IP_RANGE_HOSTS, ip_range_error, target_address_error
 from plc_scanner import BYTE_ORDER_MAP, DATA_TYPE_MAP, apply_data_type_conversion
 
 APP_TITLE = "PLC Discovery - PLC自動探索・データ収集ツール"
@@ -633,6 +633,8 @@ class PLCScannerApp:
             ip = self.var_target.get().strip()
             if not ip:
                 raise ValueError("接続先PLCのIPアドレスを入力してください。")
+            if target_address_error(ip):
+                raise ValueError(f"接続先PLCのIPアドレス（またはホスト名）が正しくありません: {ip}\n（例: 192.168.1.10）")
             proto_name = self.var_protocol.get()
             protocol = Protocol[proto_name] if proto_name in Protocol.__members__ else None
             port = self._int_field(self.var_port, "ポート", 1) if self.var_port.get().strip() else None

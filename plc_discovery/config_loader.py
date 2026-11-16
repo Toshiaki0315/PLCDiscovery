@@ -26,7 +26,7 @@ from .config import (
     Protocol, DeviceType, DeviceRange, NetworkConfig, PLCInfo, ScanMode, range_size_error
 )
 from .data_types import DataType, ByteOrder, DataTypeManager, DataTypeMapping
-from .utils import ip_range_error
+from .utils import ip_range_error, target_address_error
 
 
 # Default configuration template
@@ -457,6 +457,10 @@ class ConfigLoader:
         for i, target in enumerate(self.config.get("targets", [])):
             if not target.get("ip"):
                 errors.append(f"targets[{i}].ip is required")
+            else:
+                address_error = target_address_error(str(target.get("ip")))
+                if address_error:
+                    errors.append(f"targets[{i}].ip: {address_error}")
             protocol_str = target.get("protocol")
             protocol = self._parse_protocol(protocol_str)
             if protocol_str and protocol is None:

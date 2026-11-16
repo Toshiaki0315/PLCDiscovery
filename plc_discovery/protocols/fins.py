@@ -95,7 +95,10 @@ FINS_ERROR_CODES = {
 
 # End codes reported by the PLC for the requested addresses: the address
 # does not exist on this CPU (learned as inaccessible by binary search)
-FINS_ILLEGAL_ADDRESS_CODES = (0x1103, 0x1104)
+# 0x110B "Response too long": more words requested than this model returns
+# in one response; smaller reads succeed, so it is split like an address
+# error instead of being reported as a communication failure
+FINS_ILLEGAL_ADDRESS_CODES = (0x1103, 0x1104, 0x110B)
 
 # The memory area or the command itself is not available on this model;
 # splitting the range cannot help

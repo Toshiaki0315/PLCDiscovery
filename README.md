@@ -265,7 +265,7 @@ python plc_scanner.py --mode full --target 192.168.1.10 --no-database
 | `--config`, `-c` | 設定ファイルパス (YAML/JSON) | - |
 | `--generate-config [PATH]` | 設定ファイルテンプレートを生成（既存ファイルは上書きしません） | plc_config.yaml |
 | `--mode`, `-m` | 動作モード (discover/full/range)。省略時は設定ファイルの `scan.mode`（明示されている場合のみ） | discover |
-| `--target`, `-t` | 対象PLC IPアドレス（カンマ区切りで複数指定可） | - |
+| `--target`, `-t` | 対象PLC IPアドレス（カンマ区切りで複数指定可。ホスト名も可）。不正な値は接続前にエラー | - |
 | `--ip-range`, `-r` | スキャン対象IPレンジ | - |
 | `--discover-protocols` | 探索で確認するプロトコル（カンマ区切り、例: `slmp,modbus`）。省略時は設定ファイルの `discovery.protocols`、なければ全プロトコル | 全プロトコル |
 | `--protocol`, `-p` | プロトコル指定 (slmp/eip/modbus/s7/fins/fins-tcp)。fins は FINS/UDP、fins-tcp は FINS/TCP | 自動検出 |

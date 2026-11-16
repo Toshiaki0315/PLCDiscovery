@@ -46,6 +46,15 @@ def modbus_unit_kwargs(method, unit_id: int) -> dict:
     return {"device_id": unit_id}
 
 
+# Exception codes about the requested range, answered by the device:
+#   02 Illegal Data Address - start or start + quantity not valid
+#   03 Illegal Data Value   - quantity not accepted (devices limited to fewer
+#                             registers per request than the 100 read here)
+# Both used to fall into NG_COMM_ERROR for 03: retries, then the whole
+# range reported as communication errors although every register could be
+# read in smaller requests.
+MODBUS_SPLITTABLE_EXCEPTIONS = (0x02, 0x03)
+
 # Modbus TCP constants
 MODBUS_PORT = 502
 MODBUS_MAX_READ_REGISTERS = 125  # Protocol maximum (reads use SAFE_READ_WORDS = 100)
@@ -197,8 +206,13 @@ class ModbusHandler(BaseProtocolHandler):
             if result.isError():
                 # Get exception code if available
                 exception_code = getattr(result, 'exception_code', 0)
-                if exception_code == 2:  # Illegal data address
-                    logger.debug(f"Modbus illegal address: {device_type.value}{start_address}")
+                if exception_code in MODBUS_SPLITTABLE_EXCEPTIONS:
+                    # The device answered about this request's addresses or
+                    # quantity: binary search narrows it down (a device that
+                    # reads at most e.g. 32 registers answers 03 to 100)
+                    logger.debug(
+                        f"Modbus exception {exception_code}: {device_type.value}{start_address} x{count}"
+                    )
                     return None, StatusCode.NG_ILLEGAL_ADDR
                 elif exception_code == 1:  # Illegal function
                     logger.debug(f"Modbus illegal function: {device_type.value}")

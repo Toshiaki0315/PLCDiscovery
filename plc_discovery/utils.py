@@ -284,6 +284,36 @@ def parse_ip_range(ip_range: str) -> List[str]:
     return list(hosts)
 
 
+_HOST_LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
+
+
+def target_address_error(address: str) -> Optional[str]:
+    """
+    Why a scan target is not a usable IPv4 address or host name (None when
+    it is). Host names are accepted for setups such as docker-compose,
+    where the simulators are reached as "simulators".
+    
+    Checked before connecting: an empty entry (e.g. "10.0.0.1,,") was
+    passed to the protocol libraries, some of which treat an empty host as
+    this PC, and an invalid one such as 192.168.1.300 only failed later as
+    an unexplained connection error.
+    """
+    text = (address or "").strip()
+    if not text:
+        return "empty target address"
+    try:
+        ipaddress.IPv4Address(text)
+        return None
+    except ValueError:
+        pass
+    labels = text.rstrip(".").split(".")
+    looks_numeric = all(label.isdigit() for label in labels)
+    if (not looks_numeric and len(text) <= 253
+            and all(_HOST_LABEL.fullmatch(label) for label in labels)):
+        return None
+    return f"'{text}' is not an IPv4 address or host name (e.g. 192.168.1.10)"
+
+
 def get_manufacturer_from_mac(mac_address: str) -> Optional[str]:
     """Get manufacturer name from MAC address OUI"""
     if not mac_address:
