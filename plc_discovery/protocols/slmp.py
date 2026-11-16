@@ -118,6 +118,9 @@ class SLMPHandler(BaseProtocolHandler):
     
     protocol = Protocol.SLMP
     FRAME = "3E"
+    # Device number field: 3 bytes for the Q/L series command format that
+    # pymcprotocol uses by default (a larger number raises OverflowError)
+    MAX_ADDRESS = 0xFFFFFF
     
     def __init__(
         self,

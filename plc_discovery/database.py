@@ -650,7 +650,7 @@ class DatabaseExporter:
             SELECT value, raw_hex, timestamp
             FROM data_points
             WHERE plc_ip = ? AND address = ?
-            AND datetime(timestamp) >= datetime('now', ?)
+            AND datetime(timestamp) >= datetime('now', 'localtime', ?)
             ORDER BY timestamp DESC
             """,
             (plc_ip, address, f'-{days} days')
@@ -681,7 +681,7 @@ class DatabaseExporter:
                 SELECT plc_ip, address, old_value, new_value, changed_at
                 FROM data_history
                 WHERE plc_ip = ?
-                AND datetime(changed_at) >= datetime('now', ?)
+                AND datetime(changed_at) >= datetime('now', 'localtime', ?)
                 ORDER BY changed_at DESC
                 """,
                 (plc_ip, f'-{days} days')
@@ -691,7 +691,7 @@ class DatabaseExporter:
                 """
                 SELECT plc_ip, address, old_value, new_value, changed_at
                 FROM data_history
-                WHERE datetime(changed_at) >= datetime('now', ?)
+                WHERE datetime(changed_at) >= datetime('now', 'localtime', ?)
                 ORDER BY changed_at DESC
                 """,
                 (f'-{days} days',)
@@ -767,7 +767,7 @@ class DatabaseExporter:
         self._connection.execute(
             """
             DELETE FROM data_points
-            WHERE datetime(timestamp) < datetime('now', ?)
+            WHERE datetime(timestamp) < datetime('now', 'localtime', ?)
             AND id NOT IN (
                 SELECT MAX(id) FROM data_points
                 GROUP BY plc_ip, address
@@ -780,7 +780,7 @@ class DatabaseExporter:
         self._connection.execute(
             """
             DELETE FROM data_history
-            WHERE datetime(changed_at) < datetime('now', ?)
+            WHERE datetime(changed_at) < datetime('now', 'localtime', ?)
             """,
             (f'-{days} days',)
         )
@@ -789,7 +789,7 @@ class DatabaseExporter:
         self._connection.execute(
             """
             DELETE FROM denied_addresses
-            WHERE datetime(timestamp) < datetime('now', ?)
+            WHERE datetime(timestamp) < datetime('now', 'localtime', ?)
             """,
             (f'-{days} days',)
         )

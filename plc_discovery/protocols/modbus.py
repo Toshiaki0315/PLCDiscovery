@@ -61,6 +61,7 @@ class ModbusHandler(BaseProtocolHandler):
     """
     
     protocol = Protocol.MODBUS_TCP
+    MAX_ADDRESS = 0xFFFF  # 16-bit register/coil address
     
     def __init__(
         self,

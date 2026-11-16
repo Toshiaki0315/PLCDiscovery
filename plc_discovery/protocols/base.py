@@ -36,6 +36,12 @@ class BaseProtocolHandler(ABC):
     # Binary search limits (log2(4096) = 12)
     MAX_SPLIT_DEPTH = 12
     
+    # Highest address the protocol can encode (None = no local limit).
+    # Requests beyond it are answered NG_ILLEGAL_ADDR without being sent:
+    # libraries either wrap the address silently (wrong data) or raise
+    # before sending (misread as a communication failure).
+    MAX_ADDRESS: Optional[int] = None
+    
     # Consecutive transport-level failures after which the link is
     # considered down and binary search stops issuing requests
     COMM_FAILURE_ABORT_THRESHOLD = 3
@@ -263,6 +269,16 @@ class BaseProtocolHandler(ABC):
         Call read_device_raw, validate the response length and keep track
         of consecutive communication failures (to detect a lost link).
         """
+        if start_address < 0 or (
+            self.MAX_ADDRESS is not None and start_address + count - 1 > self.MAX_ADDRESS
+        ):
+            # Decided locally: nothing sent, the link state is unchanged
+            logger.debug(
+                f"{device_type.value}{start_address} x{count} exceeds the "
+                f"{self.protocol.name if self.protocol else ''} address limit {self.MAX_ADDRESS}"
+            )
+            return None, StatusCode.NG_ILLEGAL_ADDR
+        
         try:
             data, status = await self.read_device_raw(device_type, start_address, count)
         except Exception as e:

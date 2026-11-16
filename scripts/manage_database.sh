@@ -128,7 +128,16 @@ cmd_backup() {
 # Cleanup old data
 cmd_cleanup() {
     check_db
-    
+
+    # Days are pasted into the SQL below: accept a positive integer only
+    # (anything else made SQLite compare with NULL and delete nothing)
+    case "$DAYS_TO_KEEP" in
+        ''|*[!0-9]*|0)
+            echo -e "${RED}Error: days to keep must be a positive integer, got '$DAYS_TO_KEEP'${NC}"
+            exit 1
+            ;;
+    esac
+
     echo -e "${BLUE}Cleaning up data older than $DAYS_TO_KEEP days...${NC}"
     echo ""
     
@@ -144,7 +153,7 @@ EOF
     sqlite3 "$DB_PATH" <<EOF
 -- Delete old data points (keep latest per address)
 DELETE FROM data_points
-WHERE datetime(timestamp) < datetime('now', '-$DAYS_TO_KEEP days')
+WHERE datetime(timestamp) < datetime('now', 'localtime', '-$DAYS_TO_KEEP days')
 AND id NOT IN (
     SELECT MAX(id) FROM data_points
     GROUP BY plc_ip, address
@@ -152,11 +161,11 @@ AND id NOT IN (
 
 -- Delete old history
 DELETE FROM data_history
-WHERE datetime(changed_at) < datetime('now', '-$DAYS_TO_KEEP days');
+WHERE datetime(changed_at) < datetime('now', 'localtime', '-$DAYS_TO_KEEP days');
 
 -- Delete old denied addresses
 DELETE FROM denied_addresses
-WHERE datetime(timestamp) < datetime('now', '-$DAYS_TO_KEEP days');
+WHERE datetime(timestamp) < datetime('now', 'localtime', '-$DAYS_TO_KEEP days');
 EOF
     
     echo ""

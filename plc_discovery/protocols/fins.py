@@ -128,6 +128,7 @@ class FINSHandler(BaseProtocolHandler):
     DEFAULT_PORT_UDP = 9600
     DEFAULT_PORT_TCP = 9600
     MAX_READ_WORDS = 499  # FINS protocol limit per read (reads use SAFE_READ_WORDS)
+    MAX_ADDRESS = 0xFFFF  # word address is 2 bytes in the read command
     
     def __init__(
         self,
@@ -316,6 +317,12 @@ class FINSHandler(BaseProtocolHandler):
         if not self._connected:
             return None, StatusCode.NG_COMM_ERROR
         
+        if device_type not in FINS_AREA_CODES:
+            # Never fall back to another area: the DM values would be
+            # recorded under the requested device's addresses
+            logger.warning(f"Unsupported device type for FINS: {device_type}")
+            return None, StatusCode.NG_UNSUPPORTED
+        
         try:
             # Build FINS command
             frame = self._build_read_command(device_type, start_address, count)
@@ -344,8 +351,8 @@ class FINSHandler(BaseProtocolHandler):
         count: int
     ) -> bytes:
         """Build FINS memory read command"""
-        # Get memory area code
-        area_code = FINS_AREA_CODES.get(device_type, 0x82)
+        # Get memory area code (read_device_raw rejects other device types)
+        area_code = FINS_AREA_CODES[device_type]
         
         # Increment SID
         self._sid = (self._sid + 1) & 0xFF
