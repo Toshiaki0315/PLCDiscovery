@@ -538,8 +538,10 @@ output:
     enabled: true
     path: "./plc_data.db"
     track_history: true
-    max_history_days: 30
+    max_history_days: 30   # これより古いデータは自動で削除（0 = 削除しない）
 ```
+
+`max_history_days` より古いデータは、データベースを開いたときと、周期実行中は1日1回、自動で削除されます（各アドレスの最新値は残ります）。
 
 ### Pythonコードでの利用
 

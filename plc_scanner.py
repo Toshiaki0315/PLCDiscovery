@@ -1151,6 +1151,12 @@ async def run_periodic_scan(
     return list(outcomes.values())
 
 
+UNDETECTED_PROTOCOL = (
+    "no PLC protocol answered (check the PLC power and network, "
+    "or specify the protocol with --protocol / targets[].protocol)"
+)
+
+
 async def resolve_target(
     ip: str,
     protocol: Optional[Protocol],
@@ -1158,8 +1164,14 @@ async def resolve_target(
     config: NetworkConfig,
     display: RichProgressDisplay,
     base: Optional[PLCInfo] = None
-) -> PLCInfo:
-    """Build PLCInfo for a target, auto-detecting the protocol if not given"""
+) -> Optional[PLCInfo]:
+    """
+    Build PLCInfo for a target, auto-detecting the protocol if not given.
+    
+    Returns None when no protocol answers: the target is reported as
+    failed instead of being scanned as SLMP, which produced a misleading
+    "Failed to connect ... (SLMP)" for a protocol nobody asked for.
+    """
     if protocol:
         plc_info = base or PLCInfo(ip_address=ip)
         plc_info.protocol = protocol
@@ -1178,12 +1190,8 @@ async def resolve_target(
             detected.options = dict(base.options)
         return detected
     
-    display.print_warning(f"Could not detect protocol for {ip}, defaulting to SLMP")
-    return PLCInfo(
-        ip_address=ip,
-        protocol=Protocol.SLMP,
-        port=port or PROTOCOL_PORTS[Protocol.SLMP]
-    )
+    display.print_error(f"{ip}: {UNDETECTED_PROTOCOL}")
+    return None
 
 
 async def _notify(notifier: Optional[NotificationManager], send) -> None:
@@ -1460,31 +1468,48 @@ async def main():
             protocol = get_protocol_from_string(args.protocol) if args.protocol else None
             
             plc_infos: List[PLCInfo] = []
+            # Targets whose protocol could not be detected: failed, not scanned
+            undetected: List[str] = []
             if config_loader and not targets:
                 for target in config_loader.get_targets():
-                    plc_infos.append(await resolve_target(
+                    resolved = await resolve_target(
                         target.ip_address, target.protocol, target.port,
                         config, display, base=target
-                    ))
+                    )
+                    if resolved:
+                        plc_infos.append(resolved)
+                    else:
+                        undetected.append(target.ip_address)
             else:
                 if not targets:
                     display.print_error("--target is required for full/range modes")
                     exit_code = 1
                     sys.exit(1)
                 for ip in targets:
-                    plc_infos.append(await resolve_target(ip, protocol, args.port, config, display))
+                    resolved = await resolve_target(ip, protocol, args.port, config, display)
+                    if resolved:
+                        plc_infos.append(resolved)
+                    else:
+                        undetected.append(ip)
             
-            if not plc_infos:
+            if not plc_infos and not undetected:
                 display.print_error("No targets specified")
                 exit_code = 1
                 sys.exit(1)
             
+            for ip in undetected:
+                failed_targets.append(ip)
+                target_errors.append(_target_error(ip, UNDETECTED_PROTOCOL))
+            
             if mode == ScanMode.FULL and interval > 0:
                 display.print_warning("--interval is ignored in full scan mode")
             
-            all_plcs = plc_infos
+            # Undetected targets are listed (without protocol) in the report
+            all_plcs = plc_infos + [PLCInfo(ip_address=ip) for ip in undetected]
             
-            if mode == ScanMode.RANGE and interval > 0:
+            if not plc_infos:
+                pass   # nothing could be scanned; reported as failed below
+            elif mode == ScanMode.RANGE and interval > 0:
                 # Periodic: all targets in turn every cycle
                 if len(plc_infos) > 1 and config.max_concurrent > 1:
                     display.print_info("Periodic scans read targets one after another (--max-concurrent not used)")

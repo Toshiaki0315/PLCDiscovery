@@ -17,6 +17,7 @@ Features:
 import sqlite3
 import json
 import logging
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -28,6 +29,9 @@ from .report import json_safe
 
 logger = logging.getLogger(__name__)
 
+
+# How often a long run (periodic monitoring) applies max_history_days
+CLEANUP_INTERVAL_SECONDS = 24 * 60 * 60
 
 # Database schema version for migrations
 SCHEMA_VERSION = 3
@@ -137,6 +141,8 @@ class DatabaseConfig:
     enabled: bool = False
     path: str = "./plc_data.db"
     track_history: bool = True
+    # Data older than this is deleted when the database is opened and once a
+    # day during long runs (0 = keep everything)
     max_history_days: int = 30
     
     @classmethod
@@ -187,6 +193,7 @@ class DatabaseExporter:
         # then kept up to date in memory so periodic exports do not re-scan
         # the whole data_points table every cycle
         self._latest_values: Dict[tuple, Dict[str, int]] = {}
+        self._last_cleanup: Optional[float] = None
         
         if self.config.enabled:
             self._initialize_database()
@@ -250,6 +257,11 @@ class DatabaseExporter:
             
             self._connection.commit()
             logger.info(f"Database initialized: {self.config.path}")
+            
+            # Apply max_history_days (it was never applied automatically, so
+            # a monitoring database grew without limit: ~330 MB a day for
+            # 1000 points every 60 s). Space is reclaimed only if rows went.
+            self._apply_retention(vacuum=True)
             
         except Exception as e:
             logger.error(f"Failed to initialize database: {e}")
@@ -540,6 +552,12 @@ class DatabaseExporter:
         
         self._connection.commit()
         logger.debug(f"Exported {count} data points for {plc_ip}")
+        
+        # Long runs: delete expired rows once a day (no VACUUM, which would
+        # block the monitoring cycle while it rewrites the whole file)
+        if (self._last_cleanup is not None
+                and time.monotonic() - self._last_cleanup >= CLEANUP_INTERVAL_SECONDS):
+            self._apply_retention(vacuum=False)
         return count
     
     def export_denied_addresses(
@@ -792,20 +810,39 @@ class DatabaseExporter:
         self._latest_values.clear()
         return self._cleanup_old_data(days)
     
-    def _cleanup_old_data(self, days: int = None):
+    def _apply_retention(self, vacuum: bool) -> None:
+        """Delete rows older than max_history_days (never raises)"""
+        self._last_cleanup = time.monotonic()
+        days = self.config.max_history_days
+        if not days or days <= 0:
+            return
+        try:
+            deleted = self._cleanup_old_data(days, vacuum=None if vacuum else False)
+            if deleted:
+                logger.info(f"Deleted {deleted} database rows older than {days} days")
+        except Exception as e:
+            logger.warning(f"Database retention cleanup failed: {e}")
+    
+    def _cleanup_old_data(self, days: int = None, vacuum: Optional[bool] = True) -> int:
         """
         Clean up old data to manage database size.
         
         Args:
             days: Days of data to keep (uses config if not specified)
+            vacuum: True = always VACUUM, None = only when rows were
+                deleted, False = never
+        
+        Returns:
+            Number of rows deleted
         """
         if not self.is_enabled:
-            return
+            return 0
         
         days = days or self.config.max_history_days
+        deleted = 0
         
         # Delete old data points (keep latest per address)
-        self._connection.execute(
+        deleted += self._connection.execute(
             """
             DELETE FROM data_points
             WHERE datetime(timestamp) < datetime('now', 'localtime', ?)
@@ -815,34 +852,36 @@ class DatabaseExporter:
             )
             """,
             (f'-{days} days',)
-        )
+        ).rowcount
         
         # Delete old history
-        self._connection.execute(
+        deleted += self._connection.execute(
             """
             DELETE FROM data_history
             WHERE datetime(changed_at) < datetime('now', 'localtime', ?)
             """,
             (f'-{days} days',)
-        )
+        ).rowcount
         
         # Delete old denied addresses
-        self._connection.execute(
+        deleted += self._connection.execute(
             """
             DELETE FROM denied_addresses
             WHERE datetime(timestamp) < datetime('now', 'localtime', ?)
             """,
             (f'-{days} days',)
-        )
+        ).rowcount
         
         # Commit the deletions first: SQLite cannot VACUUM inside a
         # transaction (the DELETEs above opened one)
         self._connection.commit()
         
         # Vacuum to reclaim space
-        self._connection.execute("VACUUM")
+        if vacuum or (vacuum is None and deleted):
+            self._connection.execute("VACUUM")
         
-        logger.info(f"Cleaned up data older than {days} days")
+        logger.info(f"Cleaned up data older than {days} days ({deleted} rows)")
+        return deleted
     
     def __enter__(self):
         return self

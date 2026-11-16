@@ -127,7 +127,8 @@ output:
     # Track value changes
     track_history: true
     
-    # Days to keep history (for cleanup)
+    # Days of data to keep: older rows are deleted when the database is
+    # opened and once a day during periodic scans (0 = keep everything)
     max_history_days: 30
 
 # Logging settings

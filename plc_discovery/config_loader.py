@@ -539,6 +539,13 @@ class ConfigLoader:
             if self._parse_device_type(str(range_def.get("device", "D"))) is None:
                 errors.append(f"{where}: unknown device '{range_def.get('device')}'")
 
+        # Database retention (0 = keep everything)
+        database = (self.config.get("output") or {}).get("database") or {}
+        if isinstance(database, dict) and "max_history_days" in database:
+            error = integer_error(database["max_history_days"], 0)
+            if error:
+                errors.append(f"output.database.max_history_days {error}")
+        
         # Validate data type settings (default type/byte order and mappings)
         try:
             DataTypeManager.from_config(self.config.get("data_types"))
