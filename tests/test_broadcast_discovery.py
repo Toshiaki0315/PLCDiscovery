@@ -66,9 +66,8 @@ class TestBroadcastDiscovery:
         
         assert isinstance(request, bytes)
         assert len(request) > 0
-        # Check subheader (0x5000 for request)
-        subheader = struct.unpack("<H", request[0:2])[0]
-        assert subheader == 0x5000
+        # Subheader bytes "50 00" (3E binary request)
+        assert request[:2] == b"\x50\x00"
     
     def test_build_eip_list_identity_request(self):
         """Test building EtherNet/IP List Identity request"""
@@ -87,7 +86,7 @@ class TestBroadcastDiscovery:
         discovery = BroadcastDiscovery()
         
         # Build a valid SLMP response (D000 subheader)
-        response = struct.pack("<H", 0xD000) + b"\x00" * 20
+        response = b"\xD0\x00" + b"\x00" * 20
         
         result = discovery._parse_slmp_response("192.168.1.10", response)
         
@@ -174,7 +173,7 @@ class TestBroadcastDiscovery:
         discovery = BroadcastDiscovery()
         
         # Mock the _send_broadcast method
-        mock_response = struct.pack("<H", 0xD000) + b"\x00" * 20
+        mock_response = b"\xD0\x00" + b"\x00" * 20
         
         async def mock_send_broadcast(port, data, timeout):
             return {"192.168.1.10": mock_response}
@@ -212,7 +211,7 @@ class TestBroadcastDiscovery:
         discovery = BroadcastDiscovery()
         
         # Mock responses for both protocols
-        slmp_response = struct.pack("<H", 0xD000) + b"\x00" * 20
+        slmp_response = b"\xD0\x00" + b"\x00" * 20
         eip_response = struct.pack("<H", EIP_LIST_IDENTITY_CMD) + struct.pack("<H", 10) + b"\x00" * 20
         
         call_count = [0]

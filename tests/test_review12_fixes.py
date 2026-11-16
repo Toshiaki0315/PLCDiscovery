@@ -74,7 +74,7 @@ def test_broadcast_vendor_2_is_not_omron():
 @pytest.mark.asyncio
 async def test_broadcast_keeps_both_protocols_of_one_host():
     discovery = BroadcastDiscovery()
-    slmp = struct.pack("<H", 0xD000) + b"\x00" * 20
+    slmp = b"\xD0\x00" + b"\x00" * 20
 
     async def send(port, data, timeout):
         return {"10.0.0.7": slmp if port == 5001 else list_identity(367, "KV-8000")}

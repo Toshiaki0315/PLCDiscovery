@@ -408,6 +408,9 @@ PLCDiscovery/
 ユニットテストの実行:
 
 ```bash
+# 最初に一度だけ: テスト用ライブラリ（pytest など）をインストール
+pip install -r requirements-dev.txt
+
 # 全テスト実行
 pytest
 

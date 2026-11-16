@@ -441,33 +441,17 @@ class PLCDiscovery:
         return plc_info
     
     async def _query_slmp_info(self, plc_info: PLCInfo) -> PLCInfo:
-        """Query SLMP device for CPU information"""
-        try:
-            from pymcprotocol import Type3E
-            
-            def _query():
-                client = Type3E()
-                client.connect(plc_info.ip_address, plc_info.port or 5001)
-                try:
-                    # Try to read CPU type
-                    # SLMP doesn't have a standard CPU info command, 
-                    # but successful connection confirms it's SLMP
-                    plc_info.manufacturer = plc_info.manufacturer or "三菱電機/キーエンス"
-                    plc_info.model = "SLMP対応PLC"
-                except Exception:
-                    pass
-                finally:
-                    client.close()
-                return plc_info
-            
-            loop = asyncio.get_running_loop()
-            return await loop.run_in_executor(None, _query)
+        """
+        Fill in SLMP device information.
         
-        except ImportError:
-            logger.debug("pymcprotocol not available")
-        except Exception as e:
-            logger.debug(f"SLMP query failed: {e}")
-        
+        SLMP has no standard identification command, and probe_slmp() has
+        already confirmed that the host answers SLMP. No further connection
+        is opened (previously a pymcprotocol connection was made only to set
+        these fixed names - an extra TCP session to the PLC with the
+        library's own 2 s timeout instead of the discovery timeout).
+        """
+        plc_info.manufacturer = plc_info.manufacturer or "三菱電機/キーエンス"
+        plc_info.model = plc_info.model or "SLMP対応PLC"
         return plc_info
     
     async def _query_eip_info(self, plc_info: PLCInfo) -> PLCInfo:

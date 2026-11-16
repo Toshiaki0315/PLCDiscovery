@@ -21,6 +21,9 @@ logger = logging.getLogger(__name__)
 
 # SLMP UDP Discovery (Mitsubishi)
 SLMP_DISCOVERY_PORT = 5001
+# SLMP 3E binary subheaders (byte sequences as sent on the wire)
+SLMP_REQUEST_SUBHEADER = b"\x50\x00"
+SLMP_RESPONSE_SUBHEADER = b"\xD0\x00"
 SLMP_DISCOVERY_MAGIC = b"\x00\x00\x00\x00"  # Simplified discovery request
 
 # EtherNet/IP UDP Discovery (List Identity)
@@ -229,8 +232,10 @@ class BroadcastDiscovery:
     def _build_slmp_discovery_request(self) -> bytes:
         """Build SLMP discovery request"""
         # SLMP 3E frame for device information read
-        # Subheader (request: 0x5000)
-        subheader = struct.pack("<H", 0x5000)
+        # Subheader: bytes "50 00" (3E binary request). The protocol defines
+        # the byte sequence, so write it literally (struct "<H" 0x5000 gave
+        # "00 50", which no PLC accepts)
+        subheader = SLMP_REQUEST_SUBHEADER
         # Network number, PC number, I/O number, station number
         routing = struct.pack("<BBHB", 0x00, 0xFF, 0x03FF, 0x00)
         # Timer (unit: 250 ms)
@@ -260,9 +265,10 @@ class BroadcastDiscovery:
             return None
         
         try:
-            # Check response subheader
-            subheader = struct.unpack("<H", data[0:2])[0]
-            if subheader != 0xD000:
+            # Check response subheader: bytes "D0 00" (3E binary response).
+            # Previously compared with "<H" 0xD000 (bytes "00 D0"), so every
+            # real reply was discarded
+            if data[:2] != SLMP_RESPONSE_SUBHEADER:
                 return None
             
             return PLCInfo(

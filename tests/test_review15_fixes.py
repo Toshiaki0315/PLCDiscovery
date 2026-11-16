@@ -259,3 +259,73 @@ def test_cleanup_old_data_vacuums(tmp_path):
     rows = db._connection.execute("SELECT value FROM data_points").fetchall()
     assert [r[0] for r in rows] == [2]
     db.close()
+
+
+# ---------------------------------------------------------------------------
+# External review: SLMP broadcast subheaders, discovery SLMP connection
+# ---------------------------------------------------------------------------
+
+def test_slmp_broadcast_request_matches_probe_frame():
+    from plc_discovery.broadcast_discovery import BroadcastDiscovery
+    request = BroadcastDiscovery()._build_slmp_discovery_request()
+    assert request[:2] == b"\x50\x00"            # previously b"\x00\x50"
+    # same 3E "Read Type Name" frame as the TCP probe
+    assert request == bytes.fromhex("5000" "00ff" "ff03" "00" "0600" "1000" "0101" "0000")
+
+
+def test_slmp_broadcast_accepts_real_reply_and_rejects_reversed_bytes():
+    from plc_discovery.broadcast_discovery import BroadcastDiscovery
+    discovery = BroadcastDiscovery()
+    reply = b"\xD0\x00\x00\xFF\xFF\x03\x00\x02\x00\x00\x00"   # 3E response, end code 0
+    plc = discovery._parse_slmp_response("10.0.0.5", reply)
+    assert plc is not None and plc.protocol == Protocol.SLMP   # previously None
+    assert discovery._parse_slmp_response("10.0.0.5", b"\x00\xD0" + reply[2:]) is None
+
+
+def test_slmp_broadcast_end_to_end_with_udp_responder():
+    """A UDP responder that answers only well-formed 3E requests"""
+    import asyncio
+    import socket
+    from unittest.mock import patch
+    from plc_discovery.broadcast_discovery import BroadcastDiscovery
+
+    responder = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    responder.bind(("127.0.0.1", 0))
+    responder.settimeout(3)
+    port = responder.getsockname()[1]
+
+    def serve():
+        data, addr = responder.recvfrom(1024)
+        if data[:2] == b"\x50\x00":
+            responder.sendto(b"\xD0\x00\x00\xFF\xFF\x03\x00\x02\x00\x00\x00", addr)
+
+    async def run():
+        import threading
+        threading.Thread(target=serve, daemon=True).start()
+        from plc_discovery.config import NetworkConfig
+        discovery = BroadcastDiscovery(NetworkConfig(discovery_timeout_ms=500))
+        # a /32 "network": its directed broadcast address is 127.0.0.1 itself
+        with patch("plc_discovery.broadcast_discovery.SLMP_DISCOVERY_PORT", port), \
+                patch("plc_discovery.broadcast_discovery.get_local_networks",
+                      return_value=[("127.0.0.1", "255.255.255.255")]):
+            return await discovery.discover_slmp_broadcast()
+
+    try:
+        plcs = asyncio.run(run())
+    finally:
+        responder.close()
+    assert [p.ip_address for p in plcs] == ["127.0.0.1"]
+
+
+@pytest.mark.asyncio
+async def test_discovery_slmp_info_opens_no_connection():
+    from unittest.mock import patch
+    from plc_discovery.config import NetworkConfig
+    from plc_discovery.discovery import PLCDiscovery
+    plc = PLCInfo("10.0.0.5", protocol=Protocol.SLMP, port=5001)
+    with patch("socket.socket.connect", side_effect=AssertionError("connected")), \
+            patch("socket.create_connection", side_effect=AssertionError("connected")):
+        result = await PLCDiscovery(NetworkConfig())._query_slmp_info(plc)
+    assert (result.manufacturer, result.model) == ("三菱電機/キーエンス", "SLMP対応PLC")
+    keyence = PLCInfo("10.0.0.6", protocol=Protocol.SLMP, port=5001, manufacturer="キーエンス")
+    assert (await PLCDiscovery(NetworkConfig())._query_slmp_info(keyence)).manufacturer == "キーエンス"

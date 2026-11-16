@@ -285,7 +285,9 @@ async def scan_plcs_parallel(
         progress_callback: Progress callback
     
     Returns:
-        Dictionary mapping IP to scan result
+        Dictionary mapping each target's label to its scan result: the IP,
+        or "IP (PROTOCOL:port)" when several targets share an IP (see
+        target_labels)
     """
     scanner = ParallelPLCScanner(config, progress_callback)
     return await scanner.scan_multiple_plcs(plcs, mode, device_ranges)
