@@ -81,23 +81,15 @@ jobs:
         pip install -r requirements.txt
         pip install -r requirements-dev.txt
     
-    - name: Start simulators
-      run: |
-        python simulators/run_all.py &
-        # Wait for simulators to start
-        sleep 5
-        # Verify ports are listening
-        for port in 5001 5502; do
-          timeout 10 bash -c "until nc -z localhost $port; do sleep 1; done" || echo "Port $port not ready"
-        done
-    
+    # tests/integration/conftest.py starts and stops the simulators itself
+    # (with the denied ranges the tests expect). Starting run_all.py here as
+    # well took the same ports, so the tests talked to differently configured
+    # simulators. "--timeout" needs pytest-timeout, which is not installed:
+    # the step failed at once, hidden by continue-on-error.
     - name: Run integration tests
       run: |
-        pytest tests/integration/ -v -m integration \
-          --timeout=120 \
-          --tb=short
+        pytest tests/integration/ -v -m integration --tb=short
       timeout-minutes: 5
-      continue-on-error: true
 
   # Data type tests (specific validation)
   data-type-test:
