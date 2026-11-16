@@ -207,3 +207,55 @@ def test_docker_simulators_listen_in_container_published_on_loopback():
     assert 'CMD ["python", "simulators/run_all.py", "--host", "0.0.0.0"]' in dockerfile
     compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
     assert '"5001:5001"' not in compose and '"127.0.0.1:5001:5001"' in compose
+
+
+# ---------------------------------------------------------------------------
+# Codex review: scan.mode typo, VACUUM in cleanup
+# ---------------------------------------------------------------------------
+
+def _loader(tmp_path, config):
+    path = tmp_path / "c.json"
+    path.write_text(json.dumps(config))
+    loader = ConfigLoader(str(path))
+    loader.load()
+    return loader
+
+
+@pytest.mark.parametrize("mode", ["rang", "fulll", "scan"])
+def test_unknown_scan_mode_is_config_error(tmp_path, mode):
+    loader = _loader(tmp_path, {"scan": {"mode": mode}})
+    assert any(e.startswith("scan.mode: unknown mode") for e in loader.validate())
+    from plc_discovery.config import ScanMode
+    assert loader.get_scan_mode() == ScanMode.DISCOVER     # previously FULL
+
+
+@pytest.mark.parametrize("mode", ["range", "RANGE", " full ", "discover"])
+def test_known_scan_modes_accepted(tmp_path, mode):
+    assert _loader(tmp_path, {"scan": {"mode": mode}}).validate() == []
+
+
+def test_cli_scan_mode_typo_exits_without_scanning(tmp_path, monkeypatch, capsys):
+    import asyncio
+    from unittest.mock import AsyncMock, patch
+    path = tmp_path / "c.json"
+    path.write_text(json.dumps({"scan": {"mode": "rang"}, "targets": [{"ip": "127.0.0.1", "protocol": "slmp"}]}))
+    monkeypatch.setattr("sys.argv", ["plc_scanner.py", "--config", str(path), "-o", str(tmp_path)])
+    scan = AsyncMock()
+    with patch.object(plc_scanner, "run_single_scan", scan), pytest.raises(SystemExit) as exit_info:
+        asyncio.run(plc_scanner.main())
+    assert exit_info.value.code == 1
+    scan.assert_not_called()
+    assert "scan.mode: unknown mode 'rang'" in capsys.readouterr().out
+
+
+def test_cleanup_old_data_vacuums(tmp_path):
+    from plc_discovery.database import DatabaseConfig, DatabaseExporter
+    db = DatabaseExporter(DatabaseConfig(enabled=True, path=str(tmp_path / "d.db")))
+    db.export_plc_data([DataPoint("D0", 1, "0x0001", StatusCode.OK)], "10.0.0.1")
+    db._connection.execute("UPDATE data_points SET timestamp = '2000-01-01T00:00:00'")
+    db.export_plc_data([DataPoint("D0", 2, "0x0002", StatusCode.OK)], "10.0.0.1")
+    db._connection.commit()
+    db.cleanup_old_data(30)     # previously OperationalError: cannot VACUUM from within a transaction
+    rows = db._connection.execute("SELECT value FROM data_points").fetchall()
+    assert [r[0] for r in rows] == [2]
+    db.close()

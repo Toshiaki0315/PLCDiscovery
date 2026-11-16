@@ -794,9 +794,12 @@ class DatabaseExporter:
             (f'-{days} days',)
         )
         
+        # Commit the deletions first: SQLite cannot VACUUM inside a
+        # transaction (the DELETEs above opened one)
+        self._connection.commit()
+        
         # Vacuum to reclaim space
         self._connection.execute("VACUUM")
-        self._connection.commit()
         
         logger.info(f"Cleaned up data older than {days} days")
     

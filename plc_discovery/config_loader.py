@@ -102,6 +102,13 @@ DEFAULT_CONFIG = {
 }
 
 
+# scan.mode names
+_SCAN_MODES = {
+    "discover": ScanMode.DISCOVER,
+    "full": ScanMode.FULL,
+    "range": ScanMode.RANGE,
+}
+
 # Minimum periodic interval (same as the GUI): protects the PLC and keeps
 # per-cycle CSV files from colliding
 MIN_INTERVAL_SECONDS = 1.0
@@ -274,15 +281,14 @@ class ConfigLoader:
         return ranges
     
     def get_scan_mode(self) -> ScanMode:
-        """Get scan mode from configuration"""
-        mode_str = self.config.get("scan", {}).get("mode", "full").lower()
+        """
+        Get scan mode from configuration.
         
-        mode_map = {
-            "discover": ScanMode.DISCOVER,
-            "full": ScanMode.FULL,
-            "range": ScanMode.RANGE,
-        }
-        return mode_map.get(mode_str, ScanMode.FULL)
+        An unknown name (rejected by validate()) falls back to DISCOVER,
+        which reads no PLC data - never to a full scan of every device.
+        """
+        mode_str = str(self.config.get("scan", {}).get("mode", "full")).strip().lower()
+        return _SCAN_MODES.get(mode_str, ScanMode.DISCOVER)
     
     def get_ip_ranges(self) -> List[str]:
         """Get IP ranges for discovery"""
@@ -464,6 +470,15 @@ class ConfigLoader:
         for name in self.config.get("discovery", {}).get("protocols", []) or []:
             if self._parse_protocol(name) is None:
                 errors.append(f"discovery.protocols: unknown protocol '{name}'")
+        
+        # Validate scan mode: a typo (e.g. "rang") must not silently become
+        # a different mode such as a full scan of every device range
+        if self.is_set("scan", "mode"):
+            mode = self.config["scan"]["mode"]
+            if str(mode).strip().lower() not in _SCAN_MODES:
+                errors.append(
+                    f"scan.mode: unknown mode {mode!r} (allowed: {', '.join(_SCAN_MODES)})"
+                )
         
         # Validate periodic interval
         interval = self.config.get("scan", {}).get("interval_seconds", 0) or 0
