@@ -31,6 +31,11 @@ EIP_DEVICE_MAP = {
 ROCKWELL_VENDOR_ID = 1
 CIP_PRODUCT_TYPE_PLC = 0x0E  # "Programmable Logic Controller"
 
+# PLC-5/SLC/MicroLogix data-file limits as encoded by pycomm3's SLCDriver:
+# the element number and the byte size of a read are single bytes
+SLC_MAX_ELEMENT = 255
+SLC_MAX_READ_WORDS = 100   # 200 bytes (byte size field max 255)
+
 
 def is_slc_identity(identity: Optional[Dict]) -> bool:
     """
@@ -86,6 +91,14 @@ class EtherNetIPHandler(BaseProtocolHandler):
         if include_slot and self._slot:
             path += f"/{self._slot}"
         return path
+
+    @property
+    def max_read_size(self) -> int:
+        """SLC-style reads are limited to a 255-byte payload by pycomm3"""
+        size = super().max_read_size
+        if self._plc_type == "slc":
+            return min(size, SLC_MAX_READ_WORDS)
+        return size
     
     async def connect(self) -> bool:
         """
@@ -257,7 +270,17 @@ class EtherNetIPHandler(BaseProtocolHandler):
         mapping = EIP_DEVICE_MAP.get(device_type)
         if mapping is None:
             return None, StatusCode.NG_UNSUPPORTED
-        
+
+        if start_address < 0 or start_address + count - 1 > SLC_MAX_ELEMENT:
+            # Data files hold elements 0-255 and pycomm3 encodes the element
+            # number in one byte (a larger one raises DataError before
+            # anything is sent, which looked like a transport failure)
+            logger.debug(
+                f"SLC element out of range: {device_type.value}{start_address} "
+                f"x{count} (max {SLC_MAX_ELEMENT})"
+            )
+            return None, StatusCode.NG_ILLEGAL_ADDR
+
         try:
             file_letter, file_number = mapping
             tag_name = f"{file_letter}{file_number}:{start_address}"

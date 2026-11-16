@@ -405,7 +405,11 @@ DEFAULT_DEVICE_RANGES: Dict[Protocol, List[DeviceRange]] = {
         DeviceRange(DeviceType.R, 0, 32767),
     ],
     Protocol.ETHERNET_IP: [
-        DeviceRange(DeviceType.DM, 0, 32767),
+        # Data files N7 / B3 of PLC-5/SLC/MicroLogix (elements 0-255).
+        # Logix and generic CIP devices have no numeric addresses and report
+        # these ranges as NG_UNSUPPORTED.
+        DeviceRange(DeviceType.D, 0, 255),
+        DeviceRange(DeviceType.M, 0, 255),
     ],
     Protocol.MODBUS_TCP: [
         DeviceRange(DeviceType.HR, 0, 9999),

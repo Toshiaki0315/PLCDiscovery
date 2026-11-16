@@ -28,6 +28,24 @@ SLMP_DEVICE_MAP = {
     DeviceType.SM: "SM",  # Special relay
 }
 
+# Devices whose numbers are hexadecimal on MELSEC (pymcprotocol parses the
+# number after the device name in base 16 for these)
+SLMP_HEX_DEVICES = (DeviceType.X, DeviceType.Y, DeviceType.B, DeviceType.W)
+
+
+def slmp_head_device(device_type: DeviceType, address: int) -> str:
+    """
+    pymcprotocol head device string for an address.
+
+    Addresses are integers throughout the tool. X/Y/B/W numbers are parsed
+    as hexadecimal by pymcprotocol, so "W100" would read W256; format them in
+    hex with a leading 0 (pymcprotocol reads "WA0" as device "WA").
+    """
+    name = SLMP_DEVICE_MAP[device_type]
+    if device_type in SLMP_HEX_DEVICES:
+        return f"{name}0{address:X}"
+    return f"{name}{address}"
+
 
 # SLMP end codes meaning the requested device/address/size is invalid
 # (the PLC answered; the address range itself is the problem)
@@ -181,23 +199,25 @@ class SLMPHandler(BaseProtocolHandler):
             logger.warning(f"Unsupported device type for SLMP: {device_type}")
             return None, StatusCode.NG_UNSUPPORTED
         
+        headdevice = slmp_head_device(device_type, start_address)
+
         try:
             def _read():
                 # Use batch read for word devices
                 if device_type in [DeviceType.D, DeviceType.W, DeviceType.R]:
                     return self._client.batchread_wordunits(
-                        headdevice=f"{slmp_device}{start_address}",
+                        headdevice=headdevice,
                         readsize=count
                     )
                 # Use bit read for bit devices
                 elif device_type in [DeviceType.M, DeviceType.X, DeviceType.Y, DeviceType.B, DeviceType.SM]:
                     return self._client.batchread_bitunits(
-                        headdevice=f"{slmp_device}{start_address}",
+                        headdevice=headdevice,
                         readsize=count
                     )
                 else:
                     return self._client.batchread_wordunits(
-                        headdevice=f"{slmp_device}{start_address}",
+                        headdevice=headdevice,
                         readsize=count
                     )
             
