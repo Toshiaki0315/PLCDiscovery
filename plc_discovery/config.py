@@ -135,6 +135,23 @@ PROTOCOL_PORTS: Dict[Protocol, int] = {
     Protocol.FINS_TCP: 9600,
 }
 
+# Largest number of addresses in one user-specified range. Every address
+# becomes a row in memory and in the CSV, so a typo such as 0-16000000
+# would exhaust memory instead of scanning. (Full scans use fixed ranges.)
+MAX_RANGE_POINTS = 1_048_576
+
+
+def range_size_error(start: int, end: int) -> Optional[str]:
+    """Why an address range is too large (None when it is within the limit)"""
+    points = end - start + 1
+    if points > MAX_RANGE_POINTS:
+        return (
+            f"{points:,} addresses requested; at most {MAX_RANGE_POINTS:,} "
+            f"can be read in one range. Split it into smaller ranges."
+        )
+    return None
+
+
 # Maximum words per read request (protocol limits)
 MAX_READ_WORDS: Dict[Protocol, int] = {
     Protocol.SLMP: 960,

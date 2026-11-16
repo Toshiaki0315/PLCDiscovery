@@ -30,6 +30,7 @@ from typing import Callable, Dict, List, Optional
 from plc_discovery.broadcast_discovery import BroadcastDiscovery
 from plc_discovery.collector import PLCDataCollector
 from plc_discovery.config import (
+    MAX_RANGE_POINTS,
     PROTOCOL_PORTS,
     DataPoint,
     DeviceType,
@@ -642,6 +643,10 @@ class PLCScannerApp:
             end = self._int_field(self.var_end, "終了アドレス")
             if mode == "range" and end < start:
                 raise ValueError("終了アドレスは開始アドレス以上にしてください。")
+            if mode == "range" and end - start + 1 > MAX_RANGE_POINTS:
+                raise ValueError(
+                    f"一度に読み取れるのは {MAX_RANGE_POINTS:,} 点までです"
+                    f"（指定: {end - start + 1:,} 点）。範囲を分けて実行してください。")
             interval = 0.0
             if mode == "range" and self.var_periodic.get():
                 try:

@@ -41,7 +41,7 @@ from typing import Any, Dict, List, Optional, Set
 
 from plc_discovery.config import (
     Protocol, DeviceType, ScanMode, PLCInfo, DataPoint,
-    NetworkConfig, DeviceRange, StatusCode, PROTOCOL_PORTS
+    NetworkConfig, DeviceRange, StatusCode, PROTOCOL_PORTS, range_size_error
 )
 from plc_discovery.discovery import (
     PLCDiscovery, discover_plcs, merge_discovery_results, target_labels
@@ -415,6 +415,9 @@ def parse_address_range(range_str: str) -> tuple:
     
     if start > end:
         raise ValueError(f"Invalid address range '{range_str}': start must be <= end")
+    size_error = range_size_error(start, end)
+    if size_error:
+        raise ValueError(f"Invalid address range '{range_str}': {size_error}")
     return start, end
 
 

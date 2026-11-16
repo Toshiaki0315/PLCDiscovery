@@ -35,6 +35,11 @@ class BaseProtocolHandler(ABC):
     
     # Binary search limits (log2(4096) = 12)
     MAX_SPLIT_DEPTH = 12
+
+    # Ranges of at least this many addresses that fail with NG_ILLEGAL_ADDR
+    # get their two end addresses probed before being split (see
+    # _binary_search_read); smaller ranges are simply split
+    EDGE_PROBE_MIN_COUNT = 4
     
     # Highest address the protocol can encode (None = no local limit).
     # Requests beyond it are answered NG_ILLEGAL_ADDR without being sent:
@@ -413,7 +418,21 @@ class BaseProtocolHandler(ABC):
         # (not learned: individual addresses were not confirmed)
         if self._link_down or depth >= self.MAX_SPLIT_DEPTH:
             return self._failed_points(device_type, start, end, status, learn=False)
-        
+
+        # Wholly invalid range (device not configured, range past the end of
+        # the device): if both end addresses are invalid on their own, report
+        # the whole range without splitting it down to single addresses,
+        # which cost about 2N requests (R0-R32767: ~65,000 requests, hours of
+        # waiting on a production PLC). A readable island strictly inside a
+        # range whose both ends are invalid is the accepted trade-off.
+        if status == StatusCode.NG_ILLEGAL_ADDR and count >= self.EDGE_PROBE_MIN_COUNT:
+            if await self._edges_illegal(device_type, start, end):
+                logger.debug(
+                    f"{device_type.value}{start}-{device_type.value}{end}: both ends invalid; "
+                    f"whole range reported as {StatusCode.NG_ILLEGAL_ADDR.value}"
+                )
+                return self._failed_points(device_type, start, end, StatusCode.NG_ILLEGAL_ADDR)
+
         # Error - split and recurse
         mid = (start + end) // 2
         
@@ -427,7 +446,16 @@ class BaseProtocolHandler(ABC):
             device_type, mid + 1, end, depth + 1
         ))
         return results
-    
+
+    async def _edges_illegal(self, device_type: DeviceType, start: int, end: int) -> bool:
+        """True if the first and the last address both fail with NG_ILLEGAL_ADDR"""
+        for address in (start, end):
+            await self._rate_limiter.wait()
+            _, status = await self._tracked_read(device_type, address, 1)
+            if status != StatusCode.NG_ILLEGAL_ADDR:
+                return False
+        return True
+
     # ------------------------------------------------------------------
     # Blocking client helpers (for handlers built on synchronous libraries)
     # ------------------------------------------------------------------

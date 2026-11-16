@@ -104,6 +104,15 @@ This is the most critical algorithm in the system. When a read request fails:
 5. Session learning: Cache inaccessible addresses (Set type, O(1) lookup)
 ```
 
+Wholly invalid ranges: before splitting a range of 4+ addresses that failed
+with NG_ILLEGAL_ADDR, its first and last address are read alone. If both are
+NG_ILLEGAL_ADDR, the whole range is reported (and learned) as NG_ILLEGAL_ADDR
+without further splitting. Splitting such a range down to single addresses
+costs about 2N requests (an unconfigured R0-R32767: ~65,000 requests and
+hours of waiting); the edge check needs ~3 per chunk. Accepted trade-off: a
+readable island strictly inside a range whose both ends are invalid is
+reported as NG_ILLEGAL_ADDR.
+
 **Constraints:**
 - Maximum split depth: 12 levels (log2(4096))
 - Estimated time per level: 100-500ms

@@ -23,7 +23,7 @@ except ImportError:
     logger.debug("PyYAML not installed, YAML config files not supported")
 
 from .config import (
-    Protocol, DeviceType, DeviceRange, NetworkConfig, PLCInfo, ScanMode
+    Protocol, DeviceType, DeviceRange, NetworkConfig, PLCInfo, ScanMode, range_size_error
 )
 from .data_types import DataType, ByteOrder, DataTypeManager, DataTypeMapping
 from .utils import ip_range_error
@@ -530,6 +530,8 @@ class ConfigLoader:
                     bounds_ok = False
             if bounds_ok and start > end:
                 errors.append(f"{where}: start must be <= end")
+            elif bounds_ok and range_size_error(start, end):
+                errors.append(f"{where}: {range_size_error(start, end)}")
             if self._parse_device_type(str(range_def.get("device", "D"))) is None:
                 errors.append(f"{where}: unknown device '{range_def.get('device')}'")
 
