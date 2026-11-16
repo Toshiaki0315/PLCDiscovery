@@ -350,6 +350,10 @@ class PLCScannerApp:
         ttk.Label(rng, text=" 〜 ").pack(side=tk.LEFT)
         self.ent_end = ttk.Entry(rng, textvariable=self.var_end, width=7)
         self.ent_end.pack(side=tk.LEFT)
+        # GX Works shows X/Y/B/W in hexadecimal; this tool uses decimal
+        # everywhere and converts when sending (README: 範囲指定モード)
+        ttk.Label(mode, text="10進数で入力（X/Y/B/W も。例: X1F → 31）",
+                  style="Hint.TLabel").grid(row=1, column=4, sticky=tk.W, padx=(8, 0))
 
         per = ttk.Frame(mode)
         per.grid(row=2, column=0, columnspan=4, sticky=tk.W, padx=(20, 0), pady=(4, 0))

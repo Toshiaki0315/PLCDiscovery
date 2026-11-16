@@ -121,3 +121,10 @@ def test_undetected_target_is_failed_not_slmp(monkeypatch, tmp_path, capsys, res
     out = capsys.readouterr().out
     assert "no PLC protocol answered" in out
     assert "SLMP" not in out
+
+
+def test_gui_explains_decimal_addresses():
+    """X/Y/B/W are hexadecimal in GX Works but decimal in this tool"""
+    from pathlib import Path
+    source = (Path(__file__).resolve().parent.parent / "plc_gui.py").read_text(encoding="utf-8")
+    assert "X1F → 31" in source
