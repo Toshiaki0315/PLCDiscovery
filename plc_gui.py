@@ -691,7 +691,13 @@ class PLCScannerApp:
         collector = PLCDataCollector(plc, config)
         collector.set_progress_callback(self._progress_cb)
         if not await collector.connect():
-            raise RuntimeError(f"{ip}:{plc.port} ({plc.protocol.name}) に接続できませんでした。")
+            if not interval or collector.connect_error:
+                await collector.disconnect()
+                raise RuntimeError(f"{ip}:{plc.port} ({plc.protocol.name}) に接続できませんでした。")
+            # Periodic monitoring started while the PLC is off or restarting:
+            # keep going; every cycle retries the connection and records the
+            # addresses as communication errors until the PLC answers
+            logging.warning(f"{ip}:{plc.port} ({plc.protocol.name}) に接続できません。周期ごとに再接続を試みます。")
         exported_denied: set = set()
         loop = asyncio.get_running_loop()
         try:

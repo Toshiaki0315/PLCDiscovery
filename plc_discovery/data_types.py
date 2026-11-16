@@ -171,7 +171,7 @@ class DataTypeConverter:
                 return cls._bcd32_to_int(words[:2], byte_order)
             
             elif data_type == DataType.STRING:
-                return cls._words_to_string(words)
+                return cls._bytes_to_string(raw_bytes)
             
             elif data_type == DataType.RAW:
                 return raw_bytes.hex().upper()
@@ -348,27 +348,28 @@ class DataTypeConverter:
         return result
     
     @classmethod
-    def _words_to_string(cls, words: List[int]) -> str:
-        """Convert words to ASCII string"""
+    def _bytes_to_string(cls, data: bytes) -> str:
+        """
+        Convert bytes (already in memory order for the byte order) to ASCII.
+        
+        The character order inside each word follows the byte order like
+        every other type: "little" = low byte first (Mitsubishi, Keyence),
+        "big" = high byte first (Siemens, Omron, most Modbus devices); the
+        "_swap" orders reverse that. Reading stops at the first NUL;
+        non-printable bytes are skipped.
+        """
         chars = []
-        
-        for word in words:
-            # Low byte first, then high byte
-            low = word & 0xFF
-            high = (word >> 8) & 0xFF
-            
-            # Stop at null terminator
-            if low == 0:
+        for byte in data:
+            if byte == 0:
                 break
-            if low >= 32 and low < 127:
-                chars.append(chr(low))
-            
-            if high == 0:
-                break
-            if high >= 32 and high < 127:
-                chars.append(chr(high))
-        
+            if 32 <= byte < 127:
+                chars.append(chr(byte))
         return ''.join(chars)
+    
+    @classmethod
+    def _words_to_string(cls, words: List[int], byte_order: ByteOrder = ByteOrder.LITTLE_ENDIAN) -> str:
+        """Convert words to ASCII string (see _bytes_to_string)"""
+        return cls._bytes_to_string(cls._words_to_bytes(words, byte_order))
     
     @classmethod
     def to_string(cls, value: Any, data_type: DataType) -> str:
@@ -526,28 +527,70 @@ class DataTypeManager:
         self.mappings.clear()
     
     @classmethod
-    def from_config(cls, config: dict) -> 'DataTypeManager':
-        """Create manager from configuration dictionary"""
+    def from_config(cls, config: dict, prefix: str = "data_types") -> 'DataTypeManager':
+        """
+        Create manager from configuration dictionary.
+        
+        Type and byte order names are case-insensitive. A mapping without
+        ``byte_order`` uses ``default_byte_order``.
+        
+        Raises:
+            ValueError: with the offending key (e.g. "data_types.mappings[0].end")
+        """
         manager = cls()
+        if config is None:
+            return manager
+        if not isinstance(config, dict):
+            raise ValueError(f"{prefix} must be a mapping")
         
-        # Set defaults
-        if "default_type" in config:
-            manager.default_type = DataType(config["default_type"])
-        if "default_byte_order" in config:
-            manager.default_byte_order = ByteOrder(config["default_byte_order"])
+        if config.get("default_type") is not None:
+            manager.default_type = _parse_enum(DataType, config["default_type"], f"{prefix}.default_type")
+        if config.get("default_byte_order") is not None:
+            manager.default_byte_order = _parse_enum(
+                ByteOrder, config["default_byte_order"], f"{prefix}.default_byte_order")
         
-        # Add mappings
-        for mapping_config in config.get("mappings", []):
+        mappings = config.get("mappings") or []
+        if not isinstance(mappings, list):
+            raise ValueError(f"{prefix}.mappings must be a list")
+        for i, mapping_config in enumerate(mappings):
+            where = f"{prefix}.mappings[{i}]"
+            if not isinstance(mapping_config, dict):
+                raise ValueError(f"{where} must be a mapping")
+            for key in ("start", "end", "type"):
+                if mapping_config.get(key) is None:
+                    raise ValueError(f"{where}.{key} is required")
+            start, end = mapping_config["start"], mapping_config["end"]
+            for key, value in (("start", start), ("end", end)):
+                if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                    raise ValueError(f"{where}.{key} must be an integer >= 0, got {value!r}")
+            if start > end:
+                raise ValueError(f"{where}: start must be <= end")
+            length = mapping_config.get("length")
+            if length is not None and (isinstance(length, bool) or not isinstance(length, int) or length < 1):
+                raise ValueError(f"{where}.length must be an integer >= 1, got {length!r}")
+            byte_order = mapping_config.get("byte_order")
+            device = mapping_config.get("device")
             mapping = DataTypeMapping(
-                start_address=mapping_config["start"],
-                end_address=mapping_config["end"],
-                data_type=DataType(mapping_config["type"]),
-                byte_order=ByteOrder(mapping_config.get("byte_order", "little")),
+                start_address=start,
+                end_address=end,
+                data_type=_parse_enum(DataType, mapping_config["type"], f"{where}.type"),
+                byte_order=(_parse_enum(ByteOrder, byte_order, f"{where}.byte_order")
+                            if byte_order is not None else manager.default_byte_order),
                 description=mapping_config.get("description", ""),
-                device=mapping_config.get("device"),
-                length=mapping_config.get("length"),
+                device=str(device).upper() if device else None,
+                length=length,
             )
             manager.add_mapping(mapping)
         
         return manager
+
+
+def _parse_enum(enum_cls, value, where: str):
+    """Case-insensitive enum lookup by value with a readable error"""
+    text = str(value).strip()
+    for member in enum_cls:
+        if member.value.lower() == text.lower():
+            return member
+    allowed = ", ".join(m.value for m in enum_cls)
+    raise ValueError(f"{where}: unknown value {value!r} (allowed: {allowed})")
 

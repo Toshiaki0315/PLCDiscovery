@@ -450,7 +450,7 @@ def load_type_mapping(path: str) -> DataTypeManager:
                 except ImportError:
                     raise ImportError("PyYAML required for YAML type mapping files")
         
-        return DataTypeManager.from_config(config)
+        return DataTypeManager.from_config(config, prefix=Path(path).name)
     except Exception as e:
         logger.error(f"Failed to load type mapping: {e}")
         raise

@@ -473,7 +473,13 @@ class ConfigLoader:
                 errors.append(f"scan.device_ranges[{i}]: start must be >= 0")
             if self._parse_device_type(range_def.get("device", "D")) is None:
                 errors.append(f"scan.device_ranges[{i}]: unknown device '{range_def.get('device')}'")
-        
+
+        # Validate data type settings (default type/byte order and mappings)
+        try:
+            DataTypeManager.from_config(self.config.get("data_types"))
+        except ValueError as e:
+            errors.append(str(e))
+
         return errors
 
 
