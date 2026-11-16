@@ -334,8 +334,8 @@ logging:
 | ファイル名 | 内容 |
 |------------|------|
 | `discovery_result_YYYYMMDD_HHMMSS.csv` | 検出されたPLC一覧 |
-| `plc_data_<IP>_YYYYMMDD_HHMMSS.csv` | PLCデバイスデータ |
-| `access_denied_log.csv` | アクセス不可アドレス一覧 |
+| `plc_data_<IP>_YYYYMMDD_HHMMSS.csv` | PLCデバイスデータ。同じIPを複数のプロトコルで読んだ場合は `plc_data_<IP>_<プロトコル>_<ポート>_…csv` |
+| `access_denied_log.csv` | アクセス不可アドレス一覧（同じIPを複数のプロトコルで読んだ場合、`plc_ip` 列は `IP (プロトコル:ポート)`） |
 | `scan_summary_YYYYMMDD_HHMMSS.csv` | スキャン統計サマリー |
 | `audit.log` | 監査ログ（JSON Lines形式） |
 

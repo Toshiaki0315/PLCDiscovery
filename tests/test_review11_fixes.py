@@ -17,7 +17,7 @@ import plc_scanner
 from plc_discovery.config import (
     DataPoint, DeviceRange, DeviceType, NetworkConfig, PLCInfo, Protocol, StatusCode
 )
-from plc_discovery.database import DatabaseConfig, DatabaseExporter
+from plc_discovery.database import SCHEMA_VERSION, DatabaseConfig, DatabaseExporter
 from plc_discovery.protocols.fins import FINSHandler
 
 
@@ -127,7 +127,7 @@ def test_v1_database_is_migrated(tmp_path):
     assert rows(db) == [("10.0.0.1", "MODBUS_TCP", 502, None), ("10.0.0.1", "SLMP", 5001, "Q03UDE")]
     old = [p for p in db.get_plcs() if p["protocol"] == "SLMP"][0]
     assert old["manufacturer"] == "Mitsubishi" and old["first_seen"] == "2026-01-01"   # existing data kept
-    assert db._connection.execute("SELECT MAX(version) FROM schema_info").fetchone()[0] == 2
+    assert db._connection.execute("SELECT MAX(version) FROM schema_info").fetchone()[0] == SCHEMA_VERSION   # migrated to the current version
     db.close()
     DatabaseExporter(DatabaseConfig(enabled=True, path=str(path))).close()   # reopening is a no-op
 

@@ -209,7 +209,8 @@ class CSVExporter:
         data_points: List[DataPoint],
         plc_ip: str,
         filename: Optional[str] = None,
-        include_type_info: bool = True
+        include_type_info: bool = True,
+        target_tag: Optional[str] = None
     ) -> str:
         """
         Export PLC device data to CSV.
@@ -219,6 +220,9 @@ class CSVExporter:
             plc_ip: IP address of the PLC
             filename: Optional custom filename
             include_type_info: Include data type conversion columns
+            target_tag: Protocol and port (e.g. "SLMP_5001") added to the
+                file name when several targets share the IP, so each file
+                can be told apart
         
         Returns:
             Path to the created file
@@ -227,7 +231,8 @@ class CSVExporter:
             timestamp = get_file_timestamp()
             # Sanitize IP for filename
             safe_ip = plc_ip.replace(".", "_")
-            filename = f"plc_data_{safe_ip}_{timestamp}.csv"
+            tag = f"_{target_tag}" if target_tag else ""
+            filename = f"plc_data_{safe_ip}{tag}_{timestamp}.csv"
             filepath = _unique_path(self.output_dir / filename)
         else:
             filepath = self.output_dir / filename

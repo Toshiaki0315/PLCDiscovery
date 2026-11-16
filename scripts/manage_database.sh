@@ -138,6 +138,13 @@ cmd_cleanup() {
             ;;
     esac
 
+    # Schema v3 (protocol/port columns) is needed to keep the latest value
+    # of each scan target; older databases are upgraded by the tool itself
+    if [ "$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM pragma_table_info('data_points') WHERE name = 'protocol';")" != "1" ]; then
+        echo -e "${RED}Error: database schema is older than v3. Run plc_scanner.py with --database $DB_PATH once to upgrade it.${NC}"
+        exit 1
+    fi
+    
     echo -e "${BLUE}Cleaning up data older than $DAYS_TO_KEEP days...${NC}"
     echo ""
     
@@ -156,7 +163,7 @@ DELETE FROM data_points
 WHERE datetime(timestamp) < datetime('now', 'localtime', '-$DAYS_TO_KEEP days')
 AND id NOT IN (
     SELECT MAX(id) FROM data_points
-    GROUP BY plc_ip, address
+    GROUP BY plc_ip, protocol, port, address
 );
 
 -- Delete old history

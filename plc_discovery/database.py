@@ -30,7 +30,12 @@ logger = logging.getLogger(__name__)
 
 
 # Database schema version for migrations
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+
+# Tables whose rows belong to one scan target: since schema v3 they record
+# the protocol and port next to the IP, so targets sharing an IP (one PLC
+# read over two protocols, a gateway, simulators) are kept apart
+TARGET_TABLES = ("data_points", "denied_addresses", "data_history")
 
 # SQL statements for schema creation
 CREATE_TABLES_SQL = """
@@ -72,6 +77,8 @@ CREATE TABLE IF NOT EXISTS data_points (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id INTEGER,
     plc_ip TEXT NOT NULL,
+    protocol TEXT,
+    port INTEGER,
     address TEXT NOT NULL,
     value INTEGER,
     raw_hex TEXT,
@@ -88,6 +95,8 @@ CREATE TABLE IF NOT EXISTS denied_addresses (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id INTEGER,
     plc_ip TEXT NOT NULL,
+    protocol TEXT,
+    port INTEGER,
     address TEXT NOT NULL,
     status TEXT NOT NULL,
     timestamp TEXT NOT NULL,
@@ -98,6 +107,8 @@ CREATE TABLE IF NOT EXISTS denied_addresses (
 CREATE TABLE IF NOT EXISTS data_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     plc_ip TEXT NOT NULL,
+    protocol TEXT,
+    port INTEGER,
     address TEXT NOT NULL,
     old_value INTEGER,
     new_value INTEGER,
@@ -107,6 +118,7 @@ CREATE TABLE IF NOT EXISTS data_history (
 -- Indexes for performance
 CREATE INDEX IF NOT EXISTS idx_data_points_plc_ip ON data_points(plc_ip);
 CREATE INDEX IF NOT EXISTS idx_data_points_plc_addr_id ON data_points(plc_ip, address, id);
+CREATE INDEX IF NOT EXISTS idx_data_points_target ON data_points(plc_ip, protocol, port, address, id);
 CREATE INDEX IF NOT EXISTS idx_data_points_address ON data_points(address);
 CREATE INDEX IF NOT EXISTS idx_data_points_timestamp ON data_points(timestamp);
 CREATE INDEX IF NOT EXISTS idx_data_points_session ON data_points(session_id);
@@ -174,7 +186,7 @@ class DatabaseExporter:
         # Latest value per address, per PLC: loaded from the database once,
         # then kept up to date in memory so periodic exports do not re-scan
         # the whole data_points table every cycle
-        self._latest_values: Dict[str, Dict[str, int]] = {}
+        self._latest_values: Dict[tuple, Dict[str, int]] = {}
         
         if self.config.enabled:
             self._initialize_database()
@@ -218,6 +230,8 @@ class DatabaseExporter:
             # Databases created by schema v1 allowed one PLC row per IP;
             # rebuild that table before the v2 indexes are created
             self._migrate_plcs_table()
+            # Schema v2 -> v3: protocol/port columns on per-target tables
+            self._add_target_columns()
             
             # Create tables
             self._connection.executescript(CREATE_TABLES_SQL)
@@ -275,6 +289,17 @@ class DatabaseExporter:
                 f"INSERT INTO plcs ({columns}) SELECT {columns} FROM plcs_v1"
             )
             self._connection.execute("DROP TABLE plcs_v1")
+    
+    def _add_target_columns(self):
+        """Schema v2 -> v3: add protocol and port to the per-target tables"""
+        for table in TARGET_TABLES:
+            columns = {row[1] for row in self._connection.execute(f"PRAGMA table_info({table})")}
+            if not columns or "protocol" in columns:
+                continue   # table not created yet, or already v3
+            logger.info(f"Upgrading database schema: protocol/port columns on {table}")
+            with self._connection:
+                self._connection.execute(f"ALTER TABLE {table} ADD COLUMN protocol TEXT")
+                self._connection.execute(f"ALTER TABLE {table} ADD COLUMN port INTEGER")
     
     def close(self):
         """Close database connection"""
@@ -439,7 +464,9 @@ class DatabaseExporter:
         self,
         data_points: List[DataPoint],
         plc_ip: str,
-        session_id: Optional[int] = None
+        session_id: Optional[int] = None,
+        protocol: Optional[str] = None,
+        port: Optional[int] = None
     ) -> int:
         """
         Export PLC data points.
@@ -448,6 +475,11 @@ class DatabaseExporter:
             data_points: List of data points
             plc_ip: PLC IP address
             session_id: Optional session ID
+            protocol: Protocol name of the scan target (e.g. "SLMP")
+            port: Port of the scan target
+        
+        Change history compares values per IP, protocol, port and address,
+        so two targets sharing an IP never look like value changes.
         
         Returns:
             Number of records inserted
@@ -460,10 +492,11 @@ class DatabaseExporter:
         
         # Get previous values for history tracking
         previous_values: Dict[str, int] = {}
+        target = (plc_ip, protocol, port)
         if self.config.track_history:
-            if plc_ip not in self._latest_values:
-                self._latest_values[plc_ip] = self._get_latest_values(plc_ip)
-            previous_values = self._latest_values[plc_ip]
+            if target not in self._latest_values:
+                self._latest_values[target] = self._get_latest_values(plc_ip, protocol, port)
+            previous_values = self._latest_values[target]
         
         for dp in data_points:
             try:
@@ -471,14 +504,16 @@ class DatabaseExporter:
                 self._connection.execute(
                     """
                     INSERT INTO data_points (
-                        session_id, plc_ip, address, value, raw_hex,
+                        session_id, plc_ip, protocol, port, address, value, raw_hex,
                         data_type, converted_value, display_value,
                         status, timestamp
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         session_id,
                         plc_ip,
+                        protocol,
+                        port,
                         dp.address,
                         dp.value,
                         dp.raw_hex,
@@ -497,7 +532,7 @@ class DatabaseExporter:
                 if self.config.track_history and dp.value is not None:
                     old_value = previous_values.get(dp.address)
                     if old_value is not None and old_value != dp.value:
-                        self._record_change(plc_ip, dp.address, old_value, dp.value)
+                        self._record_change(plc_ip, dp.address, old_value, dp.value, protocol, port)
                     previous_values[dp.address] = dp.value
                 
             except Exception as e:
@@ -512,7 +547,9 @@ class DatabaseExporter:
         denied_addresses: Set[str],
         plc_ip: str,
         session_id: Optional[int] = None,
-        statuses: Optional[Dict[str, StatusCode]] = None
+        statuses: Optional[Dict[str, StatusCode]] = None,
+        protocol: Optional[str] = None,
+        port: Optional[int] = None
     ) -> int:
         """
         Export denied addresses.
@@ -538,10 +575,10 @@ class DatabaseExporter:
                 self._connection.execute(
                     """
                     INSERT INTO denied_addresses (
-                        session_id, plc_ip, address, status, timestamp
-                    ) VALUES (?, ?, ?, ?, ?)
+                        session_id, plc_ip, protocol, port, address, status, timestamp
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (session_id, plc_ip, address,
+                    (session_id, plc_ip, protocol, port, address,
                      statuses[address].value if statuses and address in statuses else "DENIED",
                      now)
                 )
@@ -552,20 +589,22 @@ class DatabaseExporter:
         self._connection.commit()
         return count
     
-    def _get_latest_values(self, plc_ip: str) -> Dict[str, int]:
-        """Get the most recent values for each address"""
+    def _get_latest_values(
+        self, plc_ip: str, protocol: Optional[str] = None, port: Optional[int] = None
+    ) -> Dict[str, int]:
+        """Get the most recent value of each address of one scan target"""
         cursor = self._connection.execute(
             """
             SELECT address, value
             FROM data_points
-            WHERE plc_ip = ? AND value IS NOT NULL
+            WHERE plc_ip = ? AND protocol IS ? AND port IS ? AND value IS NOT NULL
             AND id IN (
                 SELECT MAX(id) FROM data_points
-                WHERE plc_ip = ?
+                WHERE plc_ip = ? AND protocol IS ? AND port IS ?
                 GROUP BY address
             )
             """,
-            (plc_ip, plc_ip)
+            (plc_ip, protocol, port, plc_ip, protocol, port)
         )
         return {row["address"]: row["value"] for row in cursor}
     
@@ -574,16 +613,18 @@ class DatabaseExporter:
         plc_ip: str,
         address: str,
         old_value: int,
-        new_value: int
+        new_value: int,
+        protocol: Optional[str] = None,
+        port: Optional[int] = None
     ):
         """Record a value change in history"""
         self._connection.execute(
             """
             INSERT INTO data_history (
-                plc_ip, address, old_value, new_value, changed_at
-            ) VALUES (?, ?, ?, ?, ?)
+                plc_ip, protocol, port, address, old_value, new_value, changed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (plc_ip, address, old_value, new_value, datetime.now().isoformat())
+            (plc_ip, protocol, port, address, old_value, new_value, datetime.now().isoformat())
         )
     
     # Query methods
@@ -609,16 +650,16 @@ class DatabaseExporter:
         
         cursor = self._connection.execute(
             """
-            SELECT address, value, raw_hex, data_type, 
+            SELECT protocol, port, address, value, raw_hex, data_type,
                    converted_value, display_value, status, timestamp
             FROM data_points
             WHERE plc_ip = ?
             AND id IN (
                 SELECT MAX(id) FROM data_points
                 WHERE plc_ip = ?
-                GROUP BY address
+                GROUP BY protocol, port, address
             )
-            ORDER BY address
+            ORDER BY protocol, port, address
             LIMIT ?
             """,
             (plc_ip, plc_ip, limit)
@@ -647,7 +688,7 @@ class DatabaseExporter:
         
         cursor = self._connection.execute(
             """
-            SELECT value, raw_hex, timestamp
+            SELECT protocol, port, value, raw_hex, timestamp
             FROM data_points
             WHERE plc_ip = ? AND address = ?
             AND datetime(timestamp) >= datetime('now', 'localtime', ?)
@@ -678,7 +719,7 @@ class DatabaseExporter:
         if plc_ip:
             cursor = self._connection.execute(
                 """
-                SELECT plc_ip, address, old_value, new_value, changed_at
+                SELECT plc_ip, protocol, port, address, old_value, new_value, changed_at
                 FROM data_history
                 WHERE plc_ip = ?
                 AND datetime(changed_at) >= datetime('now', 'localtime', ?)
@@ -689,7 +730,7 @@ class DatabaseExporter:
         else:
             cursor = self._connection.execute(
                 """
-                SELECT plc_ip, address, old_value, new_value, changed_at
+                SELECT plc_ip, protocol, port, address, old_value, new_value, changed_at
                 FROM data_history
                 WHERE datetime(changed_at) >= datetime('now', 'localtime', ?)
                 ORDER BY changed_at DESC
@@ -770,7 +811,7 @@ class DatabaseExporter:
             WHERE datetime(timestamp) < datetime('now', 'localtime', ?)
             AND id NOT IN (
                 SELECT MAX(id) FROM data_points
-                GROUP BY plc_ip, address
+                GROUP BY plc_ip, protocol, port, address
             )
             """,
             (f'-{days} days',)

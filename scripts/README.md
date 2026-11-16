@@ -87,7 +87,7 @@ python plc_scanner.py --mode full --target 192.168.1.10 --database ./plc_data.db
 | カラム | 型 | 説明 |
 |--------|-----|------|
 | `id` | INTEGER | 主キー |
-| `ip_address` | TEXT | IPアドレス（ユニーク） |
+| `ip_address` | TEXT | IPアドレス（IP・プロトコル・ポートの組でユニーク） |
 | `mac_address` | TEXT | MACアドレス |
 | `manufacturer` | TEXT | メーカー名 |
 | `model` | TEXT | 機種名 |
@@ -116,6 +116,8 @@ python plc_scanner.py --mode full --target 192.168.1.10 --database ./plc_data.db
 | `id` | INTEGER | 主キー |
 | `session_id` | INTEGER | セッションID |
 | `plc_ip` | TEXT | PLC IPアドレス |
+| `protocol` | TEXT | スキャンしたプロトコル（スキーマ v3 以降） |
+| `port` | INTEGER | スキャンしたポート（スキーマ v3 以降） |
 | `address` | TEXT | アドレス |
 | `value` | INTEGER | 値 |
 | `raw_hex` | TEXT | 16進数表記 |
@@ -131,6 +133,8 @@ python plc_scanner.py --mode full --target 192.168.1.10 --database ./plc_data.db
 | `id` | INTEGER | 主キー |
 | `session_id` | INTEGER | セッションID |
 | `plc_ip` | TEXT | PLC IPアドレス |
+| `protocol` | TEXT | スキャンしたプロトコル（スキーマ v3 以降） |
+| `port` | INTEGER | スキャンしたポート（スキーマ v3 以降） |
 | `address` | TEXT | アドレス |
 | `status` | TEXT | ステータス |
 | `timestamp` | TEXT | タイムスタンプ |
@@ -140,10 +144,15 @@ python plc_scanner.py --mode full --target 192.168.1.10 --database ./plc_data.db
 |--------|-----|------|
 | `id` | INTEGER | 主キー |
 | `plc_ip` | TEXT | PLC IPアドレス |
+| `protocol` | TEXT | スキャンしたプロトコル（スキーマ v3 以降） |
+| `port` | INTEGER | スキャンしたポート（スキーマ v3 以降） |
 | `address` | TEXT | アドレス |
 | `old_value` | INTEGER | 旧値 |
 | `new_value` | INTEGER | 新値 |
 | `changed_at` | TEXT | 変更日時 |
+
+同じIPを複数のプロトコルで読んだ場合も、`protocol`・`port` で区別されます（変更履歴はIP・プロトコル・ポート・アドレスの組で比較）。
+既存のデータベースは、本ツールで開いたときに自動で v3 に移行されます。
 
 ## インデックス
 

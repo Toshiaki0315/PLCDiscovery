@@ -83,8 +83,7 @@ CREATE TABLE IF NOT EXISTS plcs (
     cpu_type TEXT,
     firmware_version TEXT,
     first_seen TEXT NOT NULL,
-    last_seen TEXT NOT NULL,
-    UNIQUE(ip_address)
+    last_seen TEXT NOT NULL
 );
 
 -- Scan sessions
@@ -104,6 +103,8 @@ CREATE TABLE IF NOT EXISTS data_points (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id INTEGER,
     plc_ip TEXT NOT NULL,
+    protocol TEXT,
+    port INTEGER,
     address TEXT NOT NULL,
     value INTEGER,
     raw_hex TEXT,
@@ -120,6 +121,8 @@ CREATE TABLE IF NOT EXISTS denied_addresses (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id INTEGER,
     plc_ip TEXT NOT NULL,
+    protocol TEXT,
+    port INTEGER,
     address TEXT NOT NULL,
     status TEXT NOT NULL,
     timestamp TEXT NOT NULL,
@@ -130,6 +133,8 @@ CREATE TABLE IF NOT EXISTS denied_addresses (
 CREATE TABLE IF NOT EXISTS data_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     plc_ip TEXT NOT NULL,
+    protocol TEXT,
+    port INTEGER,
     address TEXT NOT NULL,
     old_value INTEGER,
     new_value INTEGER,
@@ -143,12 +148,16 @@ CREATE INDEX IF NOT EXISTS idx_data_points_timestamp ON data_points(timestamp);
 CREATE INDEX IF NOT EXISTS idx_data_points_session ON data_points(session_id);
 CREATE INDEX IF NOT EXISTS idx_denied_plc_ip ON denied_addresses(plc_ip);
 CREATE INDEX IF NOT EXISTS idx_plcs_ip ON plcs(ip_address);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_plcs_identity
+    ON plcs(ip_address, IFNULL(protocol, ''), IFNULL(port, 0));
+CREATE INDEX IF NOT EXISTS idx_data_points_plc_addr_id ON data_points(plc_ip, address, id);
+CREATE INDEX IF NOT EXISTS idx_data_points_target ON data_points(plc_ip, protocol, port, address, id);
 CREATE INDEX IF NOT EXISTS idx_history_plc_ip ON data_history(plc_ip);
 CREATE INDEX IF NOT EXISTS idx_history_address ON data_history(address);
 CREATE INDEX IF NOT EXISTS idx_history_changed_at ON data_history(changed_at);
 
--- Insert schema version
-INSERT INTO schema_info (version, created_at) VALUES (1, datetime('now'));
+-- Insert schema version (same schema as plc_discovery/database.py v3)
+INSERT INTO schema_info (version, created_at) VALUES (3, datetime('now', 'localtime'));
 
 -- Verify tables
 .tables

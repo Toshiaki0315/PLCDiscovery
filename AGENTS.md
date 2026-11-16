@@ -123,6 +123,7 @@ reported as NG_ILLEGAL_ADDR.
 The tool generates timestamped CSV files:
 - `discovery_result_YYYYMMDD_HHMMSS.csv` - Detected PLC list with IP, MAC, manufacturer, model, protocol
 - `plc_data_<IP>_YYYYMMDD_HHMMSS.csv` - Device data (address, value in hex, status, timestamp)
+  (`plc_data_<IP>_<PROTOCOL>_<port>_...csv` when several targets share the IP)
 - `access_denied_log.csv` - Inaccessible addresses for reference in next session
 
 ### Critical Safety Requirements

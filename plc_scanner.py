@@ -755,7 +755,7 @@ async def run_parallel_scan(
         if not result.success:
             display.print_error(f"{label}: {result.error_message}")
         
-        writer = _ResultWriter(result.plc_info.ip_address, exporter, display, db_exporter)
+        writer = _ResultWriter(result.plc_info, exporter, display, db_exporter, label=label)
         if result.data_points:
             # Apply data type conversion
             result.data_points = apply_data_type_conversion(
@@ -845,9 +845,14 @@ class _ResultWriter:
     are retried on the next call.
     """
     
-    def __init__(self, ip: str, exporter: CSVExporter, display: RichProgressDisplay,
-                 db_exporter: Optional[DatabaseExporter] = None):
-        self.ip = ip
+    def __init__(self, plc_info: PLCInfo, exporter: CSVExporter, display: RichProgressDisplay,
+                 db_exporter: Optional[DatabaseExporter] = None, label: Optional[str] = None):
+        self.ip = plc_info.ip_address
+        self.protocol = plc_info.protocol.name if plc_info.protocol else None
+        self.port = plc_info.port
+        # "IP (PROTOCOL:port)" when another target shares the IP (target_labels)
+        self.label = label or self.ip
+        self.shared_ip = self.label != self.ip
         self.exporter = exporter
         self.display = display
         self.db_exporter = db_exporter
@@ -855,7 +860,7 @@ class _ResultWriter:
         self.errors: List[str] = []
     
     def _failed(self, what: str, error: Exception) -> None:
-        message = f"{self.ip}: failed to write {what}: {error}"
+        message = f"{self.label}: failed to write {what}: {error}"
         self.errors.append(message)
         self.display.print_error(message)
         logger.error(message)
@@ -865,12 +870,16 @@ class _ResultWriter:
             return None
         path = None
         try:
-            path = self.exporter.export_plc_data(points, self.ip)
+            # Protocol and port in the file name only when the IP is shared
+            tag = f"{self.protocol}_{self.port}" if self.shared_ip else None
+            path = self.exporter.export_plc_data(points, self.ip, target_tag=tag)
         except Exception as e:
             self._failed("data CSV", e)
         if self.db_exporter and self.db_exporter.is_enabled:
             try:
-                db_count = self.db_exporter.export_plc_data(points, self.ip)
+                db_count = self.db_exporter.export_plc_data(
+                    points, self.ip, protocol=self.protocol, port=self.port
+                )
                 self.display.print_info(f"Saved {db_count} records to database")
             except Exception as e:
                 self._failed("data to database", e)
@@ -883,14 +892,18 @@ class _ResultWriter:
         if not new:
             return None
         try:
-            path = self.exporter.export_denied_addresses(new, self.ip, statuses=statuses)
+            # plc_ip column: the label, so targets sharing an IP stay apart
+            # (the plain IP otherwise, as before)
+            path = self.exporter.export_denied_addresses(new, self.label, statuses=statuses)
         except Exception as e:
             self._failed("access denied log", e)
             return None  # not marked as exported: retried next time
         self._exported_denied.update(new)
         if self.db_exporter and self.db_exporter.is_enabled:
             try:
-                self.db_exporter.export_denied_addresses(new, self.ip, statuses=statuses)
+                self.db_exporter.export_denied_addresses(
+                    new, self.ip, statuses=statuses, protocol=self.protocol, port=self.port
+                )
             except Exception as e:
                 self._failed("denied addresses to database", e)
         return path
@@ -935,18 +948,21 @@ async def run_single_scan(
     data_type: Optional[DataType] = None,
     byte_order: ByteOrder = ByteOrder.LITTLE_ENDIAN,
     type_manager: Optional[DataTypeManager] = None,
-    db_exporter: DatabaseExporter = None
+    db_exporter: DatabaseExporter = None,
+    label: Optional[str] = None
 ) -> ScanOutcome:
     """
     Run a single (non-periodic) scan on one PLC.
+    
+    ``label`` names the target in output when several targets share its IP.
     
     Connection failures are reported in the returned outcome instead of
     raising, so remaining targets are still scanned.
     """
     audit = get_audit_logger()
     ip = plc_info.ip_address
-    outcome = ScanOutcome(ip)
-    writer = _ResultWriter(ip, exporter, display, db_exporter)
+    outcome = ScanOutcome(ip, label=label)
+    writer = _ResultWriter(plc_info, exporter, display, db_exporter, label=label)
     labels = _range_labels(device_ranges)
     loop = asyncio.get_running_loop()
     
@@ -1032,7 +1048,7 @@ async def run_periodic_scan(
     targets = list(zip(target_labels(plc_infos), plc_infos))
     outcomes = {key: ScanOutcome(p.ip_address, label=key) for key, p in targets}
     writers = {
-        key: _ResultWriter(p.ip_address, exporter, display, db_exporter)
+        key: _ResultWriter(p, exporter, display, db_exporter, label=key)
         for key, p in targets
     }
     ips = {key: p.ip_address for key, p in targets}
@@ -1495,7 +1511,8 @@ async def main():
                     outcome = await run_single_scan(
                         plc_info, config, exporter, display,
                         mode, device_ranges,
-                        data_type, byte_order, type_manager, db_exporter
+                        data_type, byte_order, type_manager, db_exporter,
+                        label=label,
                     )
                     if not outcome.success:
                         failed_targets.append(label)
