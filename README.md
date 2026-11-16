@@ -134,6 +134,16 @@ python plc_scanner.py --mode discover --ip-range "192.168.1.0/24"
 python plc_scanner.py --mode full --target 192.168.1.10
 ```
 
+読み取る範囲（プロトコルごとに固定）:
+
+| プロトコル | 範囲 |
+|---|---|
+| SLMP | D0-8191, M0-8191, W0-2047, R0-32767 |
+| EtherNet/IP | D0-255 (N7), M0-255 (B3)。PLC-5/SLC/MicroLogix のみ（Logix 等はタグ方式のため NG_UNSUPPORTED） |
+| Modbus/TCP | HR0-9999, IR0-9999 |
+| S7 | DB1 のワード 0-32767 |
+| FINS (UDP/TCP) | DM0-999, HR0-499, W0-199 |
+
 プロトコルを明示的に指定:
 
 ```bash
@@ -153,6 +163,16 @@ python plc_scanner.py --mode range --target 192.168.1.10 --device D --range 0-10
 ```bash
 python plc_scanner.py --mode range --target 192.168.1.10 --device D --range 0-100 --interval 60
 ```
+
+アドレスは **10進数** で指定します。三菱電機の X・Y・B・W は GX Works などで16進数表示ですが、
+本ツールでは `--range`・設定ファイル・CSV のいずれも10進数です（PLCへの送信時に16進数へ変換します）。
+
+| GX Works の表記 | `--range` の指定 | CSV のアドレス |
+|---|---|---|
+| X0〜X1F | `--device X --range 0-31` | X0〜X31 |
+| W100〜W1FF | `--device W --range 256-511` | W256〜W511 |
+
+1つの範囲で読めるのは最大 1,048,576 点です（それを超える指定は接続前にエラー）。
 
 ### データ型変換を指定したスキャン
 
@@ -257,8 +277,8 @@ python plc_scanner.py --mode full --target 192.168.1.10 --no-database
 | `--retry-interval` | リトライ間隔(ms)。指定すると設定ファイルの値より優先 | 200 |
 | `--request-timeout` | タイムアウト(ms)。指定すると設定ファイルの値より優先 | 5000 |
 | `--max-concurrent` | 最大同時接続数。指定すると設定ファイルの値より優先 | 1 |
-| `--output-dir`, `-o` | 出力ディレクトリ | ./plc_scan_results |
-| `--encoding` | CSV の文字コード。`utf-8-sig`（BOM 付き UTF-8、Excel でそのまま開ける）／`utf-8`（BOM なし）／`shift-jis`（CP932。表せない文字は `?` に置き換え） | utf-8-sig |
+| `--output-dir`, `-o` | 出力ディレクトリ。指定すると設定ファイルの値より優先 | ./plc_scan_results |
+| `--encoding` | CSV の文字コード（指定すると設定ファイルの値より優先）。`utf-8-sig`（BOM 付き UTF-8、Excel でそのまま開ける）／`utf-8`（BOM なし）／`shift-jis`（CP932。表せない文字は `?` に置き換え） | utf-8-sig |
 | `--audit-log` | 監査ログファイルパス | - |
 | `--database` | SQLiteデータベースパス | - |
 | `--no-database` | データベース出力を無効化 | - |
@@ -271,8 +291,8 @@ python plc_scanner.py --mode full --target 192.168.1.10 --no-database
 | `--verbose`, `-v` | 詳細出力 | - |
 | `--quiet`, `-q` | 進捗出力抑制 | - |
 | `--no-rich` | リッチな出力を無効化 | - |
-| `--data-type` | データ型変換 (FLOAT, DWORD等) | - |
-| `--byte-order` | 複数ワード値の並び。little=CDAB（下位ワード先頭）、big=ABCD、little_swap=DCBA、big_swap=BADC（ワード内バイト入替） | little |
+| `--data-type` | データ型変換 (FLOAT, DWORD等)。型マッピング使用時はマッピング外のアドレスに適用 | - |
+| `--byte-order` | 複数ワード値の並び。little=CDAB（下位ワード先頭）、big=ABCD、little_swap=DCBA、big_swap=BADC（ワード内バイト入替）。指定すると設定ファイルの値より優先（`byte_order` を書いていない型マッピングにも適用） | little |
 | `--type-mapping` | 型マッピングファイルパス | - |
 
 ## 設定ファイル
@@ -688,6 +708,11 @@ print(values)  # [100, 200, 300, 400]
 3. さらにエラーが出る場合は再分割（最大12段階）
 4. 1点単位まで分割してアクセス可否を判定
 5. 判定されたアクセス不可アドレスは以降スキップ
+
+範囲全体が読めない場合（ファイルレジスタ未設定、デバイスの上限を超えた範囲など）は、分割する前に
+範囲の先頭と末尾を1点ずつ読み、両方とも `NG_ILLEGAL_ADDR` なら範囲全体を `NG_ILLEGAL_ADDR` とします。
+1点単位まで分割すると約2N回の要求（R0-32767 で約65,000回・数時間）になるためです。
+両端が読めない範囲の内側に、読めるアドレスが孤立して存在する場合は、それも NG と記録されます。
 
 これにより、一部のアドレスがアクセス不可でも全体のスキャンが中断することなく継続されます。
 
