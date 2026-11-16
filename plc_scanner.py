@@ -1541,21 +1541,6 @@ async def main():
                 interrupted=interrupted,
             ))
         
-        if interrupted:
-            display.print_warning("Scan stopped by user.")
-            exit_code = 130
-        elif output_errors:
-            display.print_error(f"Finished, but {len(output_errors)} output error(s) occurred")
-            exit_code = 1
-        elif failed_targets:
-            display.print_error(
-                f"Scan finished with errors: {len(failed_targets)} target(s) failed "
-                f"({', '.join(failed_targets)})"
-            )
-            exit_code = 1
-        else:
-            display.print_success("Scan completed successfully.")
-        
         # Generate report if requested
         if args.report:
             display.print_info("Generating report...")
@@ -1594,10 +1579,28 @@ async def main():
             try:
                 report_path = generator.save(report_data, args.report_output)
                 display.print_success(f"Report saved to: {report_path}")
-            except ImportError as e:
-                display.print_warning(f"Report generation failed: {e}")
             except Exception as e:
-                display.print_error(f"Report generation error: {e}")
+                # Counted like a CSV/database write failure: the requested
+                # report does not exist, so the run must not exit with 0
+                # (e.g. --report pdf without weasyprint/pdfkit)
+                message = f"Report generation failed: {e}"
+                display.print_error(message)
+                output_errors.append(message)
+        
+        if interrupted:
+            display.print_warning("Scan stopped by user.")
+            exit_code = 130
+        elif output_errors:
+            display.print_error(f"Finished, but {len(output_errors)} output error(s) occurred")
+            exit_code = 1
+        elif failed_targets:
+            display.print_error(
+                f"Scan finished with errors: {len(failed_targets)} target(s) failed "
+                f"({', '.join(failed_targets)})"
+            )
+            exit_code = 1
+        else:
+            display.print_success("Scan completed successfully.")
         
     except (KeyboardInterrupt, asyncio.CancelledError):
         display.print_warning("Operation cancelled by user.")

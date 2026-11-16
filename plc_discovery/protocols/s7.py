@@ -9,6 +9,7 @@ Supports:
 """
 
 import asyncio
+import re
 from typing import List, Optional, Tuple
 import logging
 
@@ -24,6 +25,56 @@ S7_AREA_MK = 0x83    # Merkers (flags)
 S7_AREA_DB = 0x84    # Data blocks
 S7_AREA_CT = 0x1C    # Counters
 S7_AREA_TM = 0x1D    # Timers
+
+# S7 data item return codes sent by the CPU (the PLC answered)
+_S7_ITEM_CODES = {
+    0x03: StatusCode.NG_ILLEGAL_ADDR,   # accessing the object not allowed
+    0x05: StatusCode.NG_ILLEGAL_ADDR,   # invalid address / address out of range
+    0x0A: StatusCode.NG_ILLEGAL_ADDR,   # object does not exist (e.g. past the DB end)
+    0x06: StatusCode.NG_UNSUPPORTED,    # data type not supported
+    0x07: StatusCode.NG_UNSUPPORTED,    # data type inconsistent
+}
+
+# The same answers as worded by snap7 1.x (C library)
+_S7_ITEM_TEXTS = (
+    ("item not available", StatusCode.NG_ILLEGAL_ADDR),
+    ("object does not exist", StatusCode.NG_ILLEGAL_ADDR),
+    ("address out of range", StatusCode.NG_ILLEGAL_ADDR),
+    ("invalid address", StatusCode.NG_ILLEGAL_ADDR),
+    ("access denied", StatusCode.NG_ILLEGAL_ADDR),
+    ("not allowed", StatusCode.NG_ILLEGAL_ADDR),
+    ("invalid transport size", StatusCode.NG_UNSUPPORTED),
+    ("data type", StatusCode.NG_UNSUPPORTED),
+)
+
+_S7_RETURN_CODE = re.compile(r"\(0x([0-9a-f]{2})\)")
+
+
+def classify_s7_error(error: Exception) -> Optional[StatusCode]:
+    """
+    Status for an error the CPU reported about the requested item, or None
+    for a transport failure.
+    
+    snap7 3.x raises "Read operation failed: Object does not exist (0x0a)";
+    snap7 1.x "CPU : Item not available". Neither mentions "address" or
+    "area", so such answers (e.g. a read past the end of a DB) used to be
+    taken for communication failures: retries, reconnects and then the
+    rest of the range reported as NG_COMM_ERROR.
+    """
+    text = str(error).lower()
+    match = _S7_RETURN_CODE.search(text)
+    if match and "read operation failed" in text:
+        # Other codes (e.g. 0x01 hardware error) are not about the address:
+        # a communication error, but the connection itself is fine
+        return _S7_ITEM_CODES.get(int(match.group(1), 16), StatusCode.NG_COMM_ERROR)
+    for fragment, status in _S7_ITEM_TEXTS:
+        if fragment in text:
+            return status
+    # Older wording kept from the previous classification
+    if "area" in text or "address" in text:
+        return StatusCode.NG_ILLEGAL_ADDR
+    return None
+
 
 # Device type to S7 area mapping
 S7_DEVICE_MAP = {
@@ -180,10 +231,12 @@ class S7Handler(BaseProtocolHandler):
             logger.debug(f"S7 read timeout: {device_type.value}{start_address}")
             return None, StatusCode.NG_TIMEOUT
         except Exception as e:
-            error_str = str(e).lower()
-            # Errors reported by the CPU for the requested area/address
-            if "area" in error_str or "address" in error_str or "db" in error_str:
-                return None, StatusCode.NG_ILLEGAL_ADDR
+            status = classify_s7_error(e)
+            if status is not None:
+                # The CPU answered with an item return code: the connection
+                # is fine, so it is not re-established
+                logger.debug(f"S7 {status.value}: {device_type.value}{start_address} ({e})")
+                return None, status
             # Anything else is a transport problem (connection reset, ISO/TCP
             # error, job timeout): snap7 does not reconnect by itself, so
             # re-establish the connection before the next request

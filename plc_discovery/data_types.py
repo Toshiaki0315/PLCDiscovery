@@ -378,9 +378,11 @@ class DataTypeConverter:
             return ""
         
         if data_type == DataType.FLOAT:
-            return f"{value:.6f}"
+            # Significant digits (float32 holds ~7): fixed decimals showed
+            # 1e30 as a 37-digit number and 1.2e-5 as 0.000012
+            return f"{value:.7g}"
         elif data_type == DataType.DOUBLE:
-            return f"{value:.10f}"
+            return f"{value:.15g}"
         elif data_type in (DataType.BIT, DataType.BOOL):
             return "ON" if value else "OFF"
         elif data_type == DataType.RAW:
