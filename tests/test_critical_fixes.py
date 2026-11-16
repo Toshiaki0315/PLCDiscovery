@@ -401,8 +401,8 @@ class TestC7FINS:
 
     def test_relay_flag_masked_on_error(self):
         handler = FINSHandler("127.0.0.1")
-        _, status = handler._parse_read_response(fins_response(1, [], end_code=0x9002))
-        assert status == StatusCode.NG_ILLEGAL_ADDR  # 0x1002 with relay flag
+        _, status = handler._parse_read_response(fins_response(1, [], end_code=0x9103))
+        assert status == StatusCode.NG_ILLEGAL_ADDR  # 0x1103 (address range error) with relay flag
 
     def test_m_uses_cio_word_area(self):
         handler = FINSHandler("127.0.0.1")

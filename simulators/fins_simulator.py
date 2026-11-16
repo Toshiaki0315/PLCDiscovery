@@ -170,7 +170,7 @@ class FINSSimulator:
                 logger.warning(
                     f"Inaccessible address: area=0x{area_code:02X}, addr={addr}"
                 )
-                return self._build_error_response(request, 0x1002)
+                return self._build_error_response(request, 0x1103)  # address range error
         
         # Get memory area
         memory = self._get_memory_area(area_code)

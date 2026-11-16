@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 
 # Database schema version for migrations
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # SQL statements for schema creation
 CREATE_TABLES_SQL = """
@@ -52,8 +52,7 @@ CREATE TABLE IF NOT EXISTS plcs (
     cpu_type TEXT,
     firmware_version TEXT,
     first_seen TEXT NOT NULL,
-    last_seen TEXT NOT NULL,
-    UNIQUE(ip_address)
+    last_seen TEXT NOT NULL
 );
 
 -- Scan sessions
@@ -113,6 +112,10 @@ CREATE INDEX IF NOT EXISTS idx_data_points_timestamp ON data_points(timestamp);
 CREATE INDEX IF NOT EXISTS idx_data_points_session ON data_points(session_id);
 CREATE INDEX IF NOT EXISTS idx_denied_plc_ip ON denied_addresses(plc_ip);
 CREATE INDEX IF NOT EXISTS idx_plcs_ip ON plcs(ip_address);
+-- One row per IP, protocol and port (schema v2): a PLC answering on
+-- several protocols, or several simulators on one host, keeps every entry
+CREATE UNIQUE INDEX IF NOT EXISTS idx_plcs_identity
+    ON plcs(ip_address, IFNULL(protocol, ''), IFNULL(port, 0));
 """
 
 
@@ -212,6 +215,10 @@ class DatabaseExporter:
             )
             self._connection.row_factory = sqlite3.Row
             
+            # Databases created by schema v1 allowed one PLC row per IP;
+            # rebuild that table before the v2 indexes are created
+            self._migrate_plcs_table()
+            
             # Create tables
             self._connection.executescript(CREATE_TABLES_SQL)
             
@@ -221,7 +228,7 @@ class DatabaseExporter:
             )
             row = cursor.fetchone()
             
-            if not row:
+            if not row or row[0] < SCHEMA_VERSION:
                 self._connection.execute(
                     "INSERT INTO schema_info (version, created_at) VALUES (?, ?)",
                     (SCHEMA_VERSION, datetime.now().isoformat())
@@ -234,6 +241,40 @@ class DatabaseExporter:
             logger.error(f"Failed to initialize database: {e}")
             self.config.enabled = False
             raise
+    
+    def _migrate_plcs_table(self):
+        """Schema v1 -> v2: drop UNIQUE(ip_address) from the plcs table"""
+        row = self._connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'plcs'"
+        ).fetchone()
+        if not row or "UNIQUE(ip_address)" not in row[0].replace(" ", ""):
+            return
+        logger.info("Upgrading database schema: one PLC row per IP, protocol and port")
+        columns = (
+            "id, ip_address, mac_address, manufacturer, model, protocol, port, "
+            "cpu_type, firmware_version, first_seen, last_seen"
+        )
+        with self._connection:   # one transaction: all or nothing
+            self._connection.execute("ALTER TABLE plcs RENAME TO plcs_v1")
+            self._connection.execute("""
+                CREATE TABLE plcs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ip_address TEXT NOT NULL,
+                    mac_address TEXT,
+                    manufacturer TEXT,
+                    model TEXT,
+                    protocol TEXT,
+                    port INTEGER,
+                    cpu_type TEXT,
+                    firmware_version TEXT,
+                    first_seen TEXT NOT NULL,
+                    last_seen TEXT NOT NULL
+                )
+            """)
+            self._connection.execute(
+                f"INSERT INTO plcs ({columns}) SELECT {columns} FROM plcs_v1"
+            )
+            self._connection.execute("DROP TABLE plcs_v1")
     
     def close(self):
         """Close database connection"""
@@ -365,12 +406,10 @@ class DatabaseExporter:
                         protocol, port, cpu_type, firmware_version,
                         first_seen, last_seen
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(ip_address) DO UPDATE SET
+                    ON CONFLICT(ip_address, IFNULL(protocol, ''), IFNULL(port, 0)) DO UPDATE SET
                         mac_address = COALESCE(excluded.mac_address, mac_address),
                         manufacturer = COALESCE(excluded.manufacturer, manufacturer),
                         model = COALESCE(excluded.model, model),
-                        protocol = COALESCE(excluded.protocol, protocol),
-                        port = COALESCE(excluded.port, port),
                         cpu_type = COALESCE(excluded.cpu_type, cpu_type),
                         firmware_version = COALESCE(excluded.firmware_version, firmware_version),
                         last_seen = excluded.last_seen

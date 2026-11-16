@@ -1001,12 +1001,23 @@ async def run_periodic_scan(
     
     async with contextlib.AsyncExitStack() as stack:
         collectors: Dict[str, PLCDataCollector] = {}
+        # Targets that answered at least once (at start or in a later cycle)
+        reached: Set[str] = set()
         for key, plc_info in targets:
             display.print_info(f"Connecting to {key}...")
             collector = await stack.enter_async_context(PLCDataCollector(plc_info, config))
             if _check_connected(collector, plc_info, outcomes[key], display):
-                collectors[key] = collector
-                audit.log_scan_start(plc_info.ip_address, ScanMode.RANGE.value, labels)
+                reached.add(key)
+            elif getattr(collector, "connect_error", None):
+                # Invalid options (set before any connection attempt):
+                # retrying cannot help
+                continue
+            else:
+                # PLC off or unreachable now: keep it in the cycle. Every cycle
+                # retries the connection and logs NG_COMM_ERROR until it answers
+                display.print_warning(f"{key}: not reachable yet; retrying every cycle")
+            collectors[key] = collector
+            audit.log_scan_start(plc_info.ip_address, ScanMode.RANGE.value, labels)
         
         if not collectors:
             return list(outcomes.values())
@@ -1027,6 +1038,10 @@ async def run_periodic_scan(
                 for key, collector in collectors.items():
                     collector.clear_data()
                     points = await _collect_ranges(collector, device_ranges)
+                    if key not in reached and collector.is_connected:
+                        reached.add(key)
+                        outcomes[key].error = None
+                        display.print_success(f"{key}: connected")
                     points = apply_data_type_conversion(points, data_type, byte_order, type_manager)
                     outcomes[key].data_points = points
                     writers[key].export_points(points)
@@ -1059,7 +1074,9 @@ async def run_periodic_scan(
             )
             display.print_info(f"Last cycle statistics for {key}:")
             display.print_statistics(stats)
-            if writers[key].errors:
+            if key not in reached:
+                pass   # never answered: keep the connection error from the start
+            elif writers[key].errors:
                 outcome.error = (
                     f"{len(writers[key].errors)} write error(s) during monitoring; "
                     f"first: {writers[key].errors[0]}"

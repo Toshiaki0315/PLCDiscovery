@@ -50,10 +50,10 @@ FINS_END_CODE_MASK = 0x7F3F
 FINS_CMD_MEMORY_READ = (0x01, 0x01)   # Memory area read
 FINS_CMD_MEMORY_WRITE = (0x01, 0x02)  # Memory area write
 
-# FINS Error codes
+# FINS end codes (Omron FINS Commands Reference Manual: MRES/SRES)
 FINS_ERROR_CODES = {
     0x0000: "Normal completion",
-    0x0001: "Service cancelled",
+    0x0001: "Service canceled",
     0x0101: "Local node not in network",
     0x0102: "Token timeout",
     0x0103: "Retries failed",
@@ -71,14 +71,38 @@ FINS_ERROR_CODES = {
     0x0304: "Unit number error",
     0x0401: "Undefined command",
     0x0402: "Not supported by model/version",
-    0x1001: "Memory area/bank error",
-    0x1002: "Memory address out of range",
-    0x1003: "Data size is not word",
-    0x1101: "Access right not acquired",
-    0x1102: "Service aborted",
-    0x2002: "Read-only area",
-    0x2003: "Write protected",
+    0x0501: "Destination address setting error",
+    0x0502: "No routing tables",
+    0x0503: "Routing table error",
+    0x0504: "Too many relays",
+    0x1001: "Command too long",
+    0x1002: "Command too short",
+    0x1003: "Elements/data don't match",
+    0x1004: "Command format error",
+    0x1005: "Header error",
+    0x1101: "Area classification missing",
+    0x1102: "Access size error",
+    0x1103: "Address range error",
+    0x1104: "Address range exceeded",
+    0x1106: "Program missing",
+    0x1109: "Relational error",
+    0x110A: "Duplicate data access",
+    0x110B: "Response too long",
+    0x110C: "Parameter error",
+    0x2002: "Protected",
+    0x2101: "Read-only",
 }
+
+# End codes reported by the PLC for the requested addresses: the address
+# does not exist on this CPU (learned as inaccessible by binary search)
+FINS_ILLEGAL_ADDRESS_CODES = (0x1103, 0x1104)
+
+# The memory area or the command itself is not available on this model;
+# splitting the range cannot help
+FINS_UNSUPPORTED_CODES = (0x0401, 0x0402, 0x1101)
+
+# The PLC did not answer in time (relayed through a gateway / network)
+FINS_TIMEOUT_CODES = (0x0205,)
 
 
 def _last_octet(ip_address: str) -> int:
@@ -498,15 +522,20 @@ class FINSHandler(BaseProtocolHandler):
             logger.debug(f"FINS end code flags set: 0x{raw_end_code:04X}")
         
         if end_code != 0x0000:
-            error_msg = FINS_ERROR_CODES.get(end_code, f"Unknown error: {end_code:04X}")
-            logger.warning(f"FINS error: {error_msg}")
-            
-            if end_code in (0x1001, 0x1002):
-                return None, StatusCode.NG_ILLEGAL_ADDR
-            elif end_code in (0x0205,):
-                return None, StatusCode.NG_TIMEOUT
+            error_msg = FINS_ERROR_CODES.get(end_code, "Unknown error")
+            if end_code in FINS_ILLEGAL_ADDRESS_CODES:
+                # Expected while binary search narrows down the valid range
+                logger.debug(f"FINS end code 0x{end_code:04X}: {error_msg}")
             else:
-                return None, StatusCode.NG_COMM_ERROR
+                logger.warning(f"FINS end code 0x{end_code:04X}: {error_msg}")
+            
+            if end_code in FINS_ILLEGAL_ADDRESS_CODES:
+                return None, StatusCode.NG_ILLEGAL_ADDR
+            if end_code in FINS_UNSUPPORTED_CODES:
+                return None, StatusCode.NG_UNSUPPORTED
+            if end_code in FINS_TIMEOUT_CODES:
+                return None, StatusCode.NG_TIMEOUT
+            return None, StatusCode.NG_COMM_ERROR
         
         # Extract data (starting from byte 14)
         data_bytes = response[14:]

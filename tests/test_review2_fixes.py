@@ -239,12 +239,13 @@ async def test_r5_periodic_scan_round_robin():
         outcomes = {o.ip_address: o for o in await task}
 
     assert collectors["10.0.0.1"].collect_calls >= 3
-    assert collectors["10.0.0.2"].collect_calls == 0
+    # unreachable at the start: still polled every cycle (reconnect is retried)
+    assert collectors["10.0.0.2"].collect_calls >= 2
     assert outcomes["10.0.0.1"].success and outcomes["10.0.0.3"].success
     assert not outcomes["10.0.0.2"].success
     assert "Failed to connect" in outcomes["10.0.0.2"].error
     exported_ips = {c.args[1] for c in exporter.export_plc_data.call_args_list}
-    assert exported_ips == {"10.0.0.1", "10.0.0.3"}
+    assert exported_ips == {"10.0.0.1", "10.0.0.2", "10.0.0.3"}
 
 
 # ---------------------------------------------------------------------------

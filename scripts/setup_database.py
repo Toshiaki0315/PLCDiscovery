@@ -24,93 +24,8 @@ from pathlib import Path
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-# Schema version
-SCHEMA_VERSION = 1
-
-# SQL statements for schema creation
-CREATE_TABLES_SQL = """
--- Schema version tracking
-CREATE TABLE IF NOT EXISTS schema_info (
-    version INTEGER PRIMARY KEY,
-    created_at TEXT NOT NULL
-);
-
--- Discovered PLCs
-CREATE TABLE IF NOT EXISTS plcs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    ip_address TEXT NOT NULL,
-    mac_address TEXT,
-    manufacturer TEXT,
-    model TEXT,
-    protocol TEXT,
-    port INTEGER,
-    cpu_type TEXT,
-    firmware_version TEXT,
-    first_seen TEXT NOT NULL,
-    last_seen TEXT NOT NULL,
-    UNIQUE(ip_address)
-);
-
--- Scan sessions
-CREATE TABLE IF NOT EXISTS scan_sessions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    started_at TEXT NOT NULL,
-    completed_at TEXT,
-    mode TEXT NOT NULL,
-    plc_count INTEGER DEFAULT 0,
-    success_count INTEGER DEFAULT 0,
-    error_count INTEGER DEFAULT 0,
-    status TEXT DEFAULT 'running'
-);
-
--- Data points (main data storage)
-CREATE TABLE IF NOT EXISTS data_points (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id INTEGER,
-    plc_ip TEXT NOT NULL,
-    address TEXT NOT NULL,
-    value INTEGER,
-    raw_hex TEXT,
-    data_type TEXT,
-    converted_value TEXT,
-    display_value TEXT,
-    status TEXT NOT NULL,
-    timestamp TEXT NOT NULL,
-    FOREIGN KEY (session_id) REFERENCES scan_sessions(id)
-);
-
--- Denied addresses log
-CREATE TABLE IF NOT EXISTS denied_addresses (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id INTEGER,
-    plc_ip TEXT NOT NULL,
-    address TEXT NOT NULL,
-    status TEXT NOT NULL,
-    timestamp TEXT NOT NULL,
-    FOREIGN KEY (session_id) REFERENCES scan_sessions(id)
-);
-
--- Data change history (for tracking changes)
-CREATE TABLE IF NOT EXISTS data_history (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    plc_ip TEXT NOT NULL,
-    address TEXT NOT NULL,
-    old_value INTEGER,
-    new_value INTEGER,
-    changed_at TEXT NOT NULL
-);
-
--- Indexes for performance
-CREATE INDEX IF NOT EXISTS idx_data_points_plc_ip ON data_points(plc_ip);
-CREATE INDEX IF NOT EXISTS idx_data_points_address ON data_points(address);
-CREATE INDEX IF NOT EXISTS idx_data_points_timestamp ON data_points(timestamp);
-CREATE INDEX IF NOT EXISTS idx_data_points_session ON data_points(session_id);
-CREATE INDEX IF NOT EXISTS idx_denied_plc_ip ON denied_addresses(plc_ip);
-CREATE INDEX IF NOT EXISTS idx_plcs_ip ON plcs(ip_address);
-CREATE INDEX IF NOT EXISTS idx_history_plc_ip ON data_history(plc_ip);
-CREATE INDEX IF NOT EXISTS idx_history_address ON data_history(address);
-CREATE INDEX IF NOT EXISTS idx_history_changed_at ON data_history(changed_at);
-"""
+# Schema shared with the scanner (single source of truth)
+from plc_discovery.database import CREATE_TABLES_SQL, SCHEMA_VERSION  # noqa: E402
 
 
 def setup_database(db_path: str, force: bool = False) -> bool:
@@ -171,7 +86,7 @@ def setup_database(db_path: str, force: bool = False) -> bool:
         tables = [row[0] for row in cursor.fetchall()]
         
         # Get schema version
-        cursor.execute("SELECT version, created_at FROM schema_info")
+        cursor.execute("SELECT version, created_at FROM schema_info ORDER BY version DESC LIMIT 1")
         version, created_at = cursor.fetchone()
         
         conn.close()
@@ -222,7 +137,7 @@ def show_status(db_path: str):
     print()
     
     # Schema version
-    cursor.execute("SELECT version, created_at FROM schema_info")
+    cursor.execute("SELECT version, created_at FROM schema_info ORDER BY version DESC LIMIT 1")
     row = cursor.fetchone()
     if row:
         print(f"Schema Version: {row[0]} (created: {row[1]})")
