@@ -347,17 +347,6 @@ class TestS7Handler:
         # Data is converted from big-endian bytes
         assert data is not None
     
-    @pytest.mark.asyncio
-    async def test_get_cpu_info(self, network_config, mock_s7_client):
-        """Test getting CPU info"""
-        handler = S7Handler("192.168.1.10", 102, config=network_config)
-        handler._client = mock_s7_client
-        handler._connected = True
-        
-        info = await handler.get_cpu_info()
-        
-        assert info["manufacturer"] == "シーメンス"
-        assert "CPU" in info["model"]
 
 
 class TestEtherNetIPHandler:

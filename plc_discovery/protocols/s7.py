@@ -9,11 +9,11 @@ Supports:
 """
 
 import asyncio
-from typing import List, Optional, Tuple, Dict
+from typing import List, Optional, Tuple
 import logging
 
 from .base import BaseProtocolHandler
-from ..config import Protocol, DeviceType, StatusCode, PROTOCOL_PORTS, clean_device_text
+from ..config import Protocol, DeviceType, StatusCode, PROTOCOL_PORTS
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +33,7 @@ S7_DEVICE_MAP = {
     DeviceType.DB: S7_AREA_DB,  # Data blocks
     DeviceType.D: S7_AREA_DB,   # Data (map to DB)
 }
+
 
 
 class S7Handler(BaseProtocolHandler):
@@ -189,147 +190,3 @@ class S7Handler(BaseProtocolHandler):
             self._needs_reconnect = True
             logger.debug(f"S7 read error: {e}")
             return None, StatusCode.NG_COMM_ERROR
-    
-    async def read_db(
-        self,
-        db_number: int,
-        start_byte: int,
-        size: int
-    ) -> Tuple[Optional[bytes], StatusCode]:
-        """
-        Read from a specific data block.
-        
-        Args:
-            db_number: Data block number
-            start_byte: Starting byte offset
-            size: Number of bytes to read
-        
-        Returns:
-            Tuple of (raw bytes or None, status code)
-        """
-        if not self._connected or not self._client:
-            return None, StatusCode.NG_COMM_ERROR
-        
-        try:
-            def _read():
-                return self._client.db_read(db_number, start_byte, size)
-            
-            loop = asyncio.get_running_loop()
-            data = await asyncio.wait_for(
-                loop.run_in_executor(None, _read),
-                timeout=self.config.request_timeout_ms / 1000
-            )
-            
-            if data:
-                return bytes(data), StatusCode.OK
-            return None, StatusCode.NG_COMM_ERROR
-            
-        except asyncio.TimeoutError:
-            return None, StatusCode.NG_TIMEOUT
-        except Exception as e:
-            logger.debug(f"DB read error: {e}")
-            return None, StatusCode.NG_COMM_ERROR
-    
-    async def read_merkers(
-        self,
-        start_byte: int,
-        size: int
-    ) -> Tuple[Optional[bytes], StatusCode]:
-        """
-        Read merker (flag) memory.
-        
-        Args:
-            start_byte: Starting byte offset
-            size: Number of bytes to read
-        
-        Returns:
-            Tuple of (raw bytes or None, status code)
-        """
-        if not self._connected or not self._client:
-            return None, StatusCode.NG_COMM_ERROR
-        
-        try:
-            def _read():
-                return self._client.mb_read(start_byte, size)
-            
-            loop = asyncio.get_running_loop()
-            data = await asyncio.wait_for(
-                loop.run_in_executor(None, _read),
-                timeout=self.config.request_timeout_ms / 1000
-            )
-            
-            if data:
-                return bytes(data), StatusCode.OK
-            return None, StatusCode.NG_COMM_ERROR
-            
-        except asyncio.TimeoutError:
-            return None, StatusCode.NG_TIMEOUT
-        except Exception as e:
-            logger.debug(f"Merker read error: {e}")
-            return None, StatusCode.NG_COMM_ERROR
-    
-    async def get_cpu_info(self) -> Dict:
-        """
-        Get CPU information from S7 PLC.
-        
-        Returns:
-            Dictionary with CPU information
-        """
-        info = {
-            "manufacturer": "シーメンス",
-            "model": "Unknown",
-            "cpu_type": "Unknown",
-            "serial_number": "Unknown",
-            "order_code": "Unknown",
-        }
-        
-        if not self._connected or not self._client:
-            return info
-        
-        try:
-            def _get_info():
-                return self._client.get_cpu_info()
-            
-            loop = asyncio.get_running_loop()
-            cpu_info = await loop.run_in_executor(None, _get_info)
-            
-            if cpu_info:
-                info["model"] = clean_device_text(cpu_info.ModuleTypeName.decode('utf-8', errors='ignore'))
-                info["cpu_type"] = clean_device_text(cpu_info.ASName.decode('utf-8', errors='ignore'))
-                info["serial_number"] = clean_device_text(cpu_info.SerialNumber.decode('utf-8', errors='ignore'))
-                info["order_code"] = clean_device_text(cpu_info.OrderCode.decode('utf-8', errors='ignore'))
-                
-        except Exception as e:
-            logger.debug(f"Failed to get CPU info: {e}")
-        
-        return info
-    
-    async def get_cpu_state(self) -> str:
-        """
-        Get CPU run state.
-        
-        Returns:
-            CPU state string ("RUN", "STOP", "UNKNOWN")
-        """
-        if not self._connected or not self._client:
-            return "UNKNOWN"
-        
-        try:
-            def _get_state():
-                return self._client.get_cpu_state()
-            
-            loop = asyncio.get_running_loop()
-            state = await loop.run_in_executor(None, _get_state)
-            
-            state_map = {
-                0x00: "UNKNOWN",
-                0x04: "STOP",
-                0x08: "RUN",
-            }
-            return state_map.get(state, "UNKNOWN")
-            
-        except Exception as e:
-            logger.debug(f"Failed to get CPU state: {e}")
-            return "UNKNOWN"
-
-

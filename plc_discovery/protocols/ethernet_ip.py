@@ -13,13 +13,13 @@ from typing import List, Optional, Tuple, Dict
 import logging
 
 from .base import BaseProtocolHandler
-from ..config import Protocol, DeviceType, StatusCode, PROTOCOL_PORTS, clean_device_text
+from ..config import Protocol, DeviceType, StatusCode, PROTOCOL_PORTS
 
 logger = logging.getLogger(__name__)
 
 # Device type mapping to PLC-5/SLC/MicroLogix data files (file letter, file number).
 # Data-file addressing ("N7:0") is only understood by SLC-style controllers;
-# Logix and generic CIP devices use symbolic tags (see read_tag()).
+# Logix and generic CIP devices use symbolic tags, which this tool does not read.
 EIP_DEVICE_MAP = {
     DeviceType.D: ("N", 7),    # Integer file N7
     DeviceType.HR: ("N", 7),   # Integer file N7
@@ -57,6 +57,7 @@ def is_slc_identity(identity: Optional[Dict]) -> bool:
     name = name.lower()
     is_logix = "logix" in name and "micrologix" not in name
     return vendor_ok and type_ok and not is_logix
+
 
 
 class EtherNetIPHandler(BaseProtocolHandler):
@@ -238,7 +239,7 @@ class EtherNetIPHandler(BaseProtocolHandler):
             # be misleading, so report the device type as unsupported.
             logger.warning(
                 f"Address-based read of {device_type.value} is not supported on "
-                f"{self._plc_type} EtherNet/IP devices; use read_tag() instead"
+                f"{self._plc_type} EtherNet/IP devices (symbolic tags only)"
             )
             return None, StatusCode.NG_UNSUPPORTED
                 
@@ -308,71 +309,3 @@ class EtherNetIPHandler(BaseProtocolHandler):
         except Exception as e:
             logger.debug(f"AB-style read error: {e}")
             raise
-    
-    async def read_tag(self, tag_name: str) -> Tuple[Optional[any], StatusCode]:
-        """
-        Read a named tag (Allen-Bradley style).
-        
-        Args:
-            tag_name: Full tag name (e.g., "MyTag", "MyArray[0]")
-        
-        Returns:
-            Tuple of (value or None, status code)
-        """
-        if not self._connected or not self._client:
-            return None, StatusCode.NG_COMM_ERROR
-        
-        if self._plc_type not in ('logix', 'slc'):
-            return None, StatusCode.NG_UNSUPPORTED
-        
-        try:
-            def _read():
-                return self._client.read(tag_name)
-            
-            loop = asyncio.get_running_loop()
-            result = await asyncio.wait_for(
-                loop.run_in_executor(None, _read),
-                timeout=self.config.request_timeout_ms / 1000
-            )
-            
-            if result and result.value is not None:
-                return result.value, StatusCode.OK
-            return None, StatusCode.NG_COMM_ERROR
-            
-        except Exception as e:
-            logger.debug(f"Tag read error: {e}")
-            return None, StatusCode.NG_COMM_ERROR
-    
-    async def get_plc_info(self) -> Dict:
-        """Get PLC identity information"""
-        info = {
-            "manufacturer": "Unknown",
-            "model": "Unknown",
-            "firmware_version": "Unknown",
-        }
-        
-        if not self._connected or not self._client:
-            return info
-        
-        try:
-            def _get_info():
-                if hasattr(self._client, 'get_plc_info'):
-                    return self._client.get_plc_info()
-                elif hasattr(self._client, 'info'):
-                    return self._client.info
-                return None
-            
-            loop = asyncio.get_running_loop()
-            plc_info = await loop.run_in_executor(None, _get_info)
-            
-            if plc_info:
-                info["manufacturer"] = clean_device_text(str(plc_info.get('vendor', 'Unknown')))
-                info["model"] = clean_device_text(str(plc_info.get('product_name', 'Unknown')))
-                info["firmware_version"] = clean_device_text(str(plc_info.get('revision', 'Unknown')))
-                
-        except Exception as e:
-            logger.debug(f"Failed to get PLC info: {e}")
-        
-        return info
-
-

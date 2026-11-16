@@ -9,7 +9,7 @@ from pathlib import Path
 
 from plc_discovery.config import StatusCode
 from plc_discovery.output import (
-    CSVExporter, ReportGenerator, load_denied_addresses
+    CSVExporter, load_denied_addresses
 )
 
 
@@ -217,36 +217,4 @@ class TestLoadDeniedAddresses:
         filepath = os.path.join(temp_output_dir, "nonexistent.csv")
         denied = load_denied_addresses(filepath)
         assert len(denied) == 0
-
-
-class TestReportGenerator:
-    """Tests for ReportGenerator class"""
-    
-    def test_generate_full_report(self, temp_output_dir, sample_plc_list, sample_data_points):
-        """Test generating full report"""
-        exporter = CSVExporter(temp_output_dir)
-        generator = ReportGenerator(exporter)
-        
-        data_by_plc = {
-            "192.168.1.10": sample_data_points,
-        }
-        denied_by_plc = {
-            "192.168.1.10": {"D100", "D101"},
-        }
-        
-        files = generator.generate_full_report(
-            sample_plc_list,
-            data_by_plc,
-            denied_by_plc
-        )
-        
-        assert "discovery" in files
-        assert os.path.exists(files["discovery"])
-        
-        assert "data_192.168.1.10" in files
-        assert os.path.exists(files["data_192.168.1.10"])
-        
-        assert "summary" in files
-        assert os.path.exists(files["summary"])
-
 

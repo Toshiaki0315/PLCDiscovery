@@ -108,6 +108,7 @@ def _framed_client_class(frame: str):
 _PLC_ANSWER_ERRORS = ("MCProtocolError", "UnsupportedComandError")
 
 
+
 class SLMPHandler(BaseProtocolHandler):
     """
     SLMP (Seamless Message Protocol) / MC Protocol Handler
@@ -265,24 +266,6 @@ class SLMPHandler(BaseProtocolHandler):
         
         logger.debug(f"SLMP read error: {e}")
         return StatusCode.NG_COMM_ERROR
-    
-    async def read_cpu_info(self) -> dict:
-        """
-        Read CPU information from SLMP device.
-        
-        Returns:
-            Dictionary with CPU information
-        """
-        info = {
-            "manufacturer": "三菱電機/SLMP互換",
-            "model": "Unknown",
-            "cpu_type": "Unknown",
-        }
-        
-        # SLMP doesn't have a standardized CPU info command,
-        # but we can try reading special registers for some models
-        
-        return info
 
 
 class SLMPBinaryHandler(SLMPHandler):

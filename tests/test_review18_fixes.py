@@ -122,3 +122,30 @@ def test_config_rejects_huge_range(tmp_path):
 def test_gui_checks_range_size():
     source = (plc_scanner.Path(__file__).resolve().parent.parent / "plc_gui.py").read_text(encoding="utf-8")
     assert "MAX_RANGE_POINTS" in source and "end - start + 1 > MAX_RANGE_POINTS" in source
+
+
+# ---------------------------------------------------------------------------
+# Third pass: handlers expose no PLC access outside the safe read path
+# ---------------------------------------------------------------------------
+
+import inspect
+
+from plc_discovery.collector import PROTOCOL_HANDLERS
+from plc_discovery.protocols.base import BaseProtocolHandler
+
+# Public coroutines a handler may offer: every PLC read goes through
+# read_device_range / read_device_raw (rate limiting, address limits,
+# reconnect after a timeout, binary search)
+ALLOWED_PUBLIC_COROUTINES = {"connect", "disconnect", "read_device_raw", "read_device_range"}
+
+
+@pytest.mark.parametrize("handler_class", sorted(
+    {getattr(h, "func", h) for h in PROTOCOL_HANDLERS.values()}, key=lambda c: c.__name__
+))
+def test_handlers_have_no_side_door_reads(handler_class):
+    public = {
+        name for name, member in inspect.getmembers(handler_class, inspect.iscoroutinefunction)
+        if not name.startswith("_")
+    }
+    assert public <= ALLOWED_PUBLIC_COROUTINES, public - ALLOWED_PUBLIC_COROUTINES
+    assert issubclass(handler_class, BaseProtocolHandler)

@@ -13,7 +13,7 @@ from typing import List, Optional, Tuple
 import logging
 
 from .base import BaseProtocolHandler
-from ..config import Protocol, DeviceType, StatusCode, PROTOCOL_PORTS, clean_device_text
+from ..config import Protocol, DeviceType, StatusCode, PROTOCOL_PORTS
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +50,7 @@ def modbus_unit_kwargs(method, unit_id: int) -> dict:
 MODBUS_PORT = 502
 MODBUS_MAX_READ_REGISTERS = 125  # Protocol maximum (reads use SAFE_READ_WORDS = 100)
 MODBUS_MAX_READ_COILS = 2000     # Maximum coils per request
+
 
 
 class ModbusHandler(BaseProtocolHandler):
@@ -224,46 +225,6 @@ class ModbusHandler(BaseProtocolHandler):
         except Exception as e:
             logger.debug(f"Modbus read error: {e}")
             return None, StatusCode.NG_COMM_ERROR
-    
-    async def read_device_identification(self) -> dict:
-        """
-        Read Modbus device identification.
-        
-        Returns:
-            Dictionary with device identification info
-        """
-        info = {
-            "manufacturer": "Unknown",
-            "product_code": "Unknown",
-            "revision": "Unknown",
-        }
-        
-        if not self._connected or not self._client:
-            return info
-        
-        try:
-            def _read_id():
-                # Try to read device identification (Function code 0x2B)
-                method = self._client.read_device_information
-                return method(
-                    read_code=0x01,  # Basic identification
-                    object_id=0x00,
-                    **modbus_unit_kwargs(method, self._unit_id)
-                )
-            
-            result = await self._run_blocking(_read_id)
-            
-            if result and not result.isError():
-                if hasattr(result, 'information'):
-                    info_data = result.information
-                    info["manufacturer"] = clean_device_text(info_data.get(0x00, b"").decode('ascii', errors='ignore'))
-                    info["product_code"] = clean_device_text(info_data.get(0x01, b"").decode('ascii', errors='ignore'))
-                    info["revision"] = clean_device_text(info_data.get(0x02, b"").decode('ascii', errors='ignore'))
-            
-        except Exception as e:
-            logger.debug(f"Failed to read device identification: {e}")
-        
-        return info
 
 
 class ModbusRTUOverTCPHandler(ModbusHandler):
