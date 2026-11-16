@@ -42,7 +42,11 @@ class TestFINSConnection:
         # answers, so a port without a FINS server must not be "connected".
         async with PLCDataCollector(plc_info, network_config) as collector:
             assert collector._handler.is_connected is False
-            assert await collector.collect_range(DeviceType.DM, 0, 0) == []
+            # Reading retries the connection and reports the address as a
+            # communication error rather than returning nothing
+            points = await collector.collect_range(DeviceType.DM, 0, 0)
+            assert [(p.address, p.status) for p in points] == [("DM0", StatusCode.NG_COMM_ERROR)]
+            assert collector._handler.is_connected is False
 
 
 class TestFINSDataRead:

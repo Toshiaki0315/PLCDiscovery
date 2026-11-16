@@ -43,7 +43,7 @@ from plc_discovery.config import (
     Protocol, DeviceType, ScanMode, PLCInfo, DataPoint,
     NetworkConfig, DeviceRange, StatusCode, PROTOCOL_PORTS
 )
-from plc_discovery.discovery import PLCDiscovery, discover_plcs, plc_key
+from plc_discovery.discovery import PLCDiscovery, discover_plcs, plc_key, target_labels
 from plc_discovery.collector import PLCDataCollector
 from plc_discovery.output import CSVExporter
 from plc_discovery.utils import parse_ip_range
@@ -717,12 +717,12 @@ async def run_parallel_scan(
     scanner = ParallelPLCScanner(config)
     results = await scanner.scan_multiple_plcs(plcs, mode, device_ranges)
     
-    # Export results for each PLC
-    for ip, result in results.items():
+    # Export results for each PLC (keyed by target label, see target_labels)
+    for label, result in results.items():
         if not result.success:
-            display.print_error(f"{ip}: {result.error_message}")
+            display.print_error(f"{label}: {result.error_message}")
         
-        writer = _ResultWriter(ip, exporter, display, db_exporter)
+        writer = _ResultWriter(result.plc_info.ip_address, exporter, display, db_exporter)
         if result.data_points:
             # Apply data type conversion
             result.data_points = apply_data_type_conversion(
@@ -764,6 +764,13 @@ class ScanOutcome:
     success: bool = False
     interrupted: bool = False
     error: Optional[str] = None
+    # Name in results/reports: the IP, or "IP (PROTOCOL:port)" when several
+    # targets share the IP (see target_labels)
+    label: Optional[str] = None
+    
+    def __post_init__(self):
+        if self.label is None:
+            self.label = self.ip_address
 
 
 def _uncancel_current_task() -> None:
@@ -982,21 +989,24 @@ async def run_periodic_scan(
     audit = get_audit_logger()
     loop = asyncio.get_running_loop()
     labels = _range_labels(device_ranges)
-    outcomes = {p.ip_address: ScanOutcome(p.ip_address) for p in plc_infos}
+    # Keyed by target label, not IP: targets sharing an IP (one PLC over two
+    # protocols, local simulators) are each scanned and reported
+    targets = list(zip(target_labels(plc_infos), plc_infos))
+    outcomes = {key: ScanOutcome(p.ip_address, label=key) for key, p in targets}
     writers = {
-        p.ip_address: _ResultWriter(p.ip_address, exporter, display, db_exporter)
-        for p in plc_infos
+        key: _ResultWriter(p.ip_address, exporter, display, db_exporter)
+        for key, p in targets
     }
+    ips = {key: p.ip_address for key, p in targets}
     
     async with contextlib.AsyncExitStack() as stack:
         collectors: Dict[str, PLCDataCollector] = {}
-        for plc_info in plc_infos:
-            ip = plc_info.ip_address
-            display.print_info(f"Connecting to {ip}...")
+        for key, plc_info in targets:
+            display.print_info(f"Connecting to {key}...")
             collector = await stack.enter_async_context(PLCDataCollector(plc_info, config))
-            if _check_connected(collector, plc_info, outcomes[ip], display):
-                collectors[ip] = collector
-                audit.log_scan_start(ip, ScanMode.RANGE.value, labels)
+            if _check_connected(collector, plc_info, outcomes[key], display):
+                collectors[key] = collector
+                audit.log_scan_start(plc_info.ip_address, ScanMode.RANGE.value, labels)
         
         if not collectors:
             return list(outcomes.values())
@@ -1014,13 +1024,13 @@ async def run_periodic_scan(
                 cycle_started = loop.time()
                 display.print_info(f"Iteration {iteration}")
                 
-                for ip, collector in collectors.items():
+                for key, collector in collectors.items():
                     collector.clear_data()
                     points = await _collect_ranges(collector, device_ranges)
                     points = apply_data_type_conversion(points, data_type, byte_order, type_manager)
-                    outcomes[ip].data_points = points
-                    writers[ip].export_points(points)
-                    writers[ip].export_new_denied(
+                    outcomes[key].data_points = points
+                    writers[key].export_points(points)
+                    writers[key].export_new_denied(
                         collector.get_denied_addresses(), collector.get_denied_statuses()
                     )
                 
@@ -1037,22 +1047,22 @@ async def run_periodic_scan(
             interrupted = True
             _uncancel_current_task()
         
-        for ip, collector in collectors.items():
-            outcome = outcomes[ip]
+        for key, collector in collectors.items():
+            outcome = outcomes[key]
             outcome.interrupted = interrupted
             outcome.denied_addresses = collector.get_denied_addresses()
-            writers[ip].export_new_denied(outcome.denied_addresses, collector.get_denied_statuses())
+            writers[key].export_new_denied(outcome.denied_addresses, collector.get_denied_statuses())
             stats = collector.get_statistics()
             audit.log_scan_complete(
-                ip, stats["total_points"], stats["success_count"], stats["error_count"],
+                ips[key], stats["total_points"], stats["success_count"], stats["error_count"],
                 (loop.time() - started_at) * 1000
             )
-            display.print_info(f"Last cycle statistics for {ip}:")
+            display.print_info(f"Last cycle statistics for {key}:")
             display.print_statistics(stats)
-            if writers[ip].errors:
+            if writers[key].errors:
                 outcome.error = (
-                    f"{len(writers[ip].errors)} write error(s) during monitoring; "
-                    f"first: {writers[ip].errors[0]}"
+                    f"{len(writers[key].errors)} write error(s) during monitoring; "
+                    f"first: {writers[key].errors[0]}"
                 )
             else:
                 outcome.success = True
@@ -1361,11 +1371,11 @@ async def main():
                 )
                 for outcome in outcomes:
                     if not outcome.success:
-                        failed_targets.append(outcome.ip_address)
+                        failed_targets.append(outcome.label)
                     if outcome.data_points:
-                        all_data_points[outcome.ip_address] = outcome.data_points
+                        all_data_points[outcome.label] = outcome.data_points
                     if outcome.denied_addresses:
-                        all_denied_addresses[outcome.ip_address] = list(outcome.denied_addresses)
+                        all_denied_addresses[outcome.label] = list(outcome.denied_addresses)
                     interrupted = interrupted or outcome.interrupted
             elif len(plc_infos) > 1 and config.max_concurrent > 1:
                 results = await run_parallel_scan(
@@ -1373,27 +1383,27 @@ async def main():
                     mode, device_ranges, data_type, byte_order, type_manager,
                     db_exporter
                 )
-                for ip, result in results.items():
+                for label, result in results.items():
                     if not result.success:
-                        failed_targets.append(ip)
+                        failed_targets.append(label)
                     if result.data_points:
-                        all_data_points[ip] = result.data_points
+                        all_data_points[label] = result.data_points
                     if result.denied_addresses:
-                        all_denied_addresses[ip] = list(result.denied_addresses)
+                        all_denied_addresses[label] = list(result.denied_addresses)
             else:
                 # Single or sequential scan
-                for plc_info in plc_infos:
+                for label, plc_info in zip(target_labels(plc_infos), plc_infos):
                     outcome = await run_single_scan(
                         plc_info, config, exporter, display,
                         mode, device_ranges,
                         data_type, byte_order, type_manager, db_exporter
                     )
                     if not outcome.success:
-                        failed_targets.append(plc_info.ip_address)
+                        failed_targets.append(label)
                     if outcome.data_points:
-                        all_data_points[plc_info.ip_address] = outcome.data_points
+                        all_data_points[label] = outcome.data_points
                     if outcome.denied_addresses:
-                        all_denied_addresses[plc_info.ip_address] = list(outcome.denied_addresses)
+                        all_denied_addresses[label] = list(outcome.denied_addresses)
         
         scan_end_time = datetime.now()
         if mode_name != "discover":

@@ -54,6 +54,34 @@ def plc_key(plc: PLCInfo) -> tuple:
     return (plc.ip_address, plc.protocol, plc.port)
 
 
+def target_labels(plcs: List[PLCInfo]) -> List[str]:
+    """
+    Name for each scan target, used as its key in results and reports.
+    
+    The IP address alone when it is unique; "IP (PROTOCOL:port)" when several
+    targets share an IP (one PLC read over two protocols, local simulators,
+    a gateway), so their results do not overwrite each other.
+    """
+    counts: Dict[str, int] = {}
+    for plc in plcs:
+        counts[plc.ip_address] = counts.get(plc.ip_address, 0) + 1
+    labels = []
+    for plc in plcs:
+        label = plc.ip_address
+        if counts[plc.ip_address] > 1:
+            protocol = plc.protocol.name if plc.protocol else "UNKNOWN"
+            label = f"{plc.ip_address} ({protocol}:{plc.port})"
+        labels.append(label)
+    # Same IP, protocol and port twice (e.g. two Modbus unit IDs behind one
+    # gateway): number the repeats
+    seen: Dict[str, int] = {}
+    for i, label in enumerate(labels):
+        seen[label] = seen.get(label, 0) + 1
+        if seen[label] > 1:
+            labels[i] = f"{label} #{seen[label]}"
+    return labels
+
+
 ARP_SKIPPED_MESSAGE = (
     "ARP scan skipped: administrator (root) rights are required for raw packets. "
     "PLC discovery continues; MAC addresses are read from the OS ARP cache instead."

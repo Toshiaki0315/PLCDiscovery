@@ -17,6 +17,7 @@ from .config import (
 )
 from .collector import PLCDataCollector
 from .audit_log import get_audit_logger
+from .discovery import target_labels
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +96,7 @@ class ParallelPLCScanner:
             device_ranges: Device ranges for RANGE mode
         
         Returns:
-            Dictionary mapping IP address to scan result
+            Dictionary mapping each target's label (see target_labels) to its result
         """
         if not plcs:
             return {}
@@ -118,10 +119,11 @@ class ParallelPLCScanner:
         # Run all tasks and gather results
         results = await asyncio.gather(*tasks, return_exceptions=True)
         
-        # Process results
-        for plc, result in zip(plcs, results):
+        # Process results (keyed by IP, or "IP (PROTOCOL:port)" when several
+        # targets share an IP, so no result is overwritten)
+        for plc, label, result in zip(plcs, target_labels(plcs), results):
             if isinstance(result, Exception):
-                self._results[plc.ip_address] = PLCScanResult(
+                self._results[label] = PLCScanResult(
                     plc_info=plc,
                     data_points=[],
                     denied_addresses=set(),
@@ -131,7 +133,7 @@ class ParallelPLCScanner:
                     end_time=datetime.now(),
                 )
             else:
-                self._results[plc.ip_address] = result
+                self._results[label] = result
         
         # Report completion
         successful = sum(1 for r in self._results.values() if r.success)

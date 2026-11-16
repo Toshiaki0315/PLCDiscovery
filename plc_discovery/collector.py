@@ -118,6 +118,39 @@ class PLCDataCollector:
             await self._handler.disconnect()
             self._handler = None
     
+    async def _ensure_link(self) -> bool:
+        """
+        Make sure the handler is connected before reading.
+        
+        A handler whose reconnect failed (PLC power-cycled, cable pulled)
+        stays disconnected; it is reconnected here on every collection so a
+        periodic scan recovers as soon as the PLC is reachable again.
+        """
+        if self._handler.is_connected:
+            return True
+        logger.info(f"Connection to {self.plc_info.ip_address} lost; reconnecting")
+        self._handler._needs_reconnect = True
+        if not await self._handler._ensure_fresh_connection():
+            return False
+        # The PLC is back: forget the failures from the outage so the circuit
+        # breaker and lost-link detection do not block the first reads
+        self._handler._comm_failure_streak = 0
+        self._handler.reset_circuit_breaker()
+        logger.info(f"Reconnected to {self.plc_info.ip_address}")
+        return True
+    
+    def _unreachable_points(self, device_range: DeviceRange) -> List[DataPoint]:
+        """NG_COMM_ERROR points for a range that could not be read (not learned)"""
+        logger.warning(
+            f"{self.plc_info.ip_address} unreachable: "
+            f"{device_range.device_type.value}{device_range.start_address}-"
+            f"{device_range.device_type.value}{device_range.end_address} reported as NG_COMM_ERROR"
+        )
+        return self._handler._failed_points(
+            device_range.device_type, device_range.start_address, device_range.end_address,
+            StatusCode.NG_COMM_ERROR, learn=False
+        )
+    
     async def collect_full_scan(self) -> List[DataPoint]:
         """
         Perform full scan of all default device ranges.
@@ -128,7 +161,7 @@ class PLCDataCollector:
         Returns:
             List of DataPoint objects
         """
-        if not self._handler or not self._handler.is_connected:
+        if not self._handler:
             logger.error("Not connected to PLC")
             return []
         
@@ -141,6 +174,13 @@ class PLCDataCollector:
         
         self._collected_data = []
         total_ranges = len(device_ranges)
+        
+        if not await self._ensure_link():
+            # Report every address as a communication error instead of
+            # returning nothing, so the output shows the PLC was unreachable
+            for device_range in device_ranges:
+                self._collected_data.extend(self._unreachable_points(device_range))
+            return self._collected_data
         
         self._report_progress(
             f"Starting full scan of {self.plc_info.ip_address}",
@@ -185,11 +225,16 @@ class PLCDataCollector:
         Returns:
             List of DataPoint objects
         """
-        if not self._handler or not self._handler.is_connected:
+        if not self._handler:
             logger.error("Not connected to PLC")
             return []
         
         device_range = DeviceRange(device_type, start_address, end_address)
+        
+        if not await self._ensure_link():
+            data_points = self._unreachable_points(device_range)
+            self._collected_data.extend(data_points)
+            return data_points
         
         self._report_progress(
             f"Reading {device_type.value}{start_address}-{device_type.value}{end_address}"

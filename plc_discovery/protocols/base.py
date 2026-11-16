@@ -448,7 +448,7 @@ class BaseProtocolHandler(ABC):
         if not self._needs_reconnect:
             return True
         self._needs_reconnect = False
-        logger.info(f"Reconnecting to {self.ip_address} after request timeout")
+        logger.info(f"Reconnecting to {self.ip_address}")
         try:
             await self.disconnect()
         except Exception as e:
