@@ -13,7 +13,7 @@ from typing import List, Optional, Tuple, Dict
 import logging
 
 from .base import BaseProtocolHandler
-from ..config import Protocol, DeviceType, StatusCode, PROTOCOL_PORTS
+from ..config import Protocol, DeviceType, StatusCode, PROTOCOL_PORTS, clean_device_text
 
 logger = logging.getLogger(__name__)
 
@@ -343,9 +343,9 @@ class EtherNetIPHandler(BaseProtocolHandler):
             plc_info = await loop.run_in_executor(None, _get_info)
             
             if plc_info:
-                info["manufacturer"] = plc_info.get('vendor', 'Unknown')
-                info["model"] = plc_info.get('product_name', 'Unknown')
-                info["firmware_version"] = plc_info.get('revision', 'Unknown')
+                info["manufacturer"] = clean_device_text(str(plc_info.get('vendor', 'Unknown')))
+                info["model"] = clean_device_text(str(plc_info.get('product_name', 'Unknown')))
+                info["firmware_version"] = clean_device_text(str(plc_info.get('revision', 'Unknown')))
                 
         except Exception as e:
             logger.debug(f"Failed to get PLC info: {e}")

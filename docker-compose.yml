@@ -49,18 +49,20 @@ services:
     container_name: plc-simulators
     # Ports used by simulators/run_all.py (non-privileged where the standard
     # port is < 1024): connect with e.g. --protocol modbus --port 1502
+    # Published on the host's loopback only, so the fake PLCs are not visible
+    # on the plant network (remove "127.0.0.1:" to expose them to other PCs)
     ports:
       # SLMP Simulator
-      - "5001:5001"
+      - "127.0.0.1:5001:5001"
       # Modbus/TCP Simulator (standard 502)
-      - "1502:1502"
+      - "127.0.0.1:1502:1502"
       # EtherNet/IP Simulator
-      - "44818:44818"
+      - "127.0.0.1:44818:44818"
       # S7 Simulator (standard 102)
-      - "1102:1102"
+      - "127.0.0.1:1102:1102"
       # FINS Simulator (UDP and TCP)
-      - "9600:9600/udp"
-      - "9600:9600/tcp"
+      - "127.0.0.1:9600:9600/udp"
+      - "127.0.0.1:9600:9600/tcp"
     environment:
       - TZ=Asia/Tokyo
     networks:

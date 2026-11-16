@@ -41,6 +41,7 @@ from plc_discovery.config import (
 from plc_discovery.data_types import ByteOrder
 from plc_discovery.discovery import PLCDiscovery, discover_plcs, merge_discovery_results
 from plc_discovery.output import DEFAULT_OUTPUT_DIR, CSVExporter
+from plc_discovery.utils import MAX_IP_RANGE_HOSTS, ip_range_error
 from plc_scanner import BYTE_ORDER_MAP, DATA_TYPE_MAP, apply_data_type_conversion
 
 APP_TITLE = "PLC Discovery - PLC自動探索・データ収集ツール"
@@ -562,6 +563,13 @@ class PLCScannerApp:
         ip_range = self.var_ip_range.get().strip() if self.var_scope.get() == "range" else None
         if self.var_scope.get() == "range" and not ip_range:
             messagebox.showwarning("入力エラー", "IP範囲を入力してください。")
+            return
+        if ip_range and ip_range_error(ip_range):
+            messagebox.showwarning(
+                "入力エラー",
+                f"IP範囲を確認してください。\n{ip_range_error(ip_range)}\n\n"
+                f"一度に探索できるのは最大 {MAX_IP_RANGE_HOSTS:,} 台（/16）までです。",
+            )
             return
         self.tree_plc.delete(*self.tree_plc.get_children())
         self.discovered = []

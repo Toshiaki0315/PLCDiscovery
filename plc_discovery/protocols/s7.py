@@ -13,7 +13,7 @@ from typing import List, Optional, Tuple, Dict
 import logging
 
 from .base import BaseProtocolHandler
-from ..config import Protocol, DeviceType, StatusCode, PROTOCOL_PORTS
+from ..config import Protocol, DeviceType, StatusCode, PROTOCOL_PORTS, clean_device_text
 
 logger = logging.getLogger(__name__)
 
@@ -291,10 +291,10 @@ class S7Handler(BaseProtocolHandler):
             cpu_info = await loop.run_in_executor(None, _get_info)
             
             if cpu_info:
-                info["model"] = cpu_info.ModuleTypeName.decode('utf-8', errors='ignore').strip()
-                info["cpu_type"] = cpu_info.ASName.decode('utf-8', errors='ignore').strip()
-                info["serial_number"] = cpu_info.SerialNumber.decode('utf-8', errors='ignore').strip()
-                info["order_code"] = cpu_info.OrderCode.decode('utf-8', errors='ignore').strip()
+                info["model"] = clean_device_text(cpu_info.ModuleTypeName.decode('utf-8', errors='ignore'))
+                info["cpu_type"] = clean_device_text(cpu_info.ASName.decode('utf-8', errors='ignore'))
+                info["serial_number"] = clean_device_text(cpu_info.SerialNumber.decode('utf-8', errors='ignore'))
+                info["order_code"] = clean_device_text(cpu_info.OrderCode.decode('utf-8', errors='ignore'))
                 
         except Exception as e:
             logger.debug(f"Failed to get CPU info: {e}")

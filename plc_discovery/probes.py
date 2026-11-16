@@ -17,7 +17,7 @@ import socket
 import struct
 from typing import Callable, Dict, Optional
 
-from .config import Protocol
+from .config import Protocol, clean_device_text
 
 logger = logging.getLogger(__name__)
 
@@ -158,7 +158,7 @@ def parse_eip_identity(reply: bytes) -> Optional[dict]:
             revision = f"{body[6]}.{body[7]}"
             serial = struct.unpack("<I", body[10:14])[0]
             name_len = body[14]
-            product_name = body[15:15 + name_len].decode("ascii", errors="replace").strip()
+            product_name = clean_device_text(body[15:15 + name_len].decode("ascii", errors="replace"))
             identity = {
                 "vendor_id": vendor_id,
                 "device_type": device_type,

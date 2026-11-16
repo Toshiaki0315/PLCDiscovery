@@ -13,7 +13,7 @@ from typing import List, Optional, Tuple
 import logging
 
 from .base import BaseProtocolHandler
-from ..config import Protocol, DeviceType, StatusCode, PROTOCOL_PORTS
+from ..config import Protocol, DeviceType, StatusCode, PROTOCOL_PORTS, clean_device_text
 
 logger = logging.getLogger(__name__)
 
@@ -255,9 +255,9 @@ class ModbusHandler(BaseProtocolHandler):
             if result and not result.isError():
                 if hasattr(result, 'information'):
                     info_data = result.information
-                    info["manufacturer"] = info_data.get(0x00, b"").decode('ascii', errors='ignore')
-                    info["product_code"] = info_data.get(0x01, b"").decode('ascii', errors='ignore')
-                    info["revision"] = info_data.get(0x02, b"").decode('ascii', errors='ignore')
+                    info["manufacturer"] = clean_device_text(info_data.get(0x00, b"").decode('ascii', errors='ignore'))
+                    info["product_code"] = clean_device_text(info_data.get(0x01, b"").decode('ascii', errors='ignore'))
+                    info["revision"] = clean_device_text(info_data.get(0x02, b"").decode('ascii', errors='ignore'))
             
         except Exception as e:
             logger.debug(f"Failed to read device identification: {e}")

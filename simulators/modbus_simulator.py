@@ -7,7 +7,7 @@ Supports Function Codes: 01 (Read Coils), 02 (Read Discrete Inputs),
 03 (Read Holding Registers), 04 (Read Input Registers)
 
 Usage:
-    python modbus_simulator.py [--host 0.0.0.0] [--port 502]
+    python modbus_simulator.py [--host 127.0.0.1] [--port 502]
 """
 
 import argparse
@@ -399,7 +399,8 @@ async def run_server(host: str, port: int, denied_ranges: List[Tuple[int, int]])
 
 def main():
     parser = argparse.ArgumentParser(description="Modbus/TCP PLC Simulator")
-    parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
+    parser.add_argument("--host", default="127.0.0.1",
+                        help="Host to bind to (default 127.0.0.1; 0.0.0.0 = all interfaces)")
     parser.add_argument("--port", type=int, default=502, help="Port to listen on")
     parser.add_argument("--denied", default="5000-5100,8000-8050",
                        help="Denied address ranges (e.g., '5000-5100,8000-8050')")

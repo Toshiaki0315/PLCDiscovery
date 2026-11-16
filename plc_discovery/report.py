@@ -154,10 +154,9 @@ class ReportGenerator:
     def _generate_html(self, data: ReportData) -> str:
         """HTML形式のレポートを生成"""
         theme_css = self._get_theme_css()
-        chart_js = self._get_chart_js(data) if self.config.include_charts else ""
         
         html_content = f"""<!DOCTYPE html>
-<html lang="{self.config.language}">
+<html lang="{html.escape(self.config.language)}">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -165,7 +164,6 @@ class ReportGenerator:
     <style>
 {theme_css}
     </style>
-    {self._get_chart_library() if self.config.include_charts else ""}
 </head>
 <body>
     <div class="container">
@@ -177,7 +175,6 @@ class ReportGenerator:
         {self._generate_errors_section(data)}
         {self._generate_footer()}
     </div>
-    {chart_js}
 </body>
 </html>"""
         return html_content
@@ -395,7 +392,6 @@ class ReportGenerator:
         .badge-info { background: #dbeafe; color: #1e40af; }
         
         .chart-container {
-            height: 300px;
             margin: 1rem 0;
         }
         
@@ -448,82 +444,14 @@ class ReportGenerator:
         """ライトテーマCSS"""
         return self._get_default_theme_css()
     
-    def _get_chart_library(self) -> str:
-        """Chart.js ライブラリを取得"""
-        return '<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>'
-    
-    def _get_chart_js(self, data: ReportData) -> str:
-        """チャート用JavaScriptを生成"""
-        # データ集計
-        success = data.summary.successful_reads
-        failed = data.summary.failed_reads
-        denied = data.summary.denied_addresses
-        
-        return f"""
-    <script>
-        // ステータス分布チャート
-        const statusCtx = document.getElementById('statusChart');
-        if (statusCtx) {{
-            new Chart(statusCtx, {{
-                type: 'doughnut',
-                data: {{
-                    labels: ['成功', '失敗', 'アクセス拒否'],
-                    datasets: [{{
-                        data: [{success}, {failed}, {denied}],
-                        backgroundColor: ['#22c55e', '#ef4444', '#f59e0b'],
-                        borderWidth: 0
-                    }}]
-                }},
-                options: {{
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: {{
-                        legend: {{
-                            position: 'bottom'
-                        }}
-                    }}
-                }}
-            }});
-        }}
-        
-        // PLC別データ件数チャート
-        const plcCtx = document.getElementById('plcChart');
-        if (plcCtx) {{
-            const plcData = {json.dumps({ip: len(points) for ip, points in data.data_points.items()})};
-            new Chart(plcCtx, {{
-                type: 'bar',
-                data: {{
-                    labels: Object.keys(plcData),
-                    datasets: [{{
-                        label: 'データポイント数',
-                        data: Object.values(plcData),
-                        backgroundColor: '#2563eb'
-                    }}]
-                }},
-                options: {{
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: {{
-                        legend: {{
-                            display: false
-                        }}
-                    }},
-                    scales: {{
-                        y: {{
-                            beginAtZero: true
-                        }}
-                    }}
-                }}
-            }});
-        }}
-    </script>
-        """
-    
     def _generate_header(self, data: ReportData) -> str:
         """ヘッダーセクションを生成"""
         logo_html = ""
         if self.config.logo_path and os.path.exists(self.config.logo_path):
-            logo_html = f'<img src="{self.config.logo_path}" alt="Logo" style="max-height: 60px; margin-bottom: 1rem;">'
+            logo_html = (
+                f'<img src="{html.escape(self.config.logo_path, quote=True)}" alt="Logo" '
+                'style="max-height: 60px; margin-bottom: 1rem;">'
+            )
         
         company_html = ""
         if self.config.company_name:
@@ -579,19 +507,34 @@ class ReportGenerator:
                 完了: {summary.completed_at.strftime("%Y-%m-%d %H:%M:%S") if summary.completed_at else "進行中"} | 
                 所要時間: {duration}
             </div>
-            {self._generate_charts_html() if self.config.include_charts else ""}
+            {self._generate_charts_html(data) if self.config.include_charts else ""}
         </section>
         """
     
-    def _generate_charts_html(self) -> str:
-        """チャートHTMLを生成"""
-        return """
+    def _generate_charts_html(self, data: ReportData) -> str:
+        """
+        チャートHTMLを生成（インラインSVG）
+        
+        The report contains the plant's PLC inventory, so it loads no
+        external scripts (previously Chart.js from a CDN, unpinned): the
+        charts are plain SVG, work offline and in PDF output.
+        """
+        summary = data.summary
+        status = [
+            ("成功", summary.successful_reads, "#22c55e"),
+            ("失敗", summary.failed_reads, "#ef4444"),
+            ("アクセス拒否", summary.denied_addresses, "#f59e0b"),
+        ]
+        per_plc = [(label, len(points)) for label, points in data.data_points.items()]
+        return f"""
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1rem;">
-            <div class="chart-container">
-                <canvas id="statusChart"></canvas>
+            <div class="chart-container" id="statusChart">
+                <h3 style="font-size: 0.95rem;">ステータス分布</h3>
+                {_svg_bar_chart(status)}
             </div>
-            <div class="chart-container">
-                <canvas id="plcChart"></canvas>
+            <div class="chart-container" id="plcChart">
+                <h3 style="font-size: 0.95rem;">PLC別データポイント数</h3>
+                {_svg_bar_chart([(label, count, "#2563eb") for label, count in per_plc[:20]])}
             </div>
         </div>
         """
@@ -743,6 +686,29 @@ class ReportGenerator:
             <p>© {datetime.now().year} All rights reserved.</p>
         </footer>
         """
+
+
+def _svg_bar_chart(bars: List[tuple]) -> str:
+    """Horizontal bar chart as inline SVG; bars = [(label, value, color), ...]"""
+    if not bars:
+        return '<p style="color: var(--text-secondary);">データなし</p>'
+    row_height, label_width, bar_width = 28, 180, 260
+    peak = max((value for _, value, _ in bars), default=0) or 1
+    rows = []
+    for i, (label, value, color) in enumerate(bars):
+        y = i * row_height
+        width = round(bar_width * value / peak)
+        rows.append(
+            f'<text x="0" y="{y + 18}" font-size="12" fill="currentColor">{html.escape(str(label))}</text>'
+            f'<rect x="{label_width}" y="{y + 6}" width="{width}" height="16" rx="3" fill="{color}"/>'
+            f'<text x="{label_width + width + 6}" y="{y + 18}" font-size="12" fill="currentColor">{value:,}</text>'
+        )
+    height = row_height * len(bars)
+    total_width = label_width + bar_width + 80
+    return (
+        f'<svg role="img" viewBox="0 0 {total_width} {height}" width="100%" '
+        f'style="max-height: {height}px;" xmlns="http://www.w3.org/2000/svg">{"".join(rows)}</svg>'
+    )
 
 
 def create_report(

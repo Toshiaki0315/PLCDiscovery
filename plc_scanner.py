@@ -48,7 +48,7 @@ from plc_discovery.discovery import (
 )
 from plc_discovery.collector import PLCDataCollector
 from plc_discovery.output import CSVExporter
-from plc_discovery.utils import parse_ip_range
+from plc_discovery.utils import ip_range_error, parse_ip_range
 from plc_discovery.config_loader import MIN_INTERVAL_SECONDS, ConfigLoader, generate_config_template
 from plc_discovery.audit_log import init_audit_logger, get_audit_logger, close_audit_logger
 from plc_discovery.parallel import ParallelPLCScanner, scan_plcs_parallel
@@ -1339,6 +1339,12 @@ async def main():
             ip_ranges = [args.ip_range] if args.ip_range else (
                 config_loader.get_ip_ranges() if config_loader else []
             )
+            range_errors = [e for e in map(ip_range_error, ip_ranges) if e]
+            if range_errors:
+                for error in range_errors:
+                    display.print_error(error)
+                exit_code = 1
+                sys.exit(1)
             discovered = await run_discovery(
                 ip_ranges, config, exporter, display, db_exporter,
                 resolve_discovery_protocols(args, config_loader),

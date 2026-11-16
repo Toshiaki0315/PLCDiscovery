@@ -77,6 +77,8 @@ COPY plc_discovery/ ./plc_discovery/
 # Simulator ports (see simulators/run_all.py): SLMP, Modbus, EtherNet/IP, S7, FINS
 EXPOSE 5001 1502 44818 1102 9600/tcp 9600/udp
 
-CMD ["python", "simulators/run_all.py"]
+# Inside the container the simulators must listen on all interfaces;
+# docker-compose publishes them on the host's loopback only
+CMD ["python", "simulators/run_all.py", "--host", "0.0.0.0"]
 
 

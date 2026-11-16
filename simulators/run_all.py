@@ -5,7 +5,7 @@ PLC Simulator Launcher
 Starts all PLC simulators for comprehensive testing of the PLC Discovery tool.
 
 Usage:
-    python run_all.py [--host 0.0.0.0]
+    python run_all.py [--host 127.0.0.1]
 
 This will start:
     - SLMP Simulator on port 5001
@@ -46,7 +46,7 @@ except ImportError:
 class SimulatorManager:
     """Manages all PLC simulators"""
     
-    def __init__(self, host: str = "0.0.0.0"):
+    def __init__(self, host: str = "127.0.0.1"):
         self.host = host
         self.servers = []
         
@@ -205,7 +205,8 @@ async def main(host: str):
 
 def run():
     parser = argparse.ArgumentParser(description="PLC Simulator Launcher")
-    parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
+    parser.add_argument("--host", default="127.0.0.1",
+                        help="Host to bind to (default 127.0.0.1; 0.0.0.0 = all interfaces)")
     args = parser.parse_args()
     
     try:

@@ -14,7 +14,7 @@ FINS/TCP framing (Omron W342):
               3 = FINS frame send error notification
 
 Usage:
-    python fins_simulator.py [--port 9600] [--host 0.0.0.0] [--transport both|udp|tcp]
+    python fins_simulator.py [--port 9600] [--host 127.0.0.1] [--transport both|udp|tcp]
 """
 
 import asyncio
@@ -62,7 +62,7 @@ INACCESSIBLE_RANGES = [
 class FINSSimulator:
     """Simulates an Omron PLC with FINS protocol"""
     
-    def __init__(self, host: str = "0.0.0.0", port: int = 9600):
+    def __init__(self, host: str = "127.0.0.1", port: int = 9600):
         self.host = host
         self.port = port
         self._running = False
@@ -403,8 +403,8 @@ def main():
     )
     parser.add_argument(
         "--host",
-        default="0.0.0.0",
-        help="Host to bind (default: 0.0.0.0)"
+        default="127.0.0.1",
+        help="Host to bind (default: 127.0.0.1; 0.0.0.0 = all interfaces)"
     )
     parser.add_argument(
         "--port",

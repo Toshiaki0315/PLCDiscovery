@@ -272,5 +272,5 @@ def test_docker_compose_ports_match_run_all():
     run_all = (ROOT / "simulators" / "run_all.py").read_text(encoding="utf-8")
     for port in ("5001", "1502", "44818", "1102"):
         assert f"self.host, {port}" in run_all
-        assert f'"{port}:{port}"' in compose
-    assert '"9600:9600/udp"' in compose and '"9600:9600/tcp"' in compose
+        assert f'"127.0.0.1:{port}:{port}"' in compose
+    assert '"127.0.0.1:9600:9600/udp"' in compose and '"127.0.0.1:9600:9600/tcp"' in compose

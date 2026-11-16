@@ -26,6 +26,7 @@ from .config import (
     Protocol, DeviceType, DeviceRange, NetworkConfig, PLCInfo, ScanMode
 )
 from .data_types import DataType, ByteOrder, DataTypeManager, DataTypeMapping
+from .utils import ip_range_error
 
 
 # Default configuration template
@@ -452,6 +453,12 @@ class ConfigLoader:
                         errors.append(
                             f"targets[{i}].options.{key} must be an integer {low}-{high}, got {value!r}"
                         )
+        
+        # Validate discovery IP ranges (syntax and size)
+        for i, ip_range in enumerate(self.config.get("discovery", {}).get("ip_ranges", []) or []):
+            error = ip_range_error(str(ip_range))
+            if error:
+                errors.append(f"discovery.ip_ranges[{i}]: {error}")
         
         # Validate discovery protocol filter
         for name in self.config.get("discovery", {}).get("protocols", []) or []:

@@ -10,6 +10,7 @@ import time
 from typing import Optional, List, Dict, Any
 from contextlib import contextmanager
 import logging
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,21 @@ try:
 except ImportError:
     RICH_AVAILABLE = False
     logger.debug("Rich library not available, using simple progress display")
+
+
+# Control characters except newline/tab: messages and table cells can contain
+# device-reported text, whose escape sequences must not reach the terminal
+_TERMINAL_UNSAFE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+
+
+def _safe(value: Any) -> str:
+    """Text safe to print on a terminal (no control characters)"""
+    return _TERMINAL_UNSAFE.sub("", "" if value is None else str(value))
+
+
+def _cell(value: Any) -> "Text":
+    """Table cell shown literally: no Rich markup, no control characters"""
+    return Text(_safe(value))
 
 
 class SimpleProgress:
@@ -112,9 +128,9 @@ class RichProgressDisplay:
     def print(self, message: str, style: str = ""):
         """Print message"""
         if self.console:
-            self.console.print(message, style=style)
+            self.console.print(_safe(message), style=style, markup=False)
         else:
-            print(message)
+            print(_safe(message))
     
     def print_header(self):
         """Print application header"""
@@ -146,18 +162,18 @@ class RichProgressDisplay:
             
             for plc in plcs:
                 table.add_row(
-                    plc.get("ip_address", ""),
-                    plc.get("protocol", ""),
-                    plc.get("manufacturer", "Unknown"),
-                    plc.get("model", "Unknown"),
-                    str(plc.get("port", "")),
+                    _cell(plc.get("ip_address", "")),
+                    _cell(plc.get("protocol", "")),
+                    _cell(plc.get("manufacturer", "Unknown")),
+                    _cell(plc.get("model", "Unknown")),
+                    _cell(plc.get("port", "")),
                 )
             
             self.console.print(table)
         else:
             print(f"\nDiscovered {len(plcs)} PLCs:")
             for plc in plcs:
-                print(f"  {plc.get('ip_address')}: {plc.get('protocol')} - {plc.get('manufacturer', 'Unknown')}")
+                print(_safe(f"  {plc.get('ip_address')}: {plc.get('protocol')} - {plc.get('manufacturer', 'Unknown')}"))
     
     def print_scan_results(self, results: Dict[str, Any]):
         """Print scan results"""
@@ -177,7 +193,7 @@ class RichProgressDisplay:
                 status_style = "green" if result.get("success") else "red"
                 
                 table.add_row(
-                    ip,
+                    _cell(ip),
                     Text(status, style=status_style),
                     str(stats.get("total_points", 0)),
                     str(stats.get("success_count", 0)),
@@ -203,7 +219,7 @@ class RichProgressDisplay:
             for key, value in stats.items():
                 # Format key
                 formatted_key = key.replace("_", " ").title()
-                table.add_row(formatted_key, str(value))
+                table.add_row(_cell(formatted_key), _cell(value))
             
             self.console.print(table)
         else:
@@ -251,9 +267,9 @@ class RichProgressDisplay:
             label = ""          # "[ERROR]" already says it
         prefix = f"{marker} {label}".rstrip()
         if self.console:
-            self.console.print(f"[{style}]{escape(prefix)}[/{style}] {escape(message)}")
+            self.console.print(f"[{style}]{escape(prefix)}[/{style}] {escape(_safe(message))}")
         else:
-            print(f"{prefix} {message}")
+            print(f"{prefix} {_safe(message)}")
     
     def print_error(self, message: str):
         """Print error message"""

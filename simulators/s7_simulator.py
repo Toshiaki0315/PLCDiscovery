@@ -6,7 +6,7 @@ Simulates a Siemens S7 PLC for testing PLC Discovery tool.
 Implements basic S7comm protocol for data block and memory access.
 
 Usage:
-    python s7_simulator.py [--host 0.0.0.0] [--port 102]
+    python s7_simulator.py [--host 127.0.0.1] [--port 102]
 """
 
 import argparse
@@ -398,7 +398,8 @@ async def run_server(host: str, port: int, denied_ranges: List[Tuple[int, int]])
 
 def main():
     parser = argparse.ArgumentParser(description="Siemens S7 PLC Simulator")
-    parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
+    parser.add_argument("--host", default="127.0.0.1",
+                        help="Host to bind to (default 127.0.0.1; 0.0.0.0 = all interfaces)")
     parser.add_argument("--port", type=int, default=102, help="Port to listen on")
     parser.add_argument("--denied", default="500-550",
                        help="Denied address ranges")

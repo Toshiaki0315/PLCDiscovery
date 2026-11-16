@@ -6,7 +6,7 @@ Simulates an EtherNet/IP device for testing PLC Discovery tool.
 Implements basic CIP Identity Object and simple data access.
 
 Usage:
-    python ethernet_ip_simulator.py [--host 0.0.0.0] [--port 44818]
+    python ethernet_ip_simulator.py [--host 127.0.0.1] [--port 44818]
 """
 
 import argparse
@@ -349,7 +349,8 @@ async def run_server(host: str, port: int, denied_ranges: List[Tuple[int, int]])
 
 def main():
     parser = argparse.ArgumentParser(description="EtherNet/IP PLC Simulator")
-    parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
+    parser.add_argument("--host", default="127.0.0.1",
+                        help="Host to bind to (default 127.0.0.1; 0.0.0.0 = all interfaces)")
     parser.add_argument("--port", type=int, default=44818, help="Port to listen on")
     parser.add_argument("--denied", default="100-150",
                        help="Denied address ranges")

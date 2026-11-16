@@ -202,30 +202,28 @@ def get_subnet_hosts(ip: str, netmask: str) -> Generator[str, None, None]:
         yield str(host)
 
 
-def parse_ip_range(ip_range: str) -> List[str]:
+# Largest user-specified range (a /16). A typo such as "/8" for "/24" would
+# otherwise probe ~16.7 million hosts across the plant network and build a
+# list of that size in memory.
+MAX_IP_RANGE_HOSTS = 65536
+
+
+def _ip_range_hosts(ip_range: str):
     """
-    Parse IP range specification and return list of IPs
+    Hosts of an IP range specification as an iterable plus its size.
     
-    Supports:
-    - CIDR notation: "192.168.1.0/24"
-    - Last-octet range: "192.168.1.1-254"
-    - Full range: "192.168.1.10-192.168.1.20"
-    - Single IP: "192.168.1.10"
-    
-    Invalid specifications are logged and return an empty list.
+    Raises:
+        ValueError: invalid specification
     """
     ip_range = (ip_range or "").strip()
-    
-    # CIDR notation
     if "/" in ip_range:
         try:
             network = ipaddress.IPv4Network(ip_range, strict=False)
-            return [str(host) for host in network.hosts()]
         except ValueError as e:
-            logger.error(f"Invalid CIDR notation: {ip_range} - {e}")
-            return []
+            raise ValueError(f"Invalid CIDR notation: {ip_range} - {e}") from None
+        size = network.num_addresses - 2 if network.prefixlen < 31 else network.num_addresses
+        return (str(host) for host in network.hosts()), size
     
-    # Hyphen notation
     if "-" in ip_range:
         try:
             first, last = (p.strip() for p in ip_range.split("-", 1))
@@ -239,18 +237,51 @@ def parse_ip_range(ip_range: str) -> List[str]:
                 end = ipaddress.IPv4Address(int(start) & 0xFFFFFF00 | octet)
             if int(end) < int(start):
                 raise ValueError("end address is lower than start address")
-            return [str(ipaddress.IPv4Address(i)) for i in range(int(start), int(end) + 1)]
         except ValueError as e:
-            logger.error(f"Invalid hyphen notation: {ip_range} - {e}")
-            return []
+            raise ValueError(f"Invalid hyphen notation: {ip_range} - {e}") from None
+        return (str(ipaddress.IPv4Address(i)) for i in range(int(start), int(end) + 1)), \
+            int(end) - int(start) + 1
     
-    # Single IP
     try:
         ipaddress.IPv4Address(ip_range)
-        return [ip_range]
     except ValueError as e:
-        logger.error(f"Invalid IP address: {ip_range} - {e}")
+        raise ValueError(f"Invalid IP address: {ip_range} - {e}") from None
+    return iter([ip_range]), 1
+
+
+def ip_range_error(ip_range: str) -> Optional[str]:
+    """Why an IP range cannot be scanned (invalid or too large), or None"""
+    try:
+        _, size = _ip_range_hosts(ip_range)
+    except ValueError as e:
+        return str(e)
+    if size > MAX_IP_RANGE_HOSTS:
+        return (
+            f"IP range {ip_range.strip()} has {size:,} hosts; at most {MAX_IP_RANGE_HOSTS:,} "
+            f"(a /16) can be scanned at once. Specify the PLC subnet, e.g. a /24."
+        )
+    return None
+
+
+def parse_ip_range(ip_range: str) -> List[str]:
+    """
+    Parse IP range specification and return list of IPs
+    
+    Supports:
+    - CIDR notation: "192.168.1.0/24"
+    - Last-octet range: "192.168.1.1-254"
+    - Full range: "192.168.1.10-192.168.1.20"
+    - Single IP: "192.168.1.10"
+    
+    Invalid specifications and ranges larger than MAX_IP_RANGE_HOSTS are
+    logged and return an empty list.
+    """
+    error = ip_range_error(ip_range)
+    if error:
+        logger.error(error)
         return []
+    hosts, _ = _ip_range_hosts(ip_range)
+    return list(hosts)
 
 
 def get_manufacturer_from_mac(mac_address: str) -> Optional[str]:

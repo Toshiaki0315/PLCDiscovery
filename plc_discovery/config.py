@@ -25,6 +25,7 @@ Example:
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum, auto
@@ -255,6 +256,23 @@ class DeviceRange:
         return self.end_address - self.start_address + 1
 
 
+# C0/C1 control characters (ESC, BEL, CSI, ...). Text reported by devices
+# (EtherNet/IP product names, Modbus identification, S7 module names) is
+# untrusted: escape sequences in it would drive the operator's terminal.
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
+def clean_device_text(value: Any) -> Any:
+    """Remove control characters from device-reported text (None/non-str unchanged)"""
+    if not isinstance(value, str):
+        return value
+    return _CONTROL_CHARS.sub("", value).strip()
+
+
+# PLCInfo fields that can hold text reported by the device
+_DEVICE_TEXT_FIELDS = frozenset({"mac_address", "manufacturer", "model", "cpu_type", "firmware_version"})
+
+
 @dataclass
 class PLCInfo:
     """
@@ -290,6 +308,13 @@ class PLCInfo:
     # Protocol-specific handler options (e.g. FINS node numbers, S7 rack/slot);
     # passed to the protocol handler, not exported
     options: Dict[str, Any] = field(default_factory=dict)
+    
+    def __setattr__(self, name: str, value: Any) -> None:
+        # Device-reported text never carries control characters, however
+        # it is set (constructor, discovery, merge, database)
+        if name in _DEVICE_TEXT_FIELDS:
+            value = clean_device_text(value)
+        super().__setattr__(name, value)
     
     def to_dict(self) -> Dict[str, Any]:
         """
