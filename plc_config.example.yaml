@@ -208,10 +208,12 @@ notifications:
       - scan_error
       - discovery_complete
   
-  # Microsoft Teams notification
+  # Microsoft Teams notification: the webhook URL of a Teams workflow
+  # ("Post to a channel when a webhook request is received"; the old
+  # Office 365 connector URLs are retired)
   - name: teams_alerts
     type: teams
-    url: "https://outlook.office.com/webhook/YOUR/WEBHOOK/URL"
+    url: "https://YOUR-WORKFLOW-WEBHOOK-URL"
     enabled: false
     events:
       - scan_complete

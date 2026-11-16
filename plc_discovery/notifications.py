@@ -97,6 +97,16 @@ class NotificationConfig:
     handler: Optional[Callable] = None
 
 
+def _is_success(status: int) -> bool:
+    """
+    Any 2xx answer means the message was accepted. Teams webhooks created
+    with Power Automate workflows (which replace the retired Office 365
+    connectors) answer 202: checking for 200 only made every message be
+    re-sent retry_count times and logged as failed.
+    """
+    return 200 <= status < 300
+
+
 def _urlopen_status(req, timeout: float) -> int:
     """Blocking urllib POST; run via asyncio.to_thread so the event loop
     (and any PLC communication on it) is not blocked"""
@@ -246,7 +256,7 @@ class SlackHandler(NotificationHandler):
                             json=payload,
                             timeout=aiohttp.ClientTimeout(total=self.config.timeout_seconds)
                         ) as response:
-                            if response.status == 200:
+                            if _is_success(response.status):
                                 return True
                             else:
                                 logger.warning(f"Slack webhook failed: {response.status}")
@@ -259,7 +269,7 @@ class SlackHandler(NotificationHandler):
                         method='POST'
                     )
                     status = await asyncio.to_thread(_urlopen_status, req, self.config.timeout_seconds)
-                    if status == 200:
+                    if _is_success(status):
                         return True
                             
             except Exception as e:
@@ -326,8 +336,9 @@ class TeamsHandler(NotificationHandler):
                             json=payload,
                             timeout=aiohttp.ClientTimeout(total=self.config.timeout_seconds)
                         ) as response:
-                            if response.status == 200:
+                            if _is_success(response.status):
                                 return True
+                            logger.warning(f"Teams webhook failed: {response.status}")
                 else:
                     import urllib.request
                     req = urllib.request.Request(
@@ -337,7 +348,7 @@ class TeamsHandler(NotificationHandler):
                         method='POST'
                     )
                     status = await asyncio.to_thread(_urlopen_status, req, self.config.timeout_seconds)
-                    if status == 200:
+                    if _is_success(status):
                         return True
                             
             except Exception as e:

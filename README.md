@@ -607,11 +607,13 @@ notifications:
       - scan_error
       - discovery_complete
   
-  # Microsoft Teams通知
+  # Microsoft Teams通知（Teams のワークフロー「Webhook 要求を受信したらチャネルに投稿する」の URL）
   - name: teams_alerts
     type: teams
-    url: "https://outlook.office.com/webhook/YOUR/URL"
+    url: "https://YOUR-WORKFLOW-WEBHOOK-URL"
 ```
+
+Teams の従来の Incoming Webhook（`outlook.office.com/webhook/...`）は廃止が進んでいます。新しく設定する場合は、Teams のワークフローで発行した Webhook の URL を指定してください。
 
 ### Pythonコードでの通知
 

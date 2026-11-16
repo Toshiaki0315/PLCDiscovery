@@ -488,7 +488,9 @@ class PLCDiscovery:
                 client = ModbusTcpClient(
                     plc_info.ip_address, 
                     port=plc_info.port or 502,
-                    timeout=self.config.request_timeout_ms / 1000,
+                    # Discovery timeout (1 s by default), not the 5 s read
+                    # timeout: devices that ignore FC43 must not stall a scan
+                    timeout=self.config.discovery_timeout_ms / 1000,
                     retries=0,
                 )
                 
@@ -535,24 +537,37 @@ class PLCDiscovery:
             
             def _query():
                 client = snap7.client.Client()
-                client.connect(plc_info.ip_address, 0, 0, plc_info.port or 102)
+                # S7-1200/1500 use slot 0, S7-300/400 slot 2 (as S7Handler)
+                try:
+                    client.connect(plc_info.ip_address, 0, 0, plc_info.port or 102)
+                except Exception:
+                    client.connect(plc_info.ip_address, 0, 2, plc_info.port or 102)
                 
+                # Fields are returned, not set here: after a timeout this
+                # thread may still finish and must not change the result
+                fields = {"manufacturer": "シーメンス", "model": "S7 PLC"}
                 try:
                     # Get CPU info
                     info = client.get_cpu_info()
-                    plc_info.manufacturer = "シーメンス"
-                    plc_info.model = info.ModuleTypeName.decode('utf-8', errors='ignore').strip()
-                    plc_info.cpu_type = info.ASName.decode('utf-8', errors='ignore').strip()
+                    fields["model"] = info.ModuleTypeName.decode('utf-8', errors='ignore').strip()
+                    fields["cpu_type"] = info.ASName.decode('utf-8', errors='ignore').strip()
                 except Exception:
-                    plc_info.manufacturer = "シーメンス"
-                    plc_info.model = "S7 PLC"
+                    pass
                 finally:
                     client.disconnect()
-                
-                return plc_info
+                return fields
             
             loop = asyncio.get_running_loop()
-            return await loop.run_in_executor(None, _query)
+            # snap7 has no overall timeout: bound the identity query (two
+            # connect attempts and one SZL read) so a slow host cannot stall
+            # discovery; the protocol itself is already verified by the probe
+            fields = await asyncio.wait_for(
+                loop.run_in_executor(None, _query),
+                timeout=3 * self.config.discovery_timeout_ms / 1000,
+            )
+            for name, value in fields.items():
+                setattr(plc_info, name, value or getattr(plc_info, name))
+            return plc_info
         
         except ImportError:
             logger.debug("snap7 not available")
