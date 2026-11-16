@@ -15,6 +15,7 @@ import html
 import math
 
 from .config import PLCInfo, DataPoint, StatusCode
+from .utils import sorted_addresses
 
 
 def json_safe(value):
@@ -637,6 +638,7 @@ class ReportGenerator:
         
         sections = ""
         for ip, addresses in data.denied_addresses.items():
+            addresses = sorted_addresses(addresses)
             addr_list = ", ".join(addresses[:50])
             remaining = len(addresses) - 50
             if remaining > 0:

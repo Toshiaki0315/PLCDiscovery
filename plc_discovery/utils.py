@@ -382,6 +382,22 @@ def hex_to_value(hex_str: str) -> int:
     return int(hex_str, 16)
 
 
+_ADDRESS_PARTS = re.compile(r"([A-Za-z]*)(\d+)")
+
+
+def address_sort_key(address: str) -> tuple:
+    """Sort key ordering addresses by device, then number ("D17" < "D5000" < "M0")"""
+    match = _ADDRESS_PARTS.fullmatch(address or "")
+    if not match:
+        return ("~", 0, address or "")   # unparseable addresses last
+    return (match.group(1).upper(), int(match.group(2)), "")
+
+
+def sorted_addresses(addresses) -> List[str]:
+    """Addresses sorted by device and number"""
+    return sorted(addresses, key=address_sort_key)
+
+
 def get_timestamp() -> str:
     """Get current timestamp string"""
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]

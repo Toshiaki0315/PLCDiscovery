@@ -144,3 +144,86 @@ def test_cleanup_script_rejects_bad_days(tmp_path, days):
     else:
         assert result.returncode == 1
         assert "positive integer" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Second pass: S7 address limit, Docker output path, sorted denied addresses
+# ---------------------------------------------------------------------------
+
+from plc_discovery.protocols.s7 import S7Handler
+from plc_discovery.report import ReportGenerator, create_report
+from plc_discovery.utils import address_sort_key, sorted_addresses
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("start,count,expected", [
+    (0xFFFFF, 1, None),                      # last encodable word: sent
+    (1_048_581, 1, StatusCode.NG_ILLEGAL_ADDR),   # wrapped to DBW10 before
+    (0xFFFF0, 32, StatusCode.NG_ILLEGAL_ADDR),
+])
+async def test_s7_address_limit(fast_config, start, count, expected):
+    handler = _connected(S7Handler("192.168.0.10", config=fast_config))
+    handler.read_device_raw = AsyncMock(return_value=([0] * count, StatusCode.OK))
+    data, status = await handler._tracked_read(DeviceType.DB, start, count)
+    if expected is None:
+        assert status == StatusCode.OK
+        handler.read_device_raw.assert_called_once()
+    else:
+        assert (data, status) == (None, expected)
+        handler.read_device_raw.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_s7_wrapped_address_not_read_from_simulator(fast_config):
+    pytest.importorskip("snap7")
+    from simulators.s7_simulator import COTPProtocol, S7Device
+
+    seen = []
+    device = S7Device()
+    original = device.read_db
+    device.read_db = lambda db, start, size: (seen.append(start), original(db, start, size))[1]
+
+    import asyncio
+    loop = asyncio.get_running_loop()
+    server = await loop.create_server(lambda: COTPProtocol(device), "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    handler = S7Handler("127.0.0.1", port=port, config=fast_config)
+    try:
+        assert await handler.connect()
+        points = await handler.read_device_range(DeviceRange(DeviceType.DB, 1_048_581, 1_048_581))
+        assert [p.status for p in points] == [StatusCode.NG_ILLEGAL_ADDR]
+        assert seen == []   # nothing reached the PLC
+    finally:
+        await handler.disconnect()
+        server.close()
+        await server.wait_closed()
+
+
+def test_docker_default_output_is_the_mounted_directory():
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    production = dockerfile.split("FROM base as production", 1)[1].split("FROM base as", 1)[0]
+    assert "ln -s /app/output /app/plc_scan_results" in production
+    assert plc_scanner_default_output() == "./plc_scan_results"
+    compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    assert "./plc_scan_results:/app/output" in compose
+
+
+def plc_scanner_default_output():
+    from plc_discovery.output import DEFAULT_OUTPUT_DIR
+    return DEFAULT_OUTPUT_DIR
+
+
+def test_addresses_sorted_by_device_and_number():
+    assert sorted_addresses({"D5003", "D17", "M0", "D5000", "DM2", "x?"}) == [
+        "D17", "D5000", "D5003", "DM2", "M0", "x?"
+    ]
+    assert address_sort_key("D9") < address_sort_key("D10")
+
+
+def test_report_lists_denied_addresses_in_order():
+    generator, data = create_report(
+        plcs=[], data_points={},
+        denied_addresses={"10.0.0.1": ["D5003", "D17", "D5000"]},
+    )
+    html_text = generator._generate_denied_section(data)
+    assert "D17, D5000, D5003" in html_text

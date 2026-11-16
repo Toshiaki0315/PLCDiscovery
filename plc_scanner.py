@@ -48,7 +48,7 @@ from plc_discovery.discovery import (
 )
 from plc_discovery.collector import PLCDataCollector
 from plc_discovery.output import DEFAULT_OUTPUT_DIR, CSVExporter
-from plc_discovery.utils import ip_range_error, parse_ip_range
+from plc_discovery.utils import ip_range_error, parse_ip_range, sorted_addresses
 from plc_discovery.config_loader import (
     MIN_INTERVAL_SECONDS, NETWORK_MINIMUMS, ConfigLoader, generate_config_template, integer_error
 )
@@ -1470,7 +1470,7 @@ async def main():
                     if outcome.data_points:
                         all_data_points[outcome.label] = outcome.data_points
                     if outcome.denied_addresses:
-                        all_denied_addresses[outcome.label] = list(outcome.denied_addresses)
+                        all_denied_addresses[outcome.label] = sorted_addresses(outcome.denied_addresses)
                     interrupted = interrupted or outcome.interrupted
             elif len(plc_infos) > 1 and config.max_concurrent > 1:
                 results = await run_parallel_scan(
@@ -1485,7 +1485,7 @@ async def main():
                     if result.data_points:
                         all_data_points[label] = result.data_points
                     if result.denied_addresses:
-                        all_denied_addresses[label] = list(result.denied_addresses)
+                        all_denied_addresses[label] = sorted_addresses(result.denied_addresses)
             else:
                 # Single or sequential scan
                 for label, plc_info in zip(target_labels(plc_infos), plc_infos):
@@ -1500,7 +1500,7 @@ async def main():
                     if outcome.data_points:
                         all_data_points[label] = outcome.data_points
                     if outcome.denied_addresses:
-                        all_denied_addresses[label] = list(outcome.denied_addresses)
+                        all_denied_addresses[label] = sorted_addresses(outcome.denied_addresses)
         
         scan_end_time = datetime.now()
         if mode_name != "discover":

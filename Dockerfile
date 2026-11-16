@@ -41,8 +41,10 @@ COPY plc_scanner.py .
 COPY plc_config.example.yaml .
 COPY type_mapping.example.json .
 
-# Create output directory
-RUN mkdir -p /app/output
+# Output directory. The default output path ./plc_scan_results points to
+# /app/output, the directory mounted in README / docker-compose (results
+# were otherwise written inside the container and lost with --rm)
+RUN mkdir -p /app/output && ln -s /app/output /app/plc_scan_results
 
 # Default command
 ENTRYPOINT ["python", "plc_scanner.py"]

@@ -43,6 +43,9 @@ class S7Handler(BaseProtocolHandler):
     """
     
     protocol = Protocol.S7
+    # snap7 sends the start as a bit address in 3 bytes: byte offsets above
+    # 0x1FFFFF wrap around (word 1048581 read DB1.DBW10). Word index limit:
+    MAX_ADDRESS = 0xFFFFF
     
     def __init__(
         self,
