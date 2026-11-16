@@ -13,6 +13,7 @@ from typing import Dict, List, Optional, Tuple, Callable
 import logging
 
 from .config import Protocol, PLCInfo, NetworkConfig, PROTOCOL_PORTS
+from .probes import parse_eip_identity
 from .utils import get_local_networks, get_manufacturer_from_mac
 
 logger = logging.getLogger(__name__)
@@ -64,7 +65,8 @@ class BroadcastDiscovery:
     
     def __init__(self, config: Optional[NetworkConfig] = None):
         self.config = config or NetworkConfig()
-        self.discovered_plcs: Dict[str, PLCInfo] = {}
+        # Keyed by (ip, protocol, port), like PLCDiscovery
+        self.discovered_plcs: Dict[tuple, PLCInfo] = {}
         self._progress_callback: Optional[Callable[[str, int, int], None]] = None
     
     def set_progress_callback(self, callback: Callable[[str, int, int], None]):
@@ -101,7 +103,7 @@ class BroadcastDiscovery:
             plc = self._parse_slmp_response(ip, response)
             if plc:
                 plcs.append(plc)
-                self.discovered_plcs[ip] = plc
+                self.discovered_plcs[(ip, plc.protocol, plc.port)] = plc
         
         logger.info(f"SLMP broadcast: found {len(plcs)} devices")
         return plcs
@@ -128,7 +130,7 @@ class BroadcastDiscovery:
             plc = self._parse_eip_response(ip, response)
             if plc:
                 plcs.append(plc)
-                self.discovered_plcs[ip] = plc
+                self.discovered_plcs[(ip, plc.protocol, plc.port)] = plc
         
         logger.info(f"EtherNet/IP broadcast: found {len(plcs)} devices")
         return plcs
@@ -156,11 +158,11 @@ class BroadcastDiscovery:
             elif isinstance(result, Exception):
                 logger.warning(f"Broadcast discovery error: {result}")
         
-        # Deduplicate by IP
+        # One entry per IP, protocol and port: a device answering both
+        # SLMP and EtherNet/IP (e.g. Keyence KV) is listed for each
         unique_plcs = {}
         for plc in all_plcs:
-            if plc.ip_address not in unique_plcs:
-                unique_plcs[plc.ip_address] = plc
+            unique_plcs.setdefault((plc.ip_address, plc.protocol, plc.port), plc)
         
         logger.info(f"Total broadcast discovery: {len(unique_plcs)} unique devices")
         return list(unique_plcs.values())
@@ -285,8 +287,6 @@ class BroadcastDiscovery:
             if command != EIP_LIST_IDENTITY_CMD:
                 return None
             
-            length = struct.unpack("<H", data[2:4])[0]
-            
             # Parse identity data
             plc = PLCInfo(
                 ip_address=ip,
@@ -294,36 +294,12 @@ class BroadcastDiscovery:
                 port=EIP_DISCOVERY_PORT,
             )
             
-            # Try to extract more info from response
-            if length > 0 and len(data) > 26:
-                # Skip to identity item
-                offset = 24
-                if offset + 2 <= len(data):
-                    item_count = struct.unpack("<H", data[offset:offset+2])[0]
-                    offset += 2
-                    
-                    if item_count > 0 and offset + 4 <= len(data):
-                        type_id = struct.unpack("<H", data[offset:offset+2])[0]
-                        item_length = struct.unpack("<H", data[offset+2:offset+4])[0]
-                        offset += 4
-                        
-                        if type_id == 0x000C and offset + item_length <= len(data):
-                            # Identity item
-                            # Skip protocol version (2) and socket address (16)
-                            id_offset = offset + 2 + 16
-                            
-                            if id_offset + 8 <= len(data):
-                                vendor_id = struct.unpack("<H", data[id_offset:id_offset+2])[0]
-                                device_type = struct.unpack("<H", data[id_offset+2:id_offset+4])[0]
-                                
-                                # Map vendor ID to manufacturer
-                                vendors = {
-                                    0x0001: "ロックウェル",
-                                    0x0002: "オムロン",
-                                    0x0119: "キーエンス",
-                                }
-                                plc.manufacturer = vendors.get(vendor_id, f"Vendor {vendor_id}")
-            
+            # Vendor and product name from the CIP identity item (same
+            # parser as the TCP identity query, vendor names from pycomm3)
+            identity = parse_eip_identity(data)
+            if identity:
+                plc.manufacturer = identity.get("vendor") or f"Vendor {identity['vendor_id']}"
+                plc.model = identity.get("product_name") or None
             return plc
         
         except Exception as e:

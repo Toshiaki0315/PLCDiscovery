@@ -54,6 +54,32 @@ def plc_key(plc: PLCInfo) -> tuple:
     return (plc.ip_address, plc.protocol, plc.port)
 
 
+# Descriptive fields filled from a second source when the first lacks them
+_MERGED_FIELDS = ("mac_address", "manufacturer", "model", "cpu_type", "firmware_version")
+
+
+def merge_discovery_results(primary: List[PLCInfo], extra: List[PLCInfo]) -> List[PLCInfo]:
+    """
+    Combine two discovery result lists into one entry per plc_key.
+    
+    Entries of ``primary`` (e.g. the TCP scan, which verified the protocol
+    and read the device identity) are kept and only have empty fields filled
+    from ``extra`` (e.g. UDP broadcast replies); entries found only in
+    ``extra`` are appended.
+    """
+    merged: Dict[tuple, PLCInfo] = {}
+    for plc in list(primary) + list(extra):
+        key = plc_key(plc)
+        known = merged.get(key)
+        if known is None:
+            merged[key] = plc
+            continue
+        for field in _MERGED_FIELDS:
+            if not getattr(known, field, None) and getattr(plc, field, None):
+                setattr(known, field, getattr(plc, field))
+    return list(merged.values())
+
+
 def target_labels(plcs: List[PLCInfo]) -> List[str]:
     """
     Name for each scan target, used as its key in results and reports.

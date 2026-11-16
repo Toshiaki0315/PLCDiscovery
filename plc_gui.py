@@ -39,7 +39,7 @@ from plc_discovery.config import (
     StatusCode,
 )
 from plc_discovery.data_types import ByteOrder
-from plc_discovery.discovery import PLCDiscovery, discover_plcs, plc_key
+from plc_discovery.discovery import PLCDiscovery, discover_plcs, merge_discovery_results
 from plc_discovery.output import DEFAULT_OUTPUT_DIR, CSVExporter
 from plc_scanner import BYTE_ORDER_MAP, DATA_TYPE_MAP, apply_data_type_conversion
 
@@ -582,9 +582,10 @@ class PLCScannerApp:
 
         self._post("status", f"{ip_range or '同一セグメント'} をスキャン中...")
         tcp_plcs = await discover_plcs(ip_range, config, self._progress_cb)
-        # 同じIPでも応答したプロトコルごとに1行（複数プロトコル対応PLC・シミュレータ）
-        known = {plc_key(p) for p in plcs}
-        plcs.extend(p for p in tcp_plcs if plc_key(p) not in known)
+        # 同じIPでも応答したプロトコルごとに1行（複数プロトコル対応PLC・シミュレータ）。
+        # TCPスキャンの結果（プロトコル確認済み・機器情報あり）を優先し、
+        # ブロードキャストでのみ見つかった機器を追加する
+        plcs = merge_discovery_results(tcp_plcs, plcs)
 
         path = None
         if plcs:

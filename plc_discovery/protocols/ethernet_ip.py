@@ -277,7 +277,9 @@ class EtherNetIPHandler(BaseProtocolHandler):
             data = await self._run_blocking(_read)
             
             if data is not None:
-                return data, StatusCode.OK
+                # pycomm3 decodes N/B file words as signed INT; report raw
+                # 16-bit values (0-65535) like the other protocols
+                return [int(v) & 0xFFFF for v in data], StatusCode.OK
             return None, StatusCode.NG_COMM_ERROR
             
         except Exception as e:

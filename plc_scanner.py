@@ -43,7 +43,9 @@ from plc_discovery.config import (
     Protocol, DeviceType, ScanMode, PLCInfo, DataPoint,
     NetworkConfig, DeviceRange, StatusCode, PROTOCOL_PORTS
 )
-from plc_discovery.discovery import PLCDiscovery, discover_plcs, plc_key, target_labels
+from plc_discovery.discovery import (
+    PLCDiscovery, discover_plcs, merge_discovery_results, target_labels
+)
 from plc_discovery.collector import PLCDataCollector
 from plc_discovery.output import CSVExporter
 from plc_discovery.utils import parse_ip_range
@@ -651,12 +653,10 @@ async def run_discovery(
         plcs = [p for p in plcs if p.protocol in protocols]
     
     # Merge results: one entry per IP, protocol and port (a host answering
-    # several protocols - multi-protocol PLC or simulators - is listed per protocol)
-    seen = {plc_key(p) for p in plcs}
-    for plc in tcp_plcs:
-        if plc_key(plc) not in seen:
-            plcs.append(plc)
-            seen.add(plc_key(plc))
+    # several protocols - multi-protocol PLC or simulators - is listed per
+    # protocol). The TCP scan verified the protocol and read the identity,
+    # so its entries win; broadcast adds hosts the scan did not reach.
+    plcs = merge_discovery_results(tcp_plcs, plcs)
     
     # Log and display results
     audit.log_discovery_result(
@@ -681,10 +681,8 @@ async def run_discovery(
         # Save to database if enabled
         if db_exporter and db_exporter.is_enabled:
             try:
-                # The plcs table holds one row per IP: store each host's primary
-                # (first listed) protocol
-                primary = list({p.ip_address: p for p in reversed(plcs)}.values())[::-1]
-                db_count = db_exporter.export_discovery_results(primary)
+                # One row per IP, protocol and port (database schema v2)
+                db_count = db_exporter.export_discovery_results(plcs)
                 display.print_info(f"Saved {db_count} PLCs to database")
             except Exception as e:
                 message = f"Failed to save discovery results to database: {e}"
