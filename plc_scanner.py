@@ -47,7 +47,7 @@ from plc_discovery.discovery import (
     PLCDiscovery, discover_plcs, merge_discovery_results, target_labels
 )
 from plc_discovery.collector import PLCDataCollector
-from plc_discovery.output import CSVExporter
+from plc_discovery.output import DEFAULT_OUTPUT_DIR, CSVExporter
 from plc_discovery.utils import ip_range_error, parse_ip_range
 from plc_discovery.config_loader import MIN_INTERVAL_SECONDS, ConfigLoader, generate_config_template
 from plc_discovery.audit_log import init_audit_logger, get_audit_logger, close_audit_logger
@@ -209,9 +209,10 @@ Examples:
     parser.add_argument(
         "--byte-order",
         choices=["little", "big", "little_swap", "big_swap"],
-        default="little",
+        default=None,
         help="Order of multi-word values: little=CDAB (low word first), big=ABCD, "
-             "little_swap=DCBA, big_swap=BADC (default: little)"
+             "little_swap=DCBA, big_swap=BADC "
+             "(default: data_types.default_byte_order from --config, otherwise little)"
     )
     
     parser.add_argument(
@@ -259,15 +260,17 @@ Examples:
     # Output options
     parser.add_argument(
         "--output-dir", "-o",
-        default="./plc_scan_results",
-        help="Output directory for CSV files (default: ./plc_scan_results)"
+        default=None,
+        help=f"Output directory for CSV files "
+             f"(default: output.directory from --config, otherwise {DEFAULT_OUTPUT_DIR})"
     )
     
     parser.add_argument(
         "--encoding",
         choices=["utf-8-sig", "utf-8", "shift-jis"],
-        default="utf-8-sig",
-        help="CSV encoding: utf-8-sig = UTF-8 with BOM, opens correctly in Excel (default); "
+        default=None,
+        help="CSV encoding: utf-8-sig = UTF-8 with BOM, opens correctly in Excel (default, "
+             "or output.encoding from --config); "
              "utf-8 = without BOM; shift-jis = CP932, unrepresentable characters become '?'"
     )
     
@@ -1182,6 +1185,54 @@ def resolve_device_ranges(args, config_loader: Optional[ConfigLoader]) -> List[D
     return [DeviceRange(get_device_type_from_string(args.device), start_addr, end_addr)]
 
 
+def resolve_output_settings(args, config_loader: Optional[ConfigLoader]) -> tuple:
+    """
+    CSV output directory and encoding: CLI option, then the setting written
+    in the config file, then the default. (The loaded config always holds
+    default values, so only explicitly written settings may override.)
+    """
+    output_dir, encoding = args.output_dir, args.encoding
+    if config_loader:
+        settings = config_loader.get_output_settings()
+        if output_dir is None and config_loader.is_set("output", "directory"):
+            output_dir = settings["directory"]
+        if encoding is None and config_loader.is_set("output", "encoding"):
+            encoding = settings["encoding"]
+    return output_dir or DEFAULT_OUTPUT_DIR, encoding or "utf-8-sig"
+
+
+def resolve_data_types(args, config_loader: Optional[ConfigLoader]) -> tuple:
+    """
+    Data type conversion settings: (data_type, byte_order, type_manager).
+    
+    --data-type / --byte-order win over the config file; with a type mapping
+    (file or config) they become its default for unmapped addresses, which
+    the mapping would otherwise take from its own default (WORD / little).
+    
+    Raises:
+        Exception: if the --type-mapping file cannot be loaded
+    """
+    data_type = DATA_TYPE_MAP.get(args.data_type) if args.data_type else None
+    byte_order = BYTE_ORDER_MAP.get(args.byte_order) if args.byte_order else None
+    type_manager = None
+    
+    if args.type_mapping:
+        type_manager = load_type_mapping(args.type_mapping)
+    elif config_loader:
+        type_manager = config_loader.get_data_type_manager()
+        if data_type is None and config_loader.is_set("data_types", "default_type"):
+            data_type = config_loader.get_default_data_type()
+        if byte_order is None and config_loader.is_set("data_types", "default_byte_order"):
+            byte_order = config_loader.get_default_byte_order()
+    
+    if type_manager:
+        if args.data_type:
+            type_manager.default_type = data_type
+        if args.byte_order:
+            type_manager.default_byte_order = byte_order
+    return data_type, byte_order or ByteOrder.LITTLE_ENDIAN, type_manager
+
+
 async def main():
     """Main entry point"""
     args = parse_args()
@@ -1248,13 +1299,7 @@ async def main():
         display.print_header()
     
     # Create exporter
-    output_dir = args.output_dir
-    encoding = args.encoding
-    if config_loader:
-        output_settings = config_loader.get_output_settings()
-        output_dir = output_settings.get("directory", output_dir)
-        encoding = output_settings.get("encoding", encoding)
-    
+    output_dir, encoding = resolve_output_settings(args, config_loader)
     exporter = CSVExporter(output_dir, encoding)
     
     # Initialize database exporter (optional)
@@ -1288,32 +1333,16 @@ async def main():
         notifier = NotificationManager.from_config(config_loader.config)
         display.print_info(f"Notifications enabled: {len(notifier._handlers)} handler(s)")
     
-    # Parse data type options
-    data_type = DATA_TYPE_MAP.get(args.data_type) if args.data_type else None
-    byte_order = BYTE_ORDER_MAP.get(args.byte_order, ByteOrder.LITTLE_ENDIAN)
-    type_manager = None
-    
-    # Load type mapping from file or config
+    # Parse data type options (CLI, then type mapping file / config file)
+    try:
+        data_type, byte_order, type_manager = resolve_data_types(args, config_loader)
+    except Exception as e:
+        display.print_error(f"Failed to load type mapping: {e}")
+        sys.exit(1)
     if args.type_mapping:
-        try:
-            type_manager = load_type_mapping(args.type_mapping)
-            display.print_info(f"Loaded type mapping from: {args.type_mapping}")
-        except Exception as e:
-            display.print_error(f"Failed to load type mapping: {e}")
-            sys.exit(1)
-    elif config_loader:
-        # Try to get type mapping from config file
-        type_manager = config_loader.get_data_type_manager()
-        if type_manager:
-            display.print_info("Using data type mappings from config file")
-        
-        # Get default data type from config if not specified on CLI
-        if not data_type:
-            data_type = config_loader.get_default_data_type()
-        
-        # Get byte order from config
-        if args.byte_order == "little":  # Only if using default
-            byte_order = config_loader.get_default_byte_order()
+        display.print_info(f"Loaded type mapping from: {args.type_mapping}")
+    elif type_manager:
+        display.print_info("Using data type mappings from config file")
     
     # Track scan results for report generation
     scan_start_time = None

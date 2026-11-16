@@ -128,3 +128,80 @@ def test_eip_full_scan_uses_supported_data_files():
     for r in ranges:
         assert r.device_type in EIP_DEVICE_MAP
         assert 0 <= r.start_address <= r.end_address <= 255
+
+
+# ---------------------------------------------------------------------------
+# Second pass: CLI options win over the config file
+# ---------------------------------------------------------------------------
+
+import sys
+
+import plc_scanner
+from plc_discovery.config import DataPoint
+from plc_discovery.config_loader import ConfigLoader
+from plc_discovery.data_types import ByteOrder, DataType
+
+
+def _args(monkeypatch, *argv):
+    monkeypatch.setattr(sys, "argv", ["plc_scanner.py", *argv])
+    return plc_scanner.parse_args()
+
+
+def _loader(tmp_path, text):
+    path = tmp_path / "cfg.yaml"
+    path.write_text(text, encoding="utf-8")
+    loader = ConfigLoader(str(path))
+    loader.load()
+    return loader
+
+
+MINIMAL = "scan:\n  mode: discover\n"
+WITH_OUTPUT = "output:\n  directory: ./from_config\n  encoding: shift-jis\n"
+
+
+@pytest.mark.parametrize("config_text,argv,expected", [
+    (None, [], ("./plc_scan_results", "utf-8-sig")),
+    (MINIMAL, [], ("./plc_scan_results", "utf-8-sig")),
+    (MINIMAL, ["-o", "out", "--encoding", "utf-8"], ("out", "utf-8")),
+    (WITH_OUTPUT, [], ("./from_config", "shift-jis")),
+    (WITH_OUTPUT, ["-o", "out"], ("out", "shift-jis")),
+    (WITH_OUTPUT, ["--encoding", "utf-8"], ("./from_config", "utf-8")),
+])
+def test_output_settings_precedence(monkeypatch, tmp_path, config_text, argv, expected):
+    loader = _loader(tmp_path, config_text) if config_text else None
+    assert plc_scanner.resolve_output_settings(_args(monkeypatch, *argv), loader) == expected
+
+
+MAPPED = (
+    "data_types:\n  default_type: WORD\n  default_byte_order: big\n"
+    "  mappings:\n    - {start: 500, end: 501, type: DWORD}\n"
+)
+
+
+def test_cli_data_type_applies_to_unmapped_addresses(monkeypatch, tmp_path):
+    args = _args(monkeypatch, "--data-type", "FLOAT", "--byte-order", "little")
+    data_type, byte_order, manager = plc_scanner.resolve_data_types(args, _loader(tmp_path, MAPPED))
+    assert (data_type, byte_order) == (DataType.FLOAT, ByteOrder.LITTLE_ENDIAN)
+    assert manager.default_type == DataType.FLOAT
+    assert manager.default_byte_order == ByteOrder.LITTLE_ENDIAN
+
+    points = [DataPoint(address=f"D{i}", value=v, status=StatusCode.OK)
+              for i, v in enumerate([0x0000, 0x4120])]
+    converted = plc_scanner.apply_data_type_conversion(points, data_type, byte_order, manager)
+    assert converted[0].data_type == "FLOAT"
+    assert converted[0].converted_value == pytest.approx(10.0)
+
+
+def test_config_data_types_used_without_cli_options(monkeypatch, tmp_path):
+    data_type, byte_order, manager = plc_scanner.resolve_data_types(
+        _args(monkeypatch), _loader(tmp_path, MAPPED)
+    )
+    assert (data_type, byte_order) == (DataType.WORD, ByteOrder.BIG_ENDIAN)
+    assert manager.default_type == DataType.WORD
+
+
+def test_config_without_data_types_adds_no_conversion(monkeypatch, tmp_path):
+    """Defaults filled in by the loader are not an explicit conversion request"""
+    assert plc_scanner.resolve_data_types(_args(monkeypatch), _loader(tmp_path, MINIMAL)) == (
+        None, ByteOrder.LITTLE_ENDIAN, None
+    )

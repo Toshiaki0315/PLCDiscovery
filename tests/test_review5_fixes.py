@@ -68,7 +68,8 @@ class TestUTF8BOM:
 
     def test_cli_default_is_utf8_with_bom(self, monkeypatch):
         monkeypatch.setattr(sys, "argv", ["plc_scanner.py"])
-        assert plc_scanner.parse_args().encoding == "utf-8-sig"
+        args = plc_scanner.parse_args()
+        assert plc_scanner.resolve_output_settings(args, None)[1] == "utf-8-sig"
         assert DEFAULT_CONFIG["output"]["encoding"] == "utf-8-sig"
 
     def test_data_csv_starts_with_bom(self, tmp_path):
