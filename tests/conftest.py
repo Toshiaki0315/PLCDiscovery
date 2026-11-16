@@ -19,7 +19,7 @@ def sample_plc_info():
     """Sample PLCInfo for testing"""
     return PLCInfo(
         ip_address="192.168.1.10",
-        mac_address="00:00:1C:12:34:56",
+        mac_address="00:26:92:12:34:56",
         manufacturer="三菱電機",
         model="iQ-R Series",
         protocol=Protocol.SLMP,
@@ -35,7 +35,7 @@ def sample_plc_list():
     return [
         PLCInfo(
             ip_address="192.168.1.10",
-            mac_address="00:00:1C:12:34:56",
+            mac_address="00:26:92:12:34:56",
             manufacturer="三菱電機",
             model="iQ-R Series",
             protocol=Protocol.SLMP,
@@ -43,7 +43,7 @@ def sample_plc_list():
         ),
         PLCInfo(
             ip_address="192.168.1.20",
-            mac_address="00:0A:DC:AB:CD:EF",
+            mac_address="00:00:0A:AB:CD:EF",
             manufacturer="オムロン",
             model="NJ Series",
             protocol=Protocol.ETHERNET_IP,

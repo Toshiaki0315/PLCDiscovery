@@ -115,7 +115,7 @@ class TestPLCInfo:
         """Test PLCInfo with all fields"""
         plc = PLCInfo(
             ip_address="192.168.1.10",
-            mac_address="00:00:1C:12:34:56",
+            mac_address="00:26:92:12:34:56",
             manufacturer="三菱電機",
             model="iQ-R",
             protocol=Protocol.SLMP,
@@ -200,10 +200,10 @@ class TestConstants:
     
     def test_manufacturer_oui(self):
         """Test manufacturer OUI mapping"""
-        assert "00:00:1C" in MANUFACTURER_OUI
-        assert MANUFACTURER_OUI["00:00:1C"] == "三菱電機"
-        assert "00:0A:DC" in MANUFACTURER_OUI
-        assert MANUFACTURER_OUI["00:0A:DC"] == "オムロン"
+        assert "00:26:92" in MANUFACTURER_OUI
+        assert MANUFACTURER_OUI["00:26:92"] == "三菱電機"
+        assert "00:00:0A" in MANUFACTURER_OUI
+        assert MANUFACTURER_OUI["00:00:0A"] == "オムロン"
     
     def test_default_device_ranges(self):
         """Test default device ranges exist for protocols"""

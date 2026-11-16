@@ -771,6 +771,11 @@ class ScanOutcome:
             self.label = self.ip_address
 
 
+def _target_error(label: str, reason: Optional[str]) -> str:
+    """Report line for a target whose scan failed"""
+    return f"{label}: {reason or 'scan failed'}"
+
+
 def _uncancel_current_task() -> None:
     """Clear a pending cancellation after handling Ctrl+C (Python 3.11+)"""
     task = asyncio.current_task()
@@ -1316,6 +1321,8 @@ async def main():
     all_data_points: Dict[str, List[DataPoint]] = {}
     all_denied_addresses: Dict[str, List[str]] = {}
     failed_targets: List[str] = []
+    # "label: reason" for each failed target, shown in the report
+    target_errors: List[str] = []
     output_errors: List[str] = []
     interrupted = False
     exit_code = 0
@@ -1387,6 +1394,7 @@ async def main():
                 for outcome in outcomes:
                     if not outcome.success:
                         failed_targets.append(outcome.label)
+                        target_errors.append(_target_error(outcome.label, outcome.error))
                     if outcome.data_points:
                         all_data_points[outcome.label] = outcome.data_points
                     if outcome.denied_addresses:
@@ -1401,6 +1409,7 @@ async def main():
                 for label, result in results.items():
                     if not result.success:
                         failed_targets.append(label)
+                        target_errors.append(_target_error(label, result.error_message))
                     if result.data_points:
                         all_data_points[label] = result.data_points
                     if result.denied_addresses:
@@ -1415,6 +1424,7 @@ async def main():
                     )
                     if not outcome.success:
                         failed_targets.append(label)
+                        target_errors.append(_target_error(label, outcome.error))
                     if outcome.data_points:
                         all_data_points[label] = outcome.data_points
                     if outcome.denied_addresses:
@@ -1485,7 +1495,8 @@ async def main():
                 scan_mode=report_mode,
                 started_at=scan_start_time,
                 completed_at=scan_end_time,
-                config=report_config
+                config=report_config,
+                errors=target_errors + output_errors,
             )
             
             try:

@@ -154,20 +154,45 @@ SAFE_READ_WORDS: Dict[Protocol, int] = {
     Protocol.FINS_TCP: 400,
 }
 
-# Manufacturer OUI prefixes (MAC address first 3 bytes)
+# Manufacturer OUI prefixes (MAC address first 3 bytes).
+# Every entry is the IEEE registration of that company, checked against the
+# Wireshark "manuf" database.  Only blocks registered to the automation
+# makers themselves are listed: PLCs built on third-party network modules
+# carry the module maker's OUI and are identified by protocol instead.
 MANUFACTURER_OUI: Dict[str, str] = {
-    "00:00:1C": "三菱電機",
-    "00:0D:7C": "キーエンス",
-    "00:0A:DC": "オムロン",
-    "00:1B:1B": "シーメンス",
-    "00:A0:12": "横河電機",
-    "00:10:FA": "富士電機",
-    "00:0E:8C": "ロックウェル",
-    "00:1D:9C": "ロックウェル",
-    "00:20:4A": "パナソニック",
-    "00:30:11": "東芝",
-    "00:40:9D": "日立産機",
-    "00:60:52": "安川電機",
+    # オムロン
+    "00:00:0A": "オムロン", "3C:F7:D1": "オムロン",
+    # キーエンス
+    "00:01:FC": "キーエンス", "74:95:A7": "キーエンス",
+    # 三菱電機
+    "00:26:92": "三菱電機",
+    # 横河電機
+    "00:00:64": "横河電機", "00:60:41": "横河電機", "D0:0A:AB": "横河電機",
+    # ロックウェル (Allen-Bradley)
+    "00:00:BC": "ロックウェル", "00:1D:9C": "ロックウェル", "08:61:95": "ロックウェル",
+    "18:4C:08": "ロックウェル", "34:C0:F9": "ロックウェル", "40:41:01": "ロックウェル",
+    "5C:21:67": "ロックウェル", "5C:88:16": "ロックウェル",
+    # シーメンス
+    "00:1B:1B": "シーメンス", "00:0E:8C": "シーメンス", "00:01:E3": "シーメンス",
+    "00:0B:A3": "シーメンス",
+    # 富士電機
+    "00:40:1A": "富士電機",
+    # 安川電機
+    "00:20:B5": "安川電機",
+    # 日立産機システム
+    "A4:97:BB": "日立産機",
+    # ジェイテクト
+    "00:D0:7C": "ジェイテクト",
+    # IDEC
+    "00:03:7B": "IDEC",
+    # デルタ電子
+    "00:06:6E": "デルタ電子", "00:18:23": "デルタ電子", "20:F8:5E": "デルタ電子",
+    # シュナイダーエレクトリック
+    "00:00:54": "シュナイダー", "00:01:23": "シュナイダー",
+    # 東芝
+    "00:00:39": "東芝",
+    # パナソニック (産業デバイス)
+    "34:32:E6": "パナソニック",
 }
 
 

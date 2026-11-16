@@ -85,11 +85,11 @@ class TestPLCDiscovery:
             
             result = await discovery._probe_host(
                 "192.168.1.10",
-                "00:00:1C:12:34:56"  # Mitsubishi OUI
+                "00:26:92:12:34:56"  # Mitsubishi OUI
             )
         
         assert result is not None
-        assert result.mac_address == "00:00:1C:12:34:56"
+        assert result.mac_address == "00:26:92:12:34:56"
         assert result.manufacturer == "三菱電機"
     
     def test_get_results(self, network_config, sample_plc_info):

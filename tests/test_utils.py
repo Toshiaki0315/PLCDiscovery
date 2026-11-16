@@ -61,12 +61,12 @@ class TestMACFunctions:
     
     def test_get_manufacturer_from_mac_mitsubishi(self):
         """Test Mitsubishi MAC OUI"""
-        manufacturer = get_manufacturer_from_mac("00:00:1C:12:34:56")
+        manufacturer = get_manufacturer_from_mac("00:26:92:12:34:56")
         assert manufacturer == "三菱電機"
     
     def test_get_manufacturer_from_mac_omron(self):
         """Test Omron MAC OUI"""
-        manufacturer = get_manufacturer_from_mac("00:0A:DC:AB:CD:EF")
+        manufacturer = get_manufacturer_from_mac("00:00:0A:AB:CD:EF")
         assert manufacturer == "オムロン"
     
     def test_get_manufacturer_from_mac_siemens(self):

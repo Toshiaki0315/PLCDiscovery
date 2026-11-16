@@ -77,12 +77,12 @@ async def test_discovery_fills_mac_and_manufacturer_from_cache():
                             mac_address="AA:BB:CC:DD:EE:FF", manufacturer="オムロン"),
         "172.16.0.9": PLCInfo("172.16.0.9", protocol=Protocol.S7, port=102),   # routed: not in cache
     }
-    cache = {"10.0.0.1": "00:00:1C:12:34:56", "10.0.0.2": "11:22:33:44:55:66"}
+    cache = {"10.0.0.1": "00:26:92:12:34:56", "10.0.0.2": "11:22:33:44:55:66"}
     with patch.object(discovery_module, "read_arp_cache", return_value=cache):
         await discovery._fill_macs_from_arp_cache()
 
     plcs = discovery.discovered_plcs
-    assert plcs["10.0.0.1"].mac_address == "00:00:1C:12:34:56"
+    assert plcs["10.0.0.1"].mac_address == "00:26:92:12:34:56"
     assert plcs["10.0.0.1"].manufacturer == "三菱電機"            # from OUI
     assert plcs["10.0.0.2"].mac_address == "AA:BB:CC:DD:EE:FF"   # existing value kept
     assert plcs["172.16.0.9"].mac_address is None

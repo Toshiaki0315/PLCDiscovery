@@ -752,7 +752,8 @@ def create_report(
     scan_mode: str = "full",
     started_at: Optional[datetime] = None,
     completed_at: Optional[datetime] = None,
-    config: Optional[ReportConfig] = None
+    config: Optional[ReportConfig] = None,
+    errors: Optional[List[str]] = None,
 ) -> tuple[ReportGenerator, ReportData]:
     """
     レポートを作成するコンビニエンス関数
@@ -765,6 +766,7 @@ def create_report(
         started_at: 開始日時
         completed_at: 完了日時
         config: レポート設定
+        errors: 失敗したターゲットや出力エラーの説明（エラーセクションに表示）
     
     Returns:
         設定済みのReportGenerator
@@ -803,7 +805,8 @@ def create_report(
         summary=summary,
         plcs=plcs,
         data_points=data_points,
-        denied_addresses=denied_addresses or {}
+        denied_addresses=denied_addresses or {},
+        errors=list(errors or []),
     )
     
     return generator, report_data
