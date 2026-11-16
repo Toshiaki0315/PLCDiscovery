@@ -49,7 +49,9 @@ from plc_discovery.discovery import (
 from plc_discovery.collector import PLCDataCollector
 from plc_discovery.output import DEFAULT_OUTPUT_DIR, CSVExporter
 from plc_discovery.utils import ip_range_error, parse_ip_range
-from plc_discovery.config_loader import MIN_INTERVAL_SECONDS, ConfigLoader, generate_config_template
+from plc_discovery.config_loader import (
+    MIN_INTERVAL_SECONDS, NETWORK_MINIMUMS, ConfigLoader, generate_config_template, integer_error
+)
 from plc_discovery.audit_log import init_audit_logger, get_audit_logger, close_audit_logger
 from plc_discovery.parallel import ParallelPLCScanner, scan_plcs_parallel
 from plc_discovery.broadcast_discovery import BroadcastDiscovery
@@ -431,6 +433,27 @@ def create_network_config(args, config_loader: Optional[ConfigLoader] = None) ->
     return dataclasses.replace(config, **{k: v for k, v in overrides.items() if v is not None})
 
 
+# Command-line timing options and the network setting each one overrides
+NETWORK_OPTIONS = {
+    "--packet-interval": ("packet_interval", "packet_interval_ms"),
+    "--retry-interval": ("retry_interval", "retry_interval_ms"),
+    "--request-timeout": ("request_timeout", "request_timeout_ms"),
+    "--max-concurrent": ("max_concurrent", "max_concurrent"),
+}
+
+
+def network_option_errors(args) -> List[str]:
+    """Errors for timing options out of range (e.g. --request-timeout 0)"""
+    errors = []
+    for option, (attr, key) in NETWORK_OPTIONS.items():
+        value = getattr(args, attr)
+        if value is not None:
+            error = integer_error(value, NETWORK_MINIMUMS[key])
+            if error:
+                errors.append(f"{option} {error}")
+    return errors
+
+
 def parse_targets(target_str: str) -> List[str]:
     """Parse comma-separated target IPs"""
     if not target_str:
@@ -438,10 +461,14 @@ def parse_targets(target_str: str) -> List[str]:
     return [ip.strip() for ip in target_str.split(",")]
 
 
-def load_type_mapping(path: str) -> DataTypeManager:
-    """Load type mapping from file"""
-    manager = DataTypeManager()
+def load_type_mapping(path: str, overrides: Optional[Dict[str, str]] = None) -> DataTypeManager:
+    """
+    Load type mapping from file.
     
+    ``overrides`` (default_type / default_byte_order from the command line)
+    replace the file's defaults before the mappings are built, so mappings
+    without their own byte_order follow --byte-order.
+    """
     try:
         with open(path, 'r', encoding='utf-8') as f:
             if path.endswith('.json'):
@@ -453,6 +480,8 @@ def load_type_mapping(path: str) -> DataTypeManager:
                 except ImportError:
                     raise ImportError("PyYAML required for YAML type mapping files")
         
+        if overrides and isinstance(config, dict):
+            config = {**config, **overrides}
         return DataTypeManager.from_config(config, prefix=Path(path).name)
     except Exception as e:
         logger.error(f"Failed to load type mapping: {e}")
@@ -1205,31 +1234,34 @@ def resolve_data_types(args, config_loader: Optional[ConfigLoader]) -> tuple:
     """
     Data type conversion settings: (data_type, byte_order, type_manager).
     
-    --data-type / --byte-order win over the config file; with a type mapping
-    (file or config) they become its default for unmapped addresses, which
-    the mapping would otherwise take from its own default (WORD / little).
+    --data-type / --byte-order win over the config file. With a type mapping
+    (file or config) they replace its default_type / default_byte_order:
+    the type of unmapped addresses, and the byte order of mappings that do
+    not set their own byte_order. An explicit mapping byte_order still wins.
     
     Raises:
         Exception: if the --type-mapping file cannot be loaded
     """
     data_type = DATA_TYPE_MAP.get(args.data_type) if args.data_type else None
     byte_order = BYTE_ORDER_MAP.get(args.byte_order) if args.byte_order else None
+    overrides = {}
+    if args.data_type:
+        overrides["default_type"] = args.data_type
+    if args.byte_order:
+        overrides["default_byte_order"] = args.byte_order
     type_manager = None
     
     if args.type_mapping:
-        type_manager = load_type_mapping(args.type_mapping)
+        type_manager = load_type_mapping(args.type_mapping, overrides)
     elif config_loader:
-        type_manager = config_loader.get_data_type_manager()
+        dt_config = config_loader.config.get("data_types") or {}
+        if dt_config.get("mappings"):
+            type_manager = DataTypeManager.from_config({**dt_config, **overrides})
         if data_type is None and config_loader.is_set("data_types", "default_type"):
             data_type = config_loader.get_default_data_type()
         if byte_order is None and config_loader.is_set("data_types", "default_byte_order"):
             byte_order = config_loader.get_default_byte_order()
     
-    if type_manager:
-        if args.data_type:
-            type_manager.default_type = data_type
-        if args.byte_order:
-            type_manager.default_byte_order = byte_order
     return data_type, byte_order or ByteOrder.LITTLE_ENDIAN, type_manager
 
 
@@ -1281,6 +1313,11 @@ async def main():
         sys.exit(1)
     
     # Create network config
+    option_errors = network_option_errors(args)
+    if option_errors:
+        for error in option_errors:
+            print(f"Error: {error}")
+        sys.exit(1)
     config = create_network_config(args, config_loader)
     
     # Initialize audit logger

@@ -128,6 +128,28 @@ TARGET_OPTIONS: Dict[Optional[Protocol], set] = {
 }
 
 
+# Smallest valid value of each network setting (all integers, in ms or a count).
+# A timeout of 0 made every request time out; a negative one failed every
+# connection with an unrelated-looking socket error.
+NETWORK_MINIMUMS: Dict[str, int] = {
+    "discovery_timeout_ms": 1,
+    "discovery_retry_count": 0,
+    "packet_interval_ms": 0,
+    "retry_interval_ms": 0,
+    "request_timeout_ms": 1,
+    "max_concurrent": 1,
+}
+
+
+def integer_error(value: Any, minimum: int) -> Optional[str]:
+    """Why value is not an integer >= minimum (None when it is valid)"""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return f"must be an integer >= {minimum}, got {value!r}"
+    if value < minimum:
+        return f"must be >= {minimum}, got {value}"
+    return None
+
+
 class ConfigLoader:
     """
     Configuration file loader and validator.
@@ -420,12 +442,16 @@ class ConfigLoader:
         """
         errors = []
         
-        # Validate network settings
+        # Validate network settings (a non-numeric value used to crash
+        # validate() itself with a TypeError)
         net = self.config.get("network", {})
-        if net.get("max_concurrent", 1) < 1:
-            errors.append("network.max_concurrent must be >= 1")
-        if net.get("packet_interval_ms", 50) < 0:
-            errors.append("network.packet_interval_ms must be >= 0")
+        if not isinstance(net, dict):
+            errors.append("network must be a mapping")
+            net = {}
+        for key, minimum in NETWORK_MINIMUMS.items():
+            error = integer_error(net.get(key, minimum), minimum)
+            if error:
+                errors.append(f"network.{key} {error}")
         
         # Validate targets
         for i, target in enumerate(self.config.get("targets", [])):
@@ -482,19 +508,30 @@ class ConfigLoader:
         
         # Validate periodic interval
         interval = self.config.get("scan", {}).get("interval_seconds", 0) or 0
-        if 0 < interval < MIN_INTERVAL_SECONDS:
+        if isinstance(interval, bool) or not isinstance(interval, (int, float)):
+            errors.append(f"scan.interval_seconds must be a number, got {interval!r}")
+        elif interval < 0 or 0 < interval < MIN_INTERVAL_SECONDS:
             errors.append(
                 f"scan.interval_seconds must be 0 (single scan) or >= {MIN_INTERVAL_SECONDS:g}"
             )
         
         # Validate device ranges
-        for i, range_def in enumerate(self.config.get("scan", {}).get("device_ranges", [])):
-            if range_def.get("start", 0) > range_def.get("end", 0):
-                errors.append(f"scan.device_ranges[{i}]: start must be <= end")
-            if range_def.get("start", 0) < 0:
-                errors.append(f"scan.device_ranges[{i}]: start must be >= 0")
-            if self._parse_device_type(range_def.get("device", "D")) is None:
-                errors.append(f"scan.device_ranges[{i}]: unknown device '{range_def.get('device')}'")
+        for i, range_def in enumerate(self.config.get("scan", {}).get("device_ranges", []) or []):
+            where = f"scan.device_ranges[{i}]"
+            if not isinstance(range_def, dict):
+                errors.append(f"{where} must be a mapping")
+                continue
+            start, end = range_def.get("start", 0), range_def.get("end", 999)
+            bounds_ok = True
+            for key, value in (("start", start), ("end", end)):
+                error = integer_error(value, 0)
+                if error:
+                    errors.append(f"{where}.{key} {error}")
+                    bounds_ok = False
+            if bounds_ok and start > end:
+                errors.append(f"{where}: start must be <= end")
+            if self._parse_device_type(str(range_def.get("device", "D"))) is None:
+                errors.append(f"{where}: unknown device '{range_def.get('device')}'")
 
         # Validate data type settings (default type/byte order and mappings)
         try:

@@ -205,3 +205,92 @@ def test_config_without_data_types_adds_no_conversion(monkeypatch, tmp_path):
     assert plc_scanner.resolve_data_types(_args(monkeypatch), _loader(tmp_path, MINIMAL)) == (
         None, ByteOrder.LITTLE_ENDIAN, None
     )
+
+
+# ---------------------------------------------------------------------------
+# Third pass: numeric settings are validated; --byte-order reaches mappings
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("text,fragment", [
+    ('network:\n  max_concurrent: "3"\n', "network.max_concurrent must be an integer"),
+    ("network:\n  request_timeout_ms: 0\n", "network.request_timeout_ms must be >= 1"),
+    ("network:\n  retry_interval_ms: -1\n", "network.retry_interval_ms must be >= 0"),
+    ("network:\n  packet_interval_ms: 1.5\n", "network.packet_interval_ms must be an integer"),
+    ('scan:\n  interval_seconds: "60"\n', "scan.interval_seconds must be a number"),
+    ("scan:\n  interval_seconds: -5\n", "scan.interval_seconds must be 0"),
+    ('scan:\n  device_ranges:\n    - {device: D, start: "0", end: 9}\n',
+     "scan.device_ranges[0].start must be an integer"),
+    ("scan:\n  device_ranges:\n    - {device: D, start: 10, end: 9}\n",
+     "scan.device_ranges[0]: start must be <= end"),
+])
+def test_invalid_numbers_are_reported_not_raised(tmp_path, text, fragment):
+    errors = _loader(tmp_path, text).validate()
+    assert any(fragment in e for e in errors), errors
+
+
+def test_valid_numbers_pass(tmp_path):
+    text = (
+        "network:\n  request_timeout_ms: 1\n  packet_interval_ms: 0\n  max_concurrent: 2\n"
+        "scan:\n  interval_seconds: 1.5\n  device_ranges:\n    - {device: D, start: 0, end: 9}\n"
+    )
+    assert _loader(tmp_path, text).validate() == []
+
+
+@pytest.mark.parametrize("argv,fragment", [
+    (["--request-timeout", "0"], "--request-timeout must be >= 1"),
+    (["--max-concurrent", "0"], "--max-concurrent must be >= 1"),
+    (["--packet-interval", "-1"], "--packet-interval must be >= 0"),
+    (["--retry-interval", "-200"], "--retry-interval must be >= 0"),
+])
+def test_cli_network_options_checked(monkeypatch, argv, fragment):
+    errors = plc_scanner.network_option_errors(_args(monkeypatch, *argv))
+    assert len(errors) == 1 and errors[0].startswith(fragment)
+
+
+def test_cli_network_options_valid(monkeypatch):
+    args = _args(monkeypatch, "--request-timeout", "1", "--packet-interval", "0")
+    assert plc_scanner.network_option_errors(args) == []
+
+
+def test_cli_rejects_zero_timeout_before_scanning(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["plc_scanner.py", "--request-timeout", "0", "--no-rich"])
+    with pytest.raises(SystemExit) as exc:
+        asyncio.run(plc_scanner.main())
+    assert exc.value.code == 1
+    assert "--request-timeout must be >= 1" in capsys.readouterr().out
+
+
+BYTE_ORDER_MAPPINGS = (
+    "data_types:\n  default_byte_order: big\n  mappings:\n"
+    "    - {start: 0, end: 1, type: FLOAT}\n"
+    "    - {start: 10, end: 11, type: FLOAT, byte_order: big_swap}\n"
+)
+
+
+def test_cli_byte_order_applies_to_mappings_without_own_order(monkeypatch, tmp_path):
+    args = _args(monkeypatch, "--byte-order", "little")
+    _, byte_order, manager = plc_scanner.resolve_data_types(args, _loader(tmp_path, BYTE_ORDER_MAPPINGS))
+    assert byte_order == ByteOrder.LITTLE_ENDIAN
+    assert manager.default_byte_order == ByteOrder.LITTLE_ENDIAN
+    assert manager.get_mapping_for_address(0, "D").byte_order == ByteOrder.LITTLE_ENDIAN
+    # An explicit byte_order on a mapping still wins
+    assert manager.get_mapping_for_address(10, "D").byte_order == ByteOrder.BIG_ENDIAN_WORD_SWAP
+
+
+def test_config_byte_order_kept_without_cli_option(monkeypatch, tmp_path):
+    _, byte_order, manager = plc_scanner.resolve_data_types(
+        _args(monkeypatch), _loader(tmp_path, BYTE_ORDER_MAPPINGS)
+    )
+    assert byte_order == ByteOrder.BIG_ENDIAN
+    assert manager.get_mapping_for_address(0, "D").byte_order == ByteOrder.BIG_ENDIAN
+
+
+def test_type_mapping_file_follows_cli_byte_order(monkeypatch, tmp_path):
+    path = tmp_path / "types.json"
+    path.write_text(
+        '{"default_byte_order": "big", "mappings": [{"start": 0, "end": 1, "type": "FLOAT"}]}',
+        encoding="utf-8",
+    )
+    args = _args(monkeypatch, "--type-mapping", str(path), "--byte-order", "little")
+    _, _, manager = plc_scanner.resolve_data_types(args, None)
+    assert manager.get_mapping_for_address(0, "D").byte_order == ByteOrder.LITTLE_ENDIAN
