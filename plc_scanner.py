@@ -28,40 +28,31 @@ Author: PLC Discovery Team
 License: MIT
 """
 
-import argparse
 import asyncio
 import contextlib
 import dataclasses
-import json
 import logging
-import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set
 
 from plc_discovery.config import (
-    Protocol, DeviceType, ScanMode, PLCInfo, DataPoint,
-    NetworkConfig, DeviceRange, StatusCode, PROTOCOL_PORTS, range_size_error
+    Protocol, ScanMode, PLCInfo, DataPoint,
+    NetworkConfig, DeviceRange, StatusCode, PROTOCOL_PORTS, TagRange
 )
 from plc_discovery.discovery import (
     PLCDiscovery, discover_plcs, merge_discovery_results, target_labels
 )
-from plc_discovery.collector import PLCDataCollector
-from plc_discovery.output import DEFAULT_OUTPUT_DIR, CSVExporter
-from plc_discovery.utils import ip_range_error, parse_ip_range, sorted_addresses, target_address_error
-from plc_discovery.config_loader import (
-    MIN_INTERVAL_SECONDS, NETWORK_MINIMUMS, ConfigLoader, generate_config_template, integer_error
-)
+from plc_discovery.collector import PLCDataCollector, collect_item
+from plc_discovery.output import CSVExporter
+from plc_discovery.utils import ip_range_error, sorted_addresses
+from plc_discovery.config_loader import MIN_INTERVAL_SECONDS, ConfigLoader, generate_config_template
 from plc_discovery.audit_log import init_audit_logger, get_audit_logger, close_audit_logger
 from plc_discovery.parallel import ParallelPLCScanner, scan_plcs_parallel
 from plc_discovery.broadcast_discovery import BroadcastDiscovery
 from plc_discovery.progress import RichProgressDisplay, get_display, is_rich_available
-from plc_discovery.data_types import (
-    BIT_DEVICES, VARIABLE_LENGTH_TYPES, DataType, ByteOrder, DataTypeConverter,
-    DataTypeManager, DataTypeMapping
-)
+from plc_discovery.data_types import DataType, ByteOrder, DataTypeManager
 from plc_discovery.notifications import NotificationManager
-from plc_discovery.names import BYTE_ORDER_NAMES, parse_device_type, parse_protocol
 from plc_discovery.database import (
     DatabaseExporter, DatabaseConfig, get_database_exporter
 )
@@ -70,555 +61,17 @@ from plc_discovery.report import (
     create_report, generate_html_report
 )
 
+from plc_discovery.cli_args import (  # noqa: F401  (re-exported for existing imports)
+    BYTE_ORDER_MAP, DATA_TYPE_MAP, NETWORK_OPTIONS, create_network_config,
+    get_device_type_from_string, get_protocol_from_string, network_option_errors, parse_address_range,
+    parse_args, parse_tag_list, parse_targets, resolve_device_ranges, resolve_device_ranges_only,
+    resolve_discovery_protocols, resolve_mode_and_interval, resolve_output_settings,
+)
+from plc_discovery.conversion import (  # noqa: F401
+    _split_address, apply_data_type_conversion, load_type_mapping, resolve_data_types,
+)
+
 logger = logging.getLogger(__name__)
-
-# Data type string mapping
-DATA_TYPE_MAP = {
-    "WORD": DataType.WORD,
-    "INT16": DataType.INT16,
-    "DWORD": DataType.DWORD,
-    "INT32": DataType.INT32,
-    "QWORD": DataType.QWORD,
-    "INT64": DataType.INT64,
-    "FLOAT": DataType.FLOAT,
-    "DOUBLE": DataType.DOUBLE,
-    "BCD16": DataType.BCD16,
-    "BCD32": DataType.BCD32,
-    "STRING": DataType.STRING,
-    "BIT": DataType.BIT,
-    "BOOL": DataType.BOOL,
-    "RAW": DataType.RAW,
-}
-
-# Byte order names (--byte-order choices) -> ByteOrder
-BYTE_ORDER_MAP = dict(BYTE_ORDER_NAMES)
-
-
-def parse_args():
-    """Parse command line arguments"""
-    parser = argparse.ArgumentParser(
-        description="PLC Scanner - Factory PLC Auto-Detection and Data Collection",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  # Discover PLCs on same network segment
-  python plc_scanner.py --mode discover
-
-  # Discover PLCs in specific IP range  
-  python plc_scanner.py --mode discover --ip-range "192.168.1.0/24"
-
-  # Full scan of a specific PLC
-  python plc_scanner.py --mode full --target 192.168.1.10
-
-  # Range specified scan
-  python plc_scanner.py --mode range --target 192.168.1.10 --device D --range 0-1000
-
-  # Range scan with data type conversion (FLOAT)
-  python plc_scanner.py --mode range --target 192.168.1.10 --device D --range 100-199 --data-type FLOAT
-
-  # Range scan with type mapping file
-  python plc_scanner.py --mode range --target 192.168.1.10 --device D --range 0-500 --type-mapping types.json
-
-  # Use configuration file
-  python plc_scanner.py --config plc_config.yaml
-
-  # Scan multiple PLCs in parallel
-  python plc_scanner.py --mode full --target 192.168.1.10,192.168.1.20 --max-concurrent 3
-
-  # Generate configuration template
-  python plc_scanner.py --generate-config
-        """
-    )
-    
-    # Configuration file
-    parser.add_argument(
-        "--config", "-c",
-        help="Path to configuration file (YAML or JSON)"
-    )
-    
-    parser.add_argument(
-        "--generate-config",
-        nargs="?",
-        const="plc_config.yaml",
-        metavar="PATH",
-        help="Write a configuration template to PATH (default: plc_config.yaml); "
-             "an existing file is never overwritten"
-    )
-    
-    # Mode selection
-    parser.add_argument(
-        "--mode", "-m",
-        choices=["discover", "full", "range"],
-        default=None,
-        help="Operation mode: discover, full, or range "
-             "(default: scan.mode from --config, otherwise discover)"
-    )
-    
-    # Target specification
-    parser.add_argument(
-        "--target", "-t",
-        help="Target PLC IP address(es), comma-separated for multiple"
-    )
-    
-    parser.add_argument(
-        "--ip-range", "-r",
-        help="IP range to scan (CIDR or hyphen notation, e.g., 192.168.1.0/24)"
-    )
-    
-    # Protocol selection
-    parser.add_argument(
-        "--protocol", "-p",
-        choices=["slmp", "eip", "modbus", "s7", "fins", "fins-tcp"],
-        help="Force specific protocol (auto-detected if not specified); "
-             "fins = FINS/UDP, fins-tcp = FINS/TCP"
-    )
-    
-    parser.add_argument(
-        "--discover-protocols",
-        help="Comma-separated protocols to probe in discover mode, e.g. slmp,modbus "
-             "(default: discovery.protocols from --config, otherwise all)"
-    )
-    
-    parser.add_argument(
-        "--port",
-        type=int,
-        help="Override default port for the protocol"
-    )
-    
-    # Device/range specification
-    parser.add_argument(
-        "--device", "-d",
-        choices=["D", "M", "W", "R", "DM", "HR", "IR", "DB", "X", "Y", "B", "SM"],
-        default="D",
-        help="Device type to read (default: D)"
-    )
-    
-    parser.add_argument(
-        "--range",
-        help="Address range to read (e.g., 0-1000)"
-    )
-    
-    # Data type conversion options
-    parser.add_argument(
-        "--data-type",
-        choices=list(DATA_TYPE_MAP.keys()),
-        help="Data type for conversion (e.g., FLOAT, DWORD, INT32)"
-    )
-    
-    parser.add_argument(
-        "--byte-order",
-        choices=["little", "big", "little_swap", "big_swap"],
-        default=None,
-        help="Order of multi-word values: little=CDAB (low word first), big=ABCD, "
-             "little_swap=DCBA, big_swap=BADC "
-             "(default: data_types.default_byte_order from --config, otherwise little)"
-    )
-    
-    parser.add_argument(
-        "--type-mapping",
-        help="Path to type mapping file (JSON/YAML) for address-specific conversions"
-    )
-    
-    # Timing parameters
-    parser.add_argument(
-        "--interval", "-i",
-        type=float,
-        default=None,
-        help="Interval between scans in seconds for continuous range mode, >= 1 "
-             "(default: scan.interval_seconds from --config, otherwise 0 = single scan)"
-    )
-    
-    parser.add_argument(
-        "--packet-interval",
-        type=int,
-        default=None,
-        help="Wait time between packets in ms (default: 50, or network.packet_interval_ms from --config)"
-    )
-    
-    parser.add_argument(
-        "--retry-interval",
-        type=int,
-        default=None,
-        help="Wait time before retry in ms (default: 200, or network.retry_interval_ms from --config)"
-    )
-    
-    parser.add_argument(
-        "--request-timeout",
-        type=int,
-        default=None,
-        help="Request timeout in ms (default: 5000, or network.request_timeout_ms from --config)"
-    )
-    
-    parser.add_argument(
-        "--max-concurrent",
-        type=int,
-        default=None,
-        help="Maximum concurrent PLC connections (default: 1, or network.max_concurrent from --config)"
-    )
-    
-    # Output options
-    parser.add_argument(
-        "--output-dir", "-o",
-        default=None,
-        help=f"Output directory for CSV files "
-             f"(default: output.directory from --config, otherwise {DEFAULT_OUTPUT_DIR})"
-    )
-    
-    parser.add_argument(
-        "--encoding",
-        choices=["utf-8-sig", "utf-8", "shift-jis"],
-        default=None,
-        help="CSV encoding: utf-8-sig = UTF-8 with BOM, opens correctly in Excel (default, "
-             "or output.encoding from --config); "
-             "utf-8 = without BOM; shift-jis = CP932, unrepresentable characters become '?'"
-    )
-    
-    # Audit logging
-    parser.add_argument(
-        "--audit-log",
-        help="Path to audit log file"
-    )
-    
-    # Database output
-    parser.add_argument(
-        "--database",
-        help="Enable SQLite database output (specify path, e.g., ./plc_data.db)"
-    )
-    
-    parser.add_argument(
-        "--no-database",
-        action="store_true",
-        help="Disable database output (overrides config file)"
-    )
-    
-    parser.add_argument(
-        "--db-track-history",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Track value changes in database (disable with --no-db-track-history)"
-    )
-    
-    # Report generation
-    parser.add_argument(
-        "--report",
-        choices=["html", "pdf", "json"],
-        help="Generate report in specified format"
-    )
-    
-    parser.add_argument(
-        "--report-output",
-        help="Report output path, used as given (default: plc_report_<timestamp> in the output directory)"
-    )
-    
-    parser.add_argument(
-        "--report-title",
-        default="PLC Discovery レポート",
-        help="Report title"
-    )
-    
-    parser.add_argument(
-        "--report-company",
-        default="",
-        help="Company name for report header"
-    )
-    
-    parser.add_argument(
-        "--report-theme",
-        choices=["default", "dark", "light"],
-        default="default",
-        help="Report theme (default: default)"
-    )
-    
-    # Verbosity
-    parser.add_argument(
-        "--verbose", "-v",
-        action="store_true",
-        help="Enable verbose output"
-    )
-    
-    parser.add_argument(
-        "--quiet", "-q",
-        action="store_true",
-        help="Suppress progress output"
-    )
-    
-    parser.add_argument(
-        "--no-rich",
-        action="store_true",
-        help="Disable rich console output"
-    )
-    
-    return parser.parse_args()
-
-
-def get_protocol_from_string(protocol_str: str) -> Optional[Protocol]:
-    """Convert a protocol name or alias to Protocol (see names.PROTOCOL_NAMES)"""
-    return parse_protocol(protocol_str)
-
-
-def get_device_type_from_string(device_str: str) -> Optional[DeviceType]:
-    """Convert a device name such as "D" or "HR" to DeviceType"""
-    return parse_device_type(device_str)
-
-
-def parse_address_range(range_str: str) -> tuple:
-    """
-    Parse address range string (e.g., '0-1000' or '100') to (start, end).
-    
-    Raises:
-        ValueError: if the range is malformed, negative or start > end
-    """
-    if not range_str:
-        return 0, 999
-    
-    parts = [p.strip() for p in range_str.split("-")]
-    try:
-        if len(parts) == 2:
-            start, end = int(parts[0]), int(parts[1])
-        elif len(parts) == 1:
-            start = end = int(parts[0])
-        else:
-            raise ValueError
-    except ValueError:
-        raise ValueError(
-            f"Invalid address range '{range_str}' (expected e.g. '0-999' or '100')"
-        ) from None
-    
-    if start > end:
-        raise ValueError(f"Invalid address range '{range_str}': start must be <= end")
-    size_error = range_size_error(start, end)
-    if size_error:
-        raise ValueError(f"Invalid address range '{range_str}': {size_error}")
-    return start, end
-
-
-def create_network_config(args, config_loader: Optional[ConfigLoader] = None) -> NetworkConfig:
-    """
-    Create NetworkConfig: defaults, then the config file's network section,
-    then any timing option given explicitly on the command line.
-    """
-    config = config_loader.get_network_config() if config_loader else NetworkConfig()
-    overrides = {
-        "packet_interval_ms": args.packet_interval,
-        "retry_interval_ms": args.retry_interval,
-        "request_timeout_ms": args.request_timeout,
-        "max_concurrent": args.max_concurrent,
-    }
-    return dataclasses.replace(config, **{k: v for k, v in overrides.items() if v is not None})
-
-
-# Command-line timing options and the network setting each one overrides
-NETWORK_OPTIONS = {
-    "--packet-interval": ("packet_interval", "packet_interval_ms"),
-    "--retry-interval": ("retry_interval", "retry_interval_ms"),
-    "--request-timeout": ("request_timeout", "request_timeout_ms"),
-    "--max-concurrent": ("max_concurrent", "max_concurrent"),
-}
-
-
-def network_option_errors(args) -> List[str]:
-    """Errors for timing options out of range (e.g. --request-timeout 0)"""
-    errors = []
-    for option, (attr, key) in NETWORK_OPTIONS.items():
-        value = getattr(args, attr)
-        if value is not None:
-            error = integer_error(value, NETWORK_MINIMUMS[key])
-            if error:
-                errors.append(f"{option} {error}")
-    return errors
-
-
-def parse_targets(target_str: str) -> List[str]:
-    """
-    Parse comma-separated target IPs (empty entries such as a trailing
-    comma are ignored).
-    
-    Raises:
-        ValueError: if an entry is not an IPv4 address
-    """
-    if not target_str:
-        return []
-    targets = [ip.strip() for ip in target_str.split(",") if ip.strip()]
-    errors = [e for e in map(target_address_error, targets) if e]
-    if errors:
-        raise ValueError(f"Invalid --target: {'; '.join(errors)}")
-    return targets
-
-
-def load_type_mapping(path: str, overrides: Optional[Dict[str, str]] = None) -> DataTypeManager:
-    """
-    Load type mapping from file.
-    
-    ``overrides`` (default_type / default_byte_order from the command line)
-    replace the file's defaults before the mappings are built, so mappings
-    without their own byte_order follow --byte-order.
-    """
-    try:
-        with open(path, 'r', encoding='utf-8') as f:
-            if path.endswith('.json'):
-                config = json.load(f)
-            else:
-                try:
-                    import yaml
-                    config = yaml.safe_load(f)
-                except ImportError:
-                    raise ImportError("PyYAML required for YAML type mapping files")
-        
-        if overrides and isinstance(config, dict):
-            config = {**config, **overrides}
-        return DataTypeManager.from_config(config, prefix=Path(path).name)
-    except Exception as e:
-        logger.error(f"Failed to load type mapping: {e}")
-        raise
-
-
-def _split_address(address: str) -> Optional[tuple]:
-    """Split an address like "D100" into ("D", 100); None if not parseable"""
-    match = re.fullmatch(r"([A-Za-z]*)(\d+)", address or "")
-    if not match:
-        return None
-    return match.group(1), int(match.group(2))
-
-
-def apply_data_type_conversion(
-    data_points: List[DataPoint],
-    data_type: Optional[DataType],
-    byte_order: ByteOrder,
-    type_manager: Optional[DataTypeManager] = None
-) -> List[DataPoint]:
-    """
-    Apply data type conversion to data points.
-    
-    Multi-word types (DWORD, FLOAT, DOUBLE, ...) combine consecutive,
-    successfully read words. Values are aligned to a fixed grid so a failed
-    or missing word never shifts the pairing of the following values:
-    - with a type mapping: relative to the mapping's start address
-    - otherwise: relative to the start of each contiguous address run
-      (normally the start of the requested range)
-    
-    The combined value is stored on the first address (all words in
-    raw_words). The other words stay in the output with their own raw
-    value/hex and a display_value pointing to the first address, so no raw
-    data is lost. Multi-word types are never applied to bit devices.
-    
-    Args:
-        data_points: List of data points to convert
-        data_type: Default data type (if type_manager not used)
-        byte_order: Byte order for conversion
-        type_manager: Type manager for address-specific mappings
-            (takes precedence over data_type)
-    
-    Returns:
-        New list of data points with converted values
-    """
-    if not data_type and not type_manager:
-        return data_points
-    
-    # Parse addresses and find the start/end of each contiguous run
-    parsed: List[Optional[tuple]] = [_split_address(dp.address) for dp in data_points]
-    
-    def continues(prev, addr) -> bool:
-        return bool(addr and prev and prev[0] == addr[0] and prev[1] + 1 == addr[1])
-    
-    run_start: List[Optional[int]] = []
-    for idx, addr in enumerate(parsed):
-        if idx and continues(parsed[idx - 1], addr):
-            run_start.append(run_start[-1])
-        else:
-            run_start.append(addr[1] if addr else None)
-    run_end: List[Optional[int]] = [None] * len(parsed)
-    for idx in range(len(parsed) - 1, -1, -1):
-        addr = parsed[idx]
-        if idx + 1 < len(parsed) and continues(addr, parsed[idx + 1]):
-            run_end[idx] = run_end[idx + 1]
-        else:
-            run_end[idx] = addr[1] if addr else None
-    
-    result: List[DataPoint] = []
-    i = 0
-    while i < len(data_points):
-        dp = data_points[i]
-        addr = parsed[i]
-        
-        if addr is None or dp.value is None or dp.status != StatusCode.OK:
-            result.append(dp)
-            i += 1
-            continue
-        
-        prefix, number = addr
-        
-        # Determine data type, value size and alignment base for this address
-        align_base = run_start[i]
-        mapping = type_manager.get_mapping_for_address(number, prefix) if type_manager else None
-        if mapping:
-            dt, bo, align_base = mapping.data_type, mapping.byte_order, mapping.start_address
-            word_count = mapping.words_per_value()
-        else:
-            if type_manager:
-                dt, bo = type_manager.default_type, type_manager.default_byte_order
-            else:
-                dt, bo = data_type, byte_order
-            if dt in VARIABLE_LENGTH_TYPES:
-                # STRING / RAW without a mapping: the whole requested range
-                word_count = run_end[i] - run_start[i] + 1
-            else:
-                word_count = DataTypeConverter.get_word_count(dt) if dt else 1
-        word_count = max(word_count or 1, 1)
-        
-        if dt is None or (word_count > 1 and prefix.upper() in BIT_DEVICES):
-            result.append(dp)
-            i += 1
-            continue
-        
-        offset = (number - align_base) % word_count
-        if offset:
-            # Second/later word of a value whose first word failed or is missing
-            result.append(dataclasses.replace(
-                dp, data_type=dt.value,
-                display_value=f"(part of {prefix}{number - offset}, incomplete)",
-            ))
-            i += 1
-            continue
-        
-        # Collect the following consecutive, successfully read words
-        group = [dp]
-        for j in range(1, word_count):
-            if i + j >= len(data_points):
-                break
-            nxt = data_points[i + j]
-            if (nxt.value is None or nxt.status != StatusCode.OK
-                    or parsed[i + j] != (prefix, number + j)):
-                break
-            group.append(nxt)
-        
-        if len(group) < word_count:
-            # Not all words of this value were read: keep the raw point
-            result.append(dataclasses.replace(
-                dp, data_type=dt.value,
-                display_value=f"(incomplete {dt.value}: {len(group)}/{word_count} words)",
-            ))
-            i += 1
-            continue
-        
-        words = [g.value for g in group]
-        converted = DataTypeConverter.convert(words, dt, bo)
-        result.append(dataclasses.replace(
-            dp,
-            data_type=dt.value,
-            converted_value=converted,
-            display_value=DataTypeConverter.to_string(converted, dt),
-            raw_words=words if word_count > 1 else None,
-        ))
-        # Keep the remaining words of a multi-word value as their own rows
-        for part in group[1:]:
-            result.append(dataclasses.replace(
-                part,
-                data_type=dt.value,
-                display_value=f"(part of {dp.address})",
-            ))
-        i += word_count
-    
-    return result
 
 
 async def run_discovery(
@@ -808,11 +261,7 @@ async def _collect_ranges(
     """Collect all device ranges in order"""
     points: List[DataPoint] = []
     for device_range in device_ranges:
-        points.extend(await collector.collect_range(
-            device_range.device_type,
-            device_range.start_address,
-            device_range.end_address
-        ))
+        points.extend(await collect_item(collector, device_range))
     return points
 
 
@@ -835,6 +284,8 @@ class _ResultWriter:
         self.label = label or self.ip
         self.shared_ip = self.label != self.ip
         self.exporter = exporter
+        # Periodic scans with output.periodic_csv: daily append to one file a day
+        self.daily = False
         self.display = display
         self.db_exporter = db_exporter
         self._exported_denied: Set[str] = set()
@@ -853,7 +304,13 @@ class _ResultWriter:
         try:
             # Protocol and port in the file name only when the IP is shared
             tag = f"{self.protocol}_{self.port}" if self.shared_ip else None
-            path = self.exporter.export_plc_data(points, self.ip, target_tag=tag)
+            hex_addresses = self.exporter.hex_addresses and self.protocol == "SLMP"
+            if self.daily:
+                path = self.exporter.append_plc_data(
+                    points, self.ip, target_tag=tag, hex_addresses=hex_addresses)
+            else:
+                path = self.exporter.export_plc_data(
+                    points, self.ip, target_tag=tag, hex_addresses=hex_addresses)
         except Exception as e:
             self._failed("data CSV", e)
         if self.db_exporter and self.db_exporter.is_enabled:
@@ -892,7 +349,8 @@ class _ResultWriter:
 
 def _range_labels(device_ranges: Optional[List[DeviceRange]]) -> List[str]:
     return [
-        f"{r.device_type.value}{r.start_address}-{r.device_type.value}{r.end_address}"
+        r.label if isinstance(r, TagRange)
+        else f"{r.device_type.value}{r.start_address}-{r.device_type.value}{r.end_address}"
         for r in (device_ranges or [])
     ] or ["ALL"]
 
@@ -1036,6 +494,8 @@ async def run_periodic_scan(
         key: _ResultWriter(p, exporter, display, db_exporter, label=key)
         for key, p in targets
     }
+    for writer in writers.values():
+        writer.daily = getattr(exporter, "periodic_csv", "per_cycle") == "daily"
     ips = {key: p.ip_address for key, p in targets}
     
     async with contextlib.AsyncExitStack() as stack:
@@ -1214,102 +674,6 @@ async def _notify(notifier: Optional[NotificationManager], send) -> None:
         logger.warning(f"Notification failed: {e}")
 
 
-def resolve_mode_and_interval(args, config_loader: Optional[ConfigLoader]) -> tuple:
-    """
-    Resolve operation mode and periodic interval: CLI first, then settings
-    written explicitly in the config file. A config file without scan.mode
-    never triggers a full scan by default.
-    """
-    mode_name = args.mode
-    if not mode_name and config_loader and config_loader.is_set("scan", "mode"):
-        mode_name = config_loader.get_scan_mode().value
-    mode_name = mode_name or "discover"
-    
-    interval = args.interval
-    if interval is None:
-        interval = config_loader.get_scan_interval() if config_loader else 0.0
-    return mode_name, interval
-
-
-def resolve_discovery_protocols(args, config_loader: Optional[ConfigLoader]) -> Optional[List[Protocol]]:
-    """Protocols for discover mode: --discover-protocols, then config, then all (None)"""
-    if args.discover_protocols:
-        protocols = []
-        for name in args.discover_protocols.split(","):
-            protocol = parse_protocol(name)
-            if protocol is None:
-                raise ValueError(f"Unknown protocol in --discover-protocols: '{name.strip()}'")
-            protocols.append(protocol)
-        return protocols
-    if config_loader:
-        return config_loader.get_discovery_protocols()
-    return None
-
-
-def resolve_device_ranges(args, config_loader: Optional[ConfigLoader]) -> List[DeviceRange]:
-    """Device ranges for range mode: --range, then config scan.device_ranges, then 0-999"""
-    if args.range:
-        start_addr, end_addr = parse_address_range(args.range)
-        return [DeviceRange(get_device_type_from_string(args.device), start_addr, end_addr)]
-    if config_loader:
-        ranges = config_loader.get_device_ranges()
-        if ranges:
-            return ranges
-    start_addr, end_addr = parse_address_range(None)
-    return [DeviceRange(get_device_type_from_string(args.device), start_addr, end_addr)]
-
-
-def resolve_output_settings(args, config_loader: Optional[ConfigLoader]) -> tuple:
-    """
-    CSV output directory and encoding: CLI option, then the setting written
-    in the config file, then the default. (The loaded config always holds
-    default values, so only explicitly written settings may override.)
-    """
-    output_dir, encoding = args.output_dir, args.encoding
-    if config_loader:
-        settings = config_loader.get_output_settings()
-        if output_dir is None and config_loader.is_set("output", "directory"):
-            output_dir = settings["directory"]
-        if encoding is None and config_loader.is_set("output", "encoding"):
-            encoding = settings["encoding"]
-    return output_dir or DEFAULT_OUTPUT_DIR, encoding or "utf-8-sig"
-
-
-def resolve_data_types(args, config_loader: Optional[ConfigLoader]) -> tuple:
-    """
-    Data type conversion settings: (data_type, byte_order, type_manager).
-    
-    --data-type / --byte-order win over the config file. With a type mapping
-    (file or config) they replace its default_type / default_byte_order:
-    the type of unmapped addresses, and the byte order of mappings that do
-    not set their own byte_order. An explicit mapping byte_order still wins.
-    
-    Raises:
-        Exception: if the --type-mapping file cannot be loaded
-    """
-    data_type = DATA_TYPE_MAP.get(args.data_type) if args.data_type else None
-    byte_order = BYTE_ORDER_MAP.get(args.byte_order) if args.byte_order else None
-    overrides = {}
-    if args.data_type:
-        overrides["default_type"] = args.data_type
-    if args.byte_order:
-        overrides["default_byte_order"] = args.byte_order
-    type_manager = None
-    
-    if args.type_mapping:
-        type_manager = load_type_mapping(args.type_mapping, overrides)
-    elif config_loader:
-        dt_config = config_loader.config.get("data_types") or {}
-        if dt_config.get("mappings"):
-            type_manager = DataTypeManager.from_config({**dt_config, **overrides})
-        if data_type is None and config_loader.is_set("data_types", "default_type"):
-            data_type = config_loader.get_default_data_type()
-        if byte_order is None and config_loader.is_set("data_types", "default_byte_order"):
-            byte_order = config_loader.get_default_byte_order()
-    
-    return data_type, byte_order or ByteOrder.LITTLE_ENDIAN, type_manager
-
-
 async def main():
     """Main entry point"""
     args = parse_args()
@@ -1382,7 +746,14 @@ async def main():
     
     # Create exporter
     output_dir, encoding = resolve_output_settings(args, config_loader)
-    exporter = CSVExporter(output_dir, encoding)
+    hex_addresses = args.hex_addresses
+    if hex_addresses is None and config_loader:
+        hex_addresses = bool(config_loader.get_output_settings().get("hex_addresses", False))
+    exporter = CSVExporter(output_dir, encoding, hex_addresses=bool(hex_addresses))
+    periodic_csv = args.periodic_csv
+    if periodic_csv is None and config_loader:
+        periodic_csv = config_loader.get_output_settings().get("periodic_csv")
+    exporter.periodic_csv = periodic_csv or "per_cycle"
     
     # Initialize database exporter (optional)
     db_exporter = None

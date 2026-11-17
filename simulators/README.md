@@ -8,7 +8,9 @@ PLCが無い環境でPLC Discoveryツールをテストするためのソフト�
 |---------------|-----------|-----------------|-----------|
 | SLMP Simulator | SLMP (MC Protocol 3E) | 5001 | - |
 | Modbus Simulator | Modbus/TCP | 502 | 1502 |
-| EtherNet/IP Simulator | CIP over EtherNet/IP | 44818 | - |
+| EtherNet/IP Simulator | CIP over EtherNet/IP（SLC 形式：データファイル） | 44818 | - |
+| EtherNet/IP Simulator（Logix 形式） | CIP over EtherNet/IP（タグ） | 44819 | - |
+| EtherNet/IP Simulator（オムロン NJ/NX 形式） | CIP over EtherNet/IP（変数） | 44820 | - |
 | S7 Simulator | S7comm over ISO-on-TCP | 102 | 1102 |
 | FINS Simulator | FINS/UDP + FINS/TCP | 9600 | - |
 
@@ -44,7 +46,9 @@ python run_all.py --host 0.0.0.0   # 他のPCからも接続させる場合（�
 これにより以下のシミュレーターが起動します：
 - SLMP: `localhost:5001`
 - Modbus/TCP: `localhost:1502`
-- EtherNet/IP: `localhost:44818`
+- EtherNet/IP: `localhost:44818`（SLC 形式：N7 / B3）
+- EtherNet/IP Logix: `localhost:44819`（タグ）
+- EtherNet/IP オムロン NJ/NX: `localhost:44820`（変数）
 - S7: `localhost:1102`
 - FINS: `localhost:9600` (UDP / TCP)
 
@@ -57,8 +61,14 @@ python slmp_simulator.py --host 0.0.0.0 --port 5001
 # Modbus/TCP
 python modbus_simulator.py --host 0.0.0.0 --port 1502
 
-# EtherNet/IP
+# EtherNet/IP（SLC 形式）
 python ethernet_ip_simulator.py --host 0.0.0.0 --port 44818
+
+# EtherNet/IP（Logix 形式：タグ）
+python ethernet_ip_simulator.py --host 0.0.0.0 --port 44819 --mode logix
+
+# EtherNet/IP（オムロン NJ/NX 形式：変数）
+python ethernet_ip_simulator.py --host 0.0.0.0 --port 44820 --mode omron
 
 # S7
 python s7_simulator.py --host 0.0.0.0 --port 1102
@@ -161,12 +171,58 @@ EtherNet/IP（CIP）プロトコルをシミュレート。
 - Register Session
 - List Identity
 - List Services
-- SendRRData (Get Attribute All)
+- SendRRData (Get Attribute All, Forward Open / Forward Close)
+- SendUnitData（PCCC の型付き読み出し：整数ファイル N7・ビットファイル B3。pycomm3 の SLCDriver で読める）
 
 **デバイス情報：**
 - Vendor ID: 0x0001 (Rockwell)
 - Device Type: 0x0E (PLC)
-- Product Name: "EIP Simulator PLC"
+- Product Name: "EIP Simulator PLC"（SLC 形式）／"1756-L83E/B LOGIX5583E Sim"（Logix 形式）／"NJ501-1300 Sim"（オムロン形式。Vendor ID は 47 = OMRON）
+
+**Logix 形式（`--mode logix`、run_all では 44819 番）：**
+
+pycomm3 の LogixDriver（ControlLogix / CompactLogix 用）で接続・読み出しできるように、次の通信に応答します。
+
+- 識別情報（Unconnected Send 経由の Get Attributes All）、プログラム名
+- タグ一覧（Get Instance Attribute List。コントローラスコープと、プログラム `MainProgram` のスコープ）
+- 構造体の定義（テンプレートの属性・定義の読み出し）
+- タグ読み出し（Read Tag）、複数まとめての要求（Multiple Service Packet）、大きな配列の分割読み出し（Read Tag Fragmented）。構造体全体・メンバー（`Motor.Speed`）・プログラムスコープのタグ（`Program:MainProgram.Step`）
+
+| タグ | 型 | 値 |
+|------|----|----|
+| Speed | DINT | 1500 |
+| Temp | REAL | 23.5 |
+| Running | BOOL | 1 |
+| Counter | INT | 42 |
+| Recipe | DINT[10] | 0, 10, 20, ... 90 |
+| Trend | INT[600] | 0〜599（1回の応答に収まらないため分割読み出しになる） |
+| Motor | MotorData（構造体：Speed DINT / Current REAL / Count INT） | 1200 / 3.5 / 7 |
+| Program:MainProgram.Step | DINT | 3 |
+| Program:MainProgram.Setpoint | REAL | 50.0 |
+
+```bash
+python plc_scanner.py --mode range --target 127.0.0.1 --protocol eip --port 44819 --tags "Speed,Temp,Recipe[2]{3},Motor,Program:MainProgram.Step"
+```
+
+**オムロン NJ/NX 形式（`--mode omron`、run_all では 44820 番）：**
+
+実機の NJ / NX と同じく、プログラム名やタグ一覧の要求には応答しません（pycomm3 の LogixDriver では接続できない）。本ツールは汎用の CIP 接続に切り替え、変数名を指定した読み出し（Read Tag Fragmented）で値を読みます。
+
+| 変数 | 型 | 値 |
+|------|----|----|
+| Temperature | REAL | 25.5 |
+| Pressure | LREAL | 0.101325 |
+| TotalCount | UDINT | 123456 |
+| StatusWord | WORD | 0x00FF |
+| Values | INT[20] | 0, 2, 4, ... 38 |
+| History | DINT[300] | 0〜299（分割読み出しになる） |
+| Motor | MotorData（構造体） | 900 / 2.5 / 4 |
+
+```bash
+python plc_scanner.py --mode range --target 127.0.0.1 --protocol eip --port 44820 --tags "Temperature,Pressure,Values[0]{5},Motor.Speed"
+```
+
+構造体の変数は、メンバー（`Motor.Speed`）を指定すると読めます。全体（`Motor`）は `NG_UNSUPPORTED` になります（タグ一覧がないため構造体の並びが分からない）。書き込みには対応していません（本ツールは読み取り専用のため不要）。
 
 ### S7 Simulator
 

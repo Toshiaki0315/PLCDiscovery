@@ -137,7 +137,10 @@ from plc_discovery.protocols.base import BaseProtocolHandler
 # Public coroutines a handler may offer: every PLC read goes through
 # read_device_range / read_device_raw (rate limiting, address limits,
 # reconnect after a timeout, binary search)
-ALLOWED_PUBLIC_COROUTINES = {"connect", "disconnect", "read_device_raw", "read_device_range"}
+ALLOWED_PUBLIC_COROUTINES = {"connect", "disconnect", "read_device_raw", "read_device_range",
+                             # EtherNet/IP symbolic tags: packet interval, timeout with
+                             # reconnect, per-tag errors (see EtherNetIPHandler.read_tags)
+                             "read_tags"}
 
 
 @pytest.mark.parametrize("handler_class", sorted(

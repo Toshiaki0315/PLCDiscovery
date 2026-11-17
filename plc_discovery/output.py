@@ -14,7 +14,7 @@ from typing import Dict, List, Mapping, Optional, Set
 import logging
 
 from .config import PLCInfo, DataPoint, StatusCode
-from .utils import get_file_timestamp, get_timestamp
+from .utils import get_file_timestamp, get_timestamp, melsec_address
 
 logger = logging.getLogger(__name__)
 
@@ -134,10 +134,17 @@ class CSVExporter:
     def __init__(
         self,
         output_dir: str = DEFAULT_OUTPUT_DIR,
-        encoding: str = "utf-8"
+        encoding: str = "utf-8",
+        hex_addresses: bool = False
     ):
         self.output_dir = Path(output_dir)
         self.encoding = normalize_csv_encoding(encoding)
+        # Add MELSEC hex addresses to data files of SLMP targets (callers
+        # pass hex_addresses=True to export_plc_data for those)
+        self.hex_addresses = hex_addresses
+        # Periodic scans: "per_cycle" (one file per cycle) or "daily"
+        # (append to one file per day, see append_plc_data)
+        self.periodic_csv = "per_cycle"
         self._ensure_output_dir()
     
     def _open_csv(self, filepath: Path, mode: str = "w"):
@@ -210,7 +217,8 @@ class CSVExporter:
         plc_ip: str,
         filename: Optional[str] = None,
         include_type_info: bool = True,
-        target_tag: Optional[str] = None
+        target_tag: Optional[str] = None,
+        hex_addresses: bool = False
     ) -> str:
         """
         Export PLC device data to CSV.
@@ -223,6 +231,8 @@ class CSVExporter:
             target_tag: Protocol and port (e.g. "SLMP_5001") added to the
                 file name when several targets share the IP, so each file
                 can be told apart
+            hex_addresses: add an "address_hex" column with the address in
+                MELSEC notation (X/Y/B/W in hexadecimal, e.g. X31 -> X1F)
         
         Returns:
             Path to the created file
@@ -245,7 +255,9 @@ class CSVExporter:
         
         # Use extended headers if type info is present
         use_extended = include_type_info and has_type_info
-        headers = DATA_HEADERS_EXTENDED if use_extended else DATA_HEADERS
+        headers = list(DATA_HEADERS_EXTENDED if use_extended else DATA_HEADERS)
+        if hex_addresses:
+            headers.insert(1, "address_hex")
         
         try:
             with self._open_csv(filepath, 'w') as f:
@@ -254,6 +266,8 @@ class CSVExporter:
                 
                 for dp in data_points:
                     row = dp.to_dict()
+                    if hex_addresses:
+                        row["address_hex"] = melsec_address(dp.address)
                     writer.writerow(row)
             
             logger.info(f"PLC data exported to: {filepath}")
@@ -261,6 +275,50 @@ class CSVExporter:
             
         except Exception as e:
             logger.error(f"Failed to export PLC data: {e}")
+            raise
+    
+    def append_plc_data(
+        self,
+        data_points: List[DataPoint],
+        plc_ip: str,
+        target_tag: Optional[str] = None,
+        hex_addresses: bool = False,
+    ) -> str:
+        """
+        Append PLC data to one file per day: plc_data_<IP>[_<tag>]_YYYYMMDD.csv
+        
+        For periodic scans (output.periodic_csv: daily): one file per cycle
+        meant 1440 files a day at 60 s. Every row keeps its own timestamp,
+        so cycles can be told apart; the columns are always the extended
+        set, so cycles with and without conversion fit the same file.
+        """
+        safe_ip = plc_ip.replace(".", "_")
+        tag = f"_{target_tag}" if target_tag else ""
+        filepath = self.output_dir / f"plc_data_{safe_ip}{tag}_{get_file_timestamp()[:8]}.csv"
+        headers = list(DATA_HEADERS_EXTENDED)
+        if hex_addresses:
+            headers.insert(1, "address_hex")
+        new_file = not filepath.exists() or filepath.stat().st_size == 0
+        if not new_file:
+            # Columns of an existing file win (e.g. address_hex switched later)
+            with open(filepath, encoding=self.encoding, errors="replace", newline="") as f:
+                first = f.readline().lstrip("\ufeff").strip()
+            if first:
+                headers = next(csv.reader([first]))
+        try:
+            with self._open_csv(filepath, 'a') as f:
+                writer = _SafeDictWriter(f, fieldnames=headers, extrasaction='ignore')
+                if new_file:
+                    writer.writeheader()
+                for dp in data_points:
+                    row = dp.to_dict()
+                    if "address_hex" in headers:
+                        row["address_hex"] = melsec_address(dp.address)
+                    writer.writerow(row)
+            logger.info(f"PLC data appended to: {filepath}")
+            return str(filepath)
+        except Exception as e:
+            logger.error(f"Failed to append PLC data: {e}")
             raise
     
     def export_denied_addresses(

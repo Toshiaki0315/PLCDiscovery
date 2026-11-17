@@ -51,7 +51,8 @@ async def test_simulator_ports_probed_on_loopback_only():
 
 
 def test_simulator_ports_constant():
-    assert SIMULATOR_PORTS == {Protocol.MODBUS_TCP: [1502], Protocol.S7: [1102]}
+    assert SIMULATOR_PORTS == {Protocol.MODBUS_TCP: [1502], Protocol.S7: [1102],
+                               Protocol.ETHERNET_IP: [44819, 44820]}   # Logix / Omron modes of the EIP simulator
 
 
 @pytest.mark.asyncio

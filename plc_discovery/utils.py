@@ -428,6 +428,22 @@ def sorted_addresses(addresses) -> List[str]:
     return sorted(addresses, key=address_sort_key)
 
 
+# MELSEC devices numbered in hexadecimal (GX Works notation)
+_MELSEC_HEX_DEVICES = ("X", "Y", "B", "W")
+
+
+def melsec_address(address: str) -> str:
+    """
+    Address in MELSEC (GX Works) notation: X/Y/B/W numbers in hexadecimal
+    ("X31" -> "X1F"); other addresses are returned unchanged. The tool
+    itself numbers every device in decimal.
+    """
+    match = _ADDRESS_PARTS.fullmatch(address or "")
+    if not match or match.group(1).upper() not in _MELSEC_HEX_DEVICES:
+        return address
+    return f"{match.group(1).upper()}{int(match.group(2)):X}"
+
+
 def status_counts(points) -> Dict[StatusCode, int]:
     """Number of data points per status (every StatusCode present, 0 if unused)"""
     counts = {status: 0 for status in StatusCode}

@@ -292,6 +292,8 @@ class ConfigLoader:
             if name in names:
                 errors.append(f"{where}.name '{name}' is used twice (names must be unique)")
             names.add(name)
+            if "format" in item and str(item["format"]).lower() not in ("adaptive", "messagecard"):
+                errors.append(f"{where}.format: unknown format '{item['format']}' (allowed: adaptive, messagecard)")
             for event in item.get("events") or []:
                 if event not in known_events:
                     errors.append(f"{where}.events: unknown event '{event}'")
@@ -348,6 +350,11 @@ class ConfigLoader:
                 ))
         
         return ranges
+    
+    def get_tags(self) -> List[str]:
+        """EtherNet/IP (Logix) tags to read in range mode (scan.tags)"""
+        tags = self.config.get("scan", {}).get("tags") or []
+        return [str(t).strip() for t in tags if str(t).strip()] if isinstance(tags, list) else []
     
     def get_scan_mode(self) -> ScanMode:
         """
@@ -523,6 +530,10 @@ class ConfigLoader:
                 f"scan.interval_seconds must be 0 (single scan) or >= {MIN_INTERVAL_SECONDS:g}"
             )
         
+        tags = self.config.get("scan", {}).get("tags")
+        if tags is not None and (not isinstance(tags, list) or not all(isinstance(t, str) for t in tags)):
+            errors.append("scan.tags must be a list of tag names")
+        
         # Validate device ranges
         for i, range_def in enumerate(self.config.get("scan", {}).get("device_ranges", []) or []):
             where = f"scan.device_ranges[{i}]"
@@ -543,6 +554,13 @@ class ConfigLoader:
             if self._parse_device_type(str(range_def.get("device", "D"))) is None:
                 errors.append(f"{where}: unknown device '{range_def.get('device')}'")
 
+        periodic_csv = (self.config.get("output") or {}).get("periodic_csv", "per_cycle")
+        if periodic_csv not in ("per_cycle", "daily"):
+            errors.append(f"output.periodic_csv: unknown value {periodic_csv!r} (allowed: per_cycle, daily)")
+        hex_addresses = (self.config.get("output") or {}).get("hex_addresses", False)
+        if not isinstance(hex_addresses, bool):
+            errors.append(f"output.hex_addresses must be true or false, got {hex_addresses!r}")
+        
         # Database retention (0 = keep everything / no size limit)
         database = (self.config.get("output") or {}).get("database") or {}
         if isinstance(database, dict):

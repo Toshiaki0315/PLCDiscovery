@@ -46,7 +46,7 @@ plc_scanner.bat --mode range --target 192.168.1.10 --device D --range 0-99
 - macOS / Linux の `start_gui.sh` は、Tkinter を含む Python を自動で探して使います（PATH 上の `python3` のほか、Homebrew・python.org の既定の場所も確認）。既存の `.venv` に Tkinter がなければ、その Python で作り直します。見つからない場合は対処方法を表示します（macOS: `brew install python-tk`、Ubuntu: `sudo apt install python3-tk`）
 - 任意パッケージの `netifaces`（サブネットの自動判定）は、Windows + Python 3.10 以降では C++ ビルドツールがないと入りません。入らない場合もサブネットを /24 とみなして動作します
 - やり直したいときは `.venv` フォルダーを削除してから再実行してください
-- シミュレータは `127.0.0.1` で待ち受けます（詳細は [simulators/README.md](simulators/README.md)）。ポートは SLMP 5001 / Modbus 1502 / EtherNet/IP 44818 / S7 1102 / FINS 9600 です。探索で見つけるには、IP範囲に `127.0.0.1` を指定します
+- シミュレータは `127.0.0.1` で待ち受けます（詳細は [simulators/README.md](simulators/README.md)）。ポートは SLMP 5001 / Modbus 1502 / EtherNet/IP 44818（SLC 形式）・44819（Logix 形式：タグ）・44820（オムロン NJ/NX 形式：変数） / S7 1102 / FINS 9600 です。探索で見つけるには、IP範囲に `127.0.0.1` を指定します
 - 探索結果は、同じIPアドレスでも応答したプロトコルごとに1行ずつ表示します（複数プロトコル対応のPLCも同様）
 
 ## インストール
@@ -178,6 +178,21 @@ python plc_scanner.py --mode range --target 192.168.1.10 --device D --range 0-10
 
 1つの範囲で読めるのは最大 1,048,576 点です（それを超える指定は接続前にエラー）。
 
+### EtherNet/IP のタグ（Logix）・変数（オムロン NJ/NX）を読む
+
+ControlLogix / CompactLogix とオムロン NJ / NX は、アドレスではなくタグ名（変数名）でデータを扱います。範囲指定モードで `--tags` を指定してください（読み取り専用）。
+
+```bash
+python plc_scanner.py --mode range --target 192.168.1.20 --protocol eip --tags "Temp,Speed,Recipe[0]{10}"
+```
+
+- 構造体（UDT）のタグは、メンバーごとの行（`Motor.Speed`、`Motor.Current` …）として出力します。メンバーだけを `--tags "Motor.Speed"` のように指定することもできます
+- プログラムスコープのタグは `Program:プログラム名.タグ名` の形で指定します
+- Logix のフルスキャン（`--mode full`）では、タグ一覧にあるタグ（コントローラスコープ・プログラムスコープ、基本型・構造体。配列は先頭1000要素まで）をすべて読みます
+- オムロン NJ / NX はタグ一覧を取得できないため、フルスキャンではタグを読みません。Sysmac Studio で「ネットワーク公開」にした変数を `--tags` で指定してください。構造体の変数は、全体ではなくメンバー（`変数名.メンバー名`）を指定します（全体を指定すると `NG_UNSUPPORTED`）
+- SLC / MicroLogix は従来どおり `--device D`（N7）・`--device M`（B3）で読みます
+- シミュレーター（Logix 形式・オムロン形式）では確認済みです。実機での確認手順は [docs/real_device_checklist.md](docs/real_device_checklist.md) を参照してください
+
 ### データ型変換を指定したスキャン
 
 FLOAT型でデータを読み取り:
@@ -298,6 +313,9 @@ python plc_scanner.py --mode full --target 192.168.1.10 --no-database
 | `--data-type` | データ型変換 (FLOAT, DWORD等)。型マッピング使用時はマッピング外のアドレスに適用 | - |
 | `--byte-order` | 複数ワード値の並び。little=CDAB（下位ワード先頭）、big=ABCD、little_swap=DCBA、big_swap=BADC（ワード内バイト入替）。指定すると設定ファイルの値より優先（`byte_order` を書いていない型マッピングにも適用） | little |
 | `--type-mapping` | 型マッピングファイルパス | - |
+| `--tags` | EtherNet/IP（Logix・オムロン NJ/NX）で読むタグ（カンマ区切り。`配列[0]{10}` で10要素）。設定ファイルでは `scan.tags` | - |
+| `--hex-addresses` | 三菱（SLMP）の X/Y/B/W を16進数表記でも出力（CSV に `address_hex` 列。例: X31 → X1F）。設定ファイルでは `output.hex_addresses` | オフ |
+| `--periodic-csv` | 周期実行の CSV：`per_cycle`（周期ごとに1ファイル）／`daily`（1日1ファイルに追記）。設定ファイルでは `output.periodic_csv` | per_cycle |
 
 ## 設定ファイル
 
@@ -637,7 +655,7 @@ notifications:
     url: "https://YOUR-WORKFLOW-WEBHOOK-URL"
 ```
 
-Teams の従来の Incoming Webhook（`outlook.office.com/webhook/...`）は廃止が進んでいます。新しく設定する場合は、Teams のワークフローで発行した Webhook の URL を指定してください。
+Teams の従来の Incoming Webhook（`outlook.office.com/webhook/...`）は廃止が進んでいます。新しく設定する場合は、Teams のワークフローで発行した Webhook の URL を指定してください。Teams には Adaptive Card 形式で送ります（従来の URL を使う場合は `format: messagecard`）。
 
 ### Pythonコードでの通知
 

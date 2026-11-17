@@ -66,7 +66,7 @@ plc-scanner = "plc_scanner:cli"
 
 [tool.setuptools]
 # Top-level scripts imported by the console entry point
-py-modules = ["plc_scanner", "plc_gui"]
+py-modules = ["plc_scanner", "plc_gui", "plc_gui_settings"]
 
 [tool.setuptools.dynamic]
 version = {attr = "plc_discovery.__version__"}

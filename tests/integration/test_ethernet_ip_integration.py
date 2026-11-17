@@ -37,7 +37,6 @@ class TestEtherNetIPConnection:
             # Handler returns False on failure, does not raise
             assert not collector._handler.is_connected
 
-@pytest.mark.xfail(reason="pycomm3 CIPDriver generic read is incompatible with our simplified EtherNet/IP simulator")
 class TestEtherNetIPDataRead:
     """Test EtherNet/IP data reading"""
     
@@ -49,7 +48,6 @@ class TestEtherNetIPDataRead:
         ok_count = sum(1 for dp in data_points if dp.status == StatusCode.OK)
         assert ok_count == 100
 
-@pytest.mark.xfail(reason="pycomm3 CIPDriver generic read is incompatible with our simplified EtherNet/IP simulator")
 class TestEtherNetIPDeniedAddresses:
     """Test EtherNet/IP denied address handling"""
     

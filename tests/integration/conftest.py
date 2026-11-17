@@ -99,6 +99,22 @@ def run_ethernet_ip_simulator():
     asyncio.run(run_server("127.0.0.1", 44818, [(100, 150)]))
 
 
+def run_logix_simulator():
+    """Run the EtherNet/IP simulator in Logix mode (symbolic tags)"""
+    import asyncio
+    from simulators.ethernet_ip_simulator import run_server
+    
+    asyncio.run(run_server("127.0.0.1", 44819, [], mode="logix"))
+
+
+def run_omron_simulator():
+    """Run the EtherNet/IP simulator in Omron NJ/NX mode (variables by name)"""
+    import asyncio
+    from simulators.ethernet_ip_simulator import run_server
+    
+    asyncio.run(run_server("127.0.0.1", 44820, [], mode="omron"))
+
+
 def run_s7_simulator():
     """Run S7 simulator in separate process"""
     import asyncio
@@ -276,6 +292,42 @@ def fins_tcp_handler(network_config):
     """FINSHandler using FINS/TCP against the simulator (not yet connected)"""
     from plc_discovery.protocols.fins import FINSHandler
     return FINSHandler("127.0.0.1", 9600, config=network_config, use_tcp=True)
+
+
+@pytest.fixture(scope="session")
+def logix_simulator() -> Generator[SimulatorProcess, None, None]:
+    """EtherNet/IP simulator in Logix mode (tags) for the test session"""
+    simulator = SimulatorProcess("EtherNet/IP Logix", 44819, run_logix_simulator)
+    try:
+        simulator.start()
+        yield simulator
+    finally:
+        simulator.stop()
+
+
+@pytest.fixture
+def logix_plc_info():
+    """PLCInfo for the Logix-mode EtherNet/IP simulator"""
+    from plc_discovery.config import PLCInfo, Protocol
+    return PLCInfo(ip_address="127.0.0.1", protocol=Protocol.ETHERNET_IP, port=44819)
+
+
+@pytest.fixture(scope="session")
+def omron_simulator() -> Generator[SimulatorProcess, None, None]:
+    """EtherNet/IP simulator in Omron NJ/NX mode for the test session"""
+    simulator = SimulatorProcess("EtherNet/IP Omron NJ/NX", 44820, run_omron_simulator)
+    try:
+        simulator.start()
+        yield simulator
+    finally:
+        simulator.stop()
+
+
+@pytest.fixture
+def omron_plc_info():
+    """PLCInfo for the Omron NJ/NX-mode EtherNet/IP simulator"""
+    from plc_discovery.config import PLCInfo, Protocol
+    return PLCInfo(ip_address="127.0.0.1", protocol=Protocol.ETHERNET_IP, port=44820)
 
 
 @pytest.fixture

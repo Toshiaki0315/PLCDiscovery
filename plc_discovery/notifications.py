@@ -108,6 +108,9 @@ class NotificationConfig:
     enabled: bool = True
     timeout_seconds: float = 10.0
     retry_count: int = 3
+    # Teams message format: "adaptive" (Adaptive Card, for Teams workflow
+    # webhooks) or "messagecard" (legacy Office 365 connector format)
+    card_format: str = "adaptive"
     # Custom handler function (for type="custom")
     handler: Optional[Callable] = None
 
@@ -266,14 +269,58 @@ class TeamsHandler(NotificationHandler):
         NotificationPriority.CRITICAL: "FF0000",
     }
 
+    # Adaptive Card text colours per priority
+    ADAPTIVE_COLORS = {
+        NotificationPriority.LOW: "good",
+        NotificationPriority.NORMAL: "default",
+        NotificationPriority.HIGH: "warning",
+        NotificationPriority.CRITICAL: "attention",
+    }
+    
+    @staticmethod
+    def _facts(event: NotificationEvent) -> List[tuple]:
+        """(name, value) pairs shown with the message: type, time, up to 5 data items"""
+        facts = [("Type", event.type.value), ("Timestamp", event.timestamp)]
+        facts += [(key, str(value)) for key, value in list((event.data or {}).items())[:5]]
+        return facts
+    
     def build_payload(self, event: NotificationEvent) -> dict:
-        """Teams MessageCard (with up to 5 extra data facts)"""
-        facts = [
-            {"name": "Type", "value": event.type.value},
-            {"name": "Timestamp", "value": event.timestamp},
-        ]
-        facts += [{"name": key, "value": str(value)}
-                  for key, value in list((event.data or {}).items())[:5]]
+        """Message for the configured format (Adaptive Card by default)"""
+        if self.config.card_format == "messagecard":
+            return self.build_message_card(event)
+        return self.build_adaptive_card(event)
+    
+    def build_adaptive_card(self, event: NotificationEvent) -> dict:
+        """
+        Adaptive Card message, the format Teams workflow webhooks ("Post to
+        a channel when a webhook request is received") expect; the legacy
+        MessageCard is not rendered by them.
+        """
+        return {
+            "type": "message",
+            "attachments": [{
+                "contentType": "application/vnd.microsoft.card.adaptive",
+                "contentUrl": None,
+                "content": {
+                    "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                    "type": "AdaptiveCard",
+                    "version": "1.4",
+                    "body": [
+                        {"type": "TextBlock", "text": event.title, "weight": "Bolder", "size": "Medium",
+                         "color": self.ADAPTIVE_COLORS.get(event.priority, "default"), "wrap": True},
+                        {"type": "TextBlock", "text": f"Priority: {event.priority.value}",
+                         "isSubtle": True, "spacing": "None", "wrap": True},
+                        {"type": "TextBlock", "text": event.message, "wrap": True},
+                        {"type": "FactSet", "facts": [
+                            {"title": name, "value": value} for name, value in self._facts(event)
+                        ]},
+                    ],
+                },
+            }],
+        }
+    
+    def build_message_card(self, event: NotificationEvent) -> dict:
+        """Legacy Teams MessageCard (Office 365 connector webhooks)"""
         return {
             "@type": "MessageCard",
             "@context": "http://schema.org/extensions",
@@ -283,10 +330,10 @@ class TeamsHandler(NotificationHandler):
                 "activityTitle": event.title,
                 "activitySubtitle": f"Priority: {event.priority.value}",
                 "text": event.message,
-                "facts": facts,
+                "facts": [{"name": name, "value": value} for name, value in self._facts(event)],
             }]
         }
-
+    
     async def send(self, event: NotificationEvent) -> bool:
         """Send notification to Microsoft Teams"""
         return await self._post_json(self.build_payload(event))
@@ -605,6 +652,7 @@ class NotificationManager:
                     enabled=notif_config.get("enabled", True),
                     timeout_seconds=notif_config.get("timeout", 10.0),
                     retry_count=notif_config.get("retry_count", 3),
+                    card_format=str(notif_config.get("format", "adaptive")).lower(),
                 )
                 manager.add_handler(config)
             except Exception as e:

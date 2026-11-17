@@ -39,6 +39,7 @@ except ImportError:
 SIMULATOR_PORTS: Dict[Protocol, List[int]] = {
     Protocol.MODBUS_TCP: [1502],
     Protocol.S7: [1102],
+    Protocol.ETHERNET_IP: [44819, 44820],   # Logix / Omron NJ/NX modes of the EtherNet/IP simulator
 }
 
 

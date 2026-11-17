@@ -58,6 +58,8 @@ services:
       - "127.0.0.1:1502:1502"
       # EtherNet/IP Simulator
       - "127.0.0.1:44818:44818"
+      - "127.0.0.1:44819:44819"   # EtherNet/IP Logix mode (tags)
+      - "127.0.0.1:44820:44820"   # EtherNet/IP Omron NJ/NX mode (variables)
       # S7 Simulator (standard 102)
       - "127.0.0.1:1102:1102"
       # FINS Simulator (UDP and TCP)

@@ -15,7 +15,7 @@ from .config import (
     Protocol, DeviceType, DeviceRange, DataPoint, PLCInfo,
     NetworkConfig, ScanMode, StatusCode
 )
-from .collector import PLCDataCollector
+from .collector import PLCDataCollector, collect_item
 from .audit_log import get_audit_logger
 from .discovery import target_labels
 from .utils import success_rate_text
@@ -197,12 +197,7 @@ class ParallelPLCScanner:
                     data_points = await collector.collect_full_scan()
                 elif mode == ScanMode.RANGE and device_ranges:
                     for device_range in device_ranges:
-                        points = await collector.collect_range(
-                            device_range.device_type,
-                            device_range.start_address,
-                            device_range.end_address
-                        )
-                        data_points.extend(points)
+                        data_points.extend(await collect_item(collector, device_range))
                 
                 denied_addresses = collector.get_denied_addresses()
                 denied_statuses = collector.get_denied_statuses()

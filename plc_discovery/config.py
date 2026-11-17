@@ -273,6 +273,21 @@ class DeviceRange:
         return self.end_address - self.start_address + 1
 
 
+@dataclass
+class TagRange:
+    """
+    Symbolic tags to read (EtherNet/IP Logix controllers), used in range
+    mode next to (or instead of) DeviceRange entries. Array elements are
+    read with "Tag[0]{10}" (10 elements from index 0).
+    """
+    tags: List[str]
+    
+    @property
+    def label(self) -> str:
+        shown = ", ".join(self.tags[:3]) + (f", ... ({len(self.tags)} tags)" if len(self.tags) > 3 else "")
+        return f"tags: {shown}"
+
+
 # C0/C1 control characters (ESC, BEL, CSI, ...). Text reported by devices
 # (EtherNet/IP product names, Modbus identification, S7 module names) is
 # untrusted: escape sequences in it would drive the operator's terminal.

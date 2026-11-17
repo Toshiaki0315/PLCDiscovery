@@ -108,6 +108,32 @@ class SimulatorManager:
         except Exception as e:
             logger.error(f"✗ Failed to start EtherNet/IP Simulator: {e}")
         
+        # EtherNet/IP Logix Simulator (symbolic tags, pycomm3 LogixDriver)
+        try:
+            logix_device = EtherNetIPDevice(mode="logix")
+            logix_server = await loop.create_server(
+                lambda: EtherNetIPProtocol(logix_device),
+                self.host, 44819
+            )
+            self.servers.append(logix_server)
+            logger.info(f"✓ EtherNet/IP Logix Simulator started on {self.host}:44819")
+            logger.info(f"  Tags: {', '.join(logix_device.logix_tags)}")
+        except Exception as e:
+            logger.error(f"✗ Failed to start EtherNet/IP Logix Simulator: {e}")
+        
+        # EtherNet/IP Omron NJ/NX Simulator (variables read by name)
+        try:
+            omron_device = EtherNetIPDevice(mode="omron")
+            omron_server = await loop.create_server(
+                lambda: EtherNetIPProtocol(omron_device),
+                self.host, 44820
+            )
+            self.servers.append(omron_server)
+            logger.info(f"✓ EtherNet/IP Omron NJ/NX Simulator started on {self.host}:44820")
+            logger.info(f"  Variables: {', '.join(omron_device.logix_tags)}")
+        except Exception as e:
+            logger.error(f"✗ Failed to start EtherNet/IP Omron NJ/NX Simulator: {e}")
+        
         # S7 Simulator
         try:
             s7_device = S7Device(self.s7_denied)

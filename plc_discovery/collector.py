@@ -16,7 +16,7 @@ import logging
 
 from .config import (
     Protocol, DeviceType, DeviceRange, DataPoint, StatusCode,
-    PLCInfo, NetworkConfig, ScanMode, DEFAULT_DEVICE_RANGES
+    PLCInfo, NetworkConfig, ScanMode, DEFAULT_DEVICE_RANGES, TagRange
 )
 from .protocols.base import BaseProtocolHandler
 from .protocols.slmp import SLMPHandler
@@ -166,6 +166,21 @@ class PLCDataCollector:
             return []
         
         protocol = self.plc_info.protocol
+        
+        # Logix (symbolic tags, no numeric addresses): read every tag of the
+        # controller's tag list instead of the data-file ranges. Devices
+        # without a tag list (Omron NJ/NX) fall through: their variables are
+        # read with --tags.
+        tags = []
+        if getattr(self._handler, "supports_tags", False) is True and await self._ensure_link():
+            tags = self._handler.tag_scan_list()
+        if tags:
+            self._report_progress(f"Full scan of {len(tags)} tags on {self.plc_info.ip_address}", 0, 1)
+            self._collected_data = await self._handler.read_tags(tags)
+            self._report_progress(
+                f"Full scan complete. Collected {len(self._collected_data)} data points.", 1, 1)
+            return self._collected_data
+        
         device_ranges = DEFAULT_DEVICE_RANGES.get(protocol, [])
         
         if not device_ranges:
@@ -253,6 +268,25 @@ class PLCDataCollector:
         except Exception as e:
             logger.error(f"Error collecting range: {e}")
             return []
+    
+    async def collect_tags(self, tags: List[str]) -> List[DataPoint]:
+        """
+        Read symbolic tags (EtherNet/IP Logix controllers). On other
+        devices every tag is reported NG_UNSUPPORTED.
+        """
+        if not self._handler:
+            logger.error("Not connected to PLC")
+            return []
+        if not await self._ensure_link():
+            points = [DataPoint(address=t, status=StatusCode.NG_COMM_ERROR, timestamp=get_timestamp())
+                      for t in tags]
+        elif hasattr(self._handler, "read_tags"):
+            points = await self._handler.read_tags(tags)
+        else:
+            points = [DataPoint(address=t, status=StatusCode.NG_UNSUPPORTED, timestamp=get_timestamp())
+                      for t in tags]
+        self._collected_data.extend(points)
+        return points
     
     async def collect_with_interval(
         self,
@@ -405,6 +439,13 @@ async def collect_plc_data(
         else:
             logger.error(f"Invalid mode or missing parameters: {mode}")
             return []
+
+
+async def collect_item(collector, item) -> List[DataPoint]:
+    """Collect one DeviceRange or TagRange of a range-mode scan"""
+    if isinstance(item, TagRange):
+        return await collector.collect_tags(item.tags)
+    return await collector.collect_range(item.device_type, item.start_address, item.end_address)
 
 
 def get_handler_for_protocol(protocol: Protocol) -> Optional[Callable[..., BaseProtocolHandler]]:

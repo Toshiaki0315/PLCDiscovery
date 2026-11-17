@@ -232,6 +232,9 @@ notifications:
   - name: teams_alerts
     type: teams
     url: "https://YOUR-WORKFLOW-WEBHOOK-URL"
+    # Message format: adaptive (Adaptive Card, default, for workflow
+    # webhooks) or messagecard (legacy Office 365 connector URLs)
+    format: adaptive
     enabled: false
     events:
       - scan_complete

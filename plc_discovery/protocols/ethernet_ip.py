@@ -13,7 +13,9 @@ from typing import List, Optional, Tuple, Dict
 import logging
 
 from .base import BaseProtocolHandler
-from ..config import Protocol, DeviceType, StatusCode, PROTOCOL_PORTS
+from ..config import DataPoint, Protocol, DeviceType, StatusCode, PROTOCOL_PORTS
+from ..utils import get_timestamp, value_to_hex
+from .cip_symbolic import SymbolicReadError, read_symbolic, split_element_count
 
 logger = logging.getLogger(__name__)
 
@@ -309,3 +311,177 @@ class EtherNetIPHandler(BaseProtocolHandler):
         except Exception as e:
             logger.debug(f"AB-style read error: {e}")
             raise
+    
+    # ------------------------------------------------------------------
+    # Symbolic tags (Logix controllers; Omron NJ/NX and other generic CIP
+    # devices that accept Read Tag on symbolic names)
+    # ------------------------------------------------------------------
+    
+    @property
+    def supports_tags(self) -> bool:
+        """
+        True when tags can be read by name: through LogixDriver (Logix), or
+        with raw Read Tag requests on a generic CIP connection (Omron NJ/NX).
+        """
+        return self._plc_type in ("logix", "generic") and self._client is not None
+    
+    def tag_scan_list(self) -> List[str]:
+        """
+        Tags for a full scan, from the tag list the LogixDriver read when
+        connecting: controller-scope and program-scope ("Program:P.Tag")
+        tags, atomic and structures (UDTs, reported member by member).
+        Arrays are read from element 0 (first MAX_TAG_ARRAY_ELEMENTS
+        elements). Generic CIP devices (Omron NJ/NX) offer no tag list: the
+        variables must be named with --tags, so the list is empty.
+        """
+        if self._plc_type != "logix" or not self.supports_tags:
+            return []
+        names = []
+        for name, info in sorted((getattr(self._client, "tags", None) or {}).items()):
+            if info.get("tag_type") not in ("atomic", "struct"):
+                continue
+            dims = [d for d in (info.get("dimensions") or []) if d]
+            if dims:
+                names.append(f"{name}[0]{{{min(dims[0], MAX_TAG_ARRAY_ELEMENTS)}}}")
+            else:
+                names.append(name)
+        return names
+    
+    async def read_tags(self, tags: List[str]) -> List[DataPoint]:
+        """
+        Read symbolic tags (read-only) and report one data point per value.
+        
+        Goes through the same safeguards as address reads: packet interval
+        (one request per batch of TAG_BATCH_SIZE tags), request timeout with
+        reconnect before the next request, and per-tag errors reported as
+        NG_ILLEGAL_ADDR (tag not found) instead of failing the batch.
+        Array reads ("Tag[0]{10}") give one data point per element and
+        structures one per member ("Tag.Member").
+        """
+        if self._plc_type == "generic" and self._client is not None:
+            return await self._read_tags_generic(tags)
+        results: List[DataPoint] = []
+        for start in range(0, len(tags), TAG_BATCH_SIZE):
+            batch = tags[start:start + TAG_BATCH_SIZE]
+            if not self.supports_tags:
+                results += [_tag_point(t, StatusCode.NG_UNSUPPORTED) for t in batch]
+                continue
+            if not await self._ensure_fresh_connection() or not self._connected:
+                results += [_tag_point(t, StatusCode.NG_COMM_ERROR) for t in batch]
+                continue
+            await self._rate_limiter.wait()
+            try:
+                def _read():
+                    replies = self._client.read(*batch)
+                    return replies if isinstance(replies, list) else [replies]
+                replies = await self._run_blocking(_read)
+            except asyncio.TimeoutError:
+                results += [_tag_point(t, StatusCode.NG_TIMEOUT) for t in batch]
+                continue
+            except Exception as e:
+                self._needs_reconnect = True
+                logger.debug(f"EtherNet/IP tag read error: {e}")
+                results += [_tag_point(t, StatusCode.NG_COMM_ERROR) for t in batch]
+                continue
+            for name, reply in zip(batch, replies):
+                results += _tag_points(name, reply)
+        return results
+    
+    async def _read_tags_generic(self, tags: List[str]) -> List[DataPoint]:
+        """
+        Read tags one request at a time with raw symbolic Read Tag (Omron
+        NJ/NX: published variables, structure members by name). A CIP error
+        reply is a per-tag status; a transport failure reconnects first.
+        """
+        results: List[DataPoint] = []
+        for tag in tags:
+            base = split_element_count(tag)[0]
+            if not await self._ensure_fresh_connection() or not self._connected or not self._client:
+                results.append(_tag_point(base, StatusCode.NG_COMM_ERROR))
+                continue
+            await self._rate_limiter.wait()
+            client = self._client
+            try:
+                value, _ = await self._run_blocking(lambda: read_symbolic(client, tag))
+            except asyncio.TimeoutError:
+                results.append(_tag_point(base, StatusCode.NG_TIMEOUT))
+                continue
+            except SymbolicReadError as e:
+                logger.debug(f"Tag {tag}: {e}")
+                results.append(_tag_point(base, e.status))
+                continue
+            except Exception as e:
+                self._needs_reconnect = True
+                logger.debug(f"EtherNet/IP tag read error: {e}")
+                results.append(_tag_point(base, StatusCode.NG_COMM_ERROR))
+                continue
+            results += _value_points(tag, value)
+        return results
+
+
+# Tags per read request batch (LogixDriver packs them into multi-service packets)
+TAG_BATCH_SIZE = 20
+
+# Elements read from each array tag in a full scan
+MAX_TAG_ARRAY_ELEMENTS = 1000
+
+
+def _tag_point(name: str, status: StatusCode, value=None) -> DataPoint:
+    """Data point for one tag value"""
+    point = DataPoint(address=name, status=status, timestamp=get_timestamp())
+    if status != StatusCode.OK:
+        return point
+    if isinstance(value, bool):
+        value = int(value)
+    if isinstance(value, int):
+        point.value = value
+        point.raw_hex = value_to_hex(value, 2 if not -0x8000 <= value <= 0xFFFF else 1)
+    elif isinstance(value, float):
+        point.data_type = "REAL"
+        point.converted_value = value
+        point.display_value = f"{value:.7g}"
+    else:
+        point.converted_value = value
+        point.display_value = str(value)
+    return point
+
+
+def _tag_points(name: str, reply) -> List[DataPoint]:
+    """Data points for one LogixDriver reply (Tag(tag, value, type, error))"""
+    if reply is None or getattr(reply, "error", None):
+        logger.debug(f"Tag {name}: {getattr(reply, 'error', 'no reply')}")
+        return [_tag_point(name.split("{")[0], StatusCode.NG_ILLEGAL_ADDR)]
+    return _value_points(name, reply.value)
+
+
+def _value_points(name: str, value) -> List[DataPoint]:
+    """
+    Data points for a tag value: one per array element ("Tag[i]") and per
+    structure member ("Tag.Member", nested: "Tag.Sub.Member", "Tag[1].Member").
+    """
+    if isinstance(value, list):
+        base = name.split("{")[0]
+        prefix, _, first = base.rpartition("[")
+        if prefix and first.rstrip("]").isdigit():
+            start = int(first.rstrip("]"))
+        else:
+            prefix, start = base, 0
+        points = []
+        for i, element in enumerate(value):
+            points += _flatten(f"{prefix}[{start + i}]", element)
+        return points
+    return _flatten(name.split("{")[0], value)
+
+
+def _flatten(name: str, value) -> List[DataPoint]:
+    if isinstance(value, dict):
+        points = []
+        for member, member_value in value.items():
+            points += _flatten(f"{name}.{member}", member_value)
+        return points
+    if isinstance(value, list):
+        points = []
+        for i, element in enumerate(value):
+            points += _flatten(f"{name}[{i}]", element)
+        return points
+    return [_tag_point(name, StatusCode.OK, value)]
