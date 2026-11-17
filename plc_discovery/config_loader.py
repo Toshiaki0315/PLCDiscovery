@@ -356,6 +356,14 @@ class ConfigLoader:
         tags = self.config.get("scan", {}).get("tags") or []
         return [str(t).strip() for t in tags if str(t).strip()] if isinstance(tags, list) else []
     
+    def get_tag_members(self) -> Dict[str, List[str]]:
+        """Structure variable -> member names (scan.tag_members), see expand_tag_members()"""
+        members = self.config.get("scan", {}).get("tag_members") or {}
+        if not isinstance(members, dict):
+            return {}
+        return {str(name).strip(): [str(m).strip() for m in names if str(m).strip()]
+                for name, names in members.items() if isinstance(names, list)}
+    
     def get_scan_mode(self) -> ScanMode:
         """
         Get scan mode from configuration.
@@ -533,6 +541,11 @@ class ConfigLoader:
         tags = self.config.get("scan", {}).get("tags")
         if tags is not None and (not isinstance(tags, list) or not all(isinstance(t, str) for t in tags)):
             errors.append("scan.tags must be a list of tag names")
+        members = self.config.get("scan", {}).get("tag_members")
+        if members is not None and (
+                not isinstance(members, dict)
+                or not all(isinstance(v, list) and all(isinstance(m, str) for m in v) for v in members.values())):
+            errors.append("scan.tag_members must map variable names to lists of member names")
         
         # Validate device ranges
         for i, range_def in enumerate(self.config.get("scan", {}).get("device_ranges", []) or []):

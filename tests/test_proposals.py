@@ -322,3 +322,58 @@ def test_simulator_serves_slc_data_files():
         loop.call_soon_threadsafe(loop.stop)
         thread.join(5)
         server.close()
+
+
+# ---------------------------------------------------------------------------
+# Omron NJ/NX: structure members from config, Multiple Service, STRING
+# ---------------------------------------------------------------------------
+
+def test_expand_tag_members():
+    from plc_discovery.config import expand_tag_members
+    members = {"Motor": ["Speed", "Current"], "Motors": ["A"]}
+    assert expand_tag_members(["Motor", "Motors[1]{2}", "X", "Motor.Speed", "Values[0]{3}"], members) == [
+        "Motor.Speed", "Motor.Current", "Motors[1].A", "Motors[2].A", "X", "Motor.Speed", "Values[0]{3}"]
+
+
+def test_tag_members_from_config(monkeypatch, tmp_path):
+    path = tmp_path / "c.yaml"
+    path.write_text("scan:\n  tags: [Motor, Temp]\n  tag_members:\n    Motor: [Speed, Count]\n", encoding="utf-8")
+    loader = ConfigLoader(str(path))
+    loader.load()
+    assert loader.validate() == [] and loader.get_tag_members() == {"Motor": ["Speed", "Count"]}
+    monkeypatch.setattr(sys, "argv", ["plc_scanner.py", "--config", str(path)])
+    ranges = plc_scanner.resolve_device_ranges(plc_scanner.parse_args(), loader)
+    assert ranges[0].tags == ["Motor.Speed", "Motor.Count", "Temp"]
+    path.write_text("scan:\n  tag_members: [Motor]\n", encoding="utf-8")
+    loader = ConfigLoader(str(path))
+    loader.load()
+    assert any("tag_members" in e for e in loader.validate())
+
+
+def test_generic_request_groups():
+    from plc_discovery.protocols.ethernet_ip import _generic_request_groups, MAX_BATCH_TAGS
+    groups = _generic_request_groups(["A", "B", "V[0]{5}", "C"] + [f"T{i}" for i in range(MAX_BATCH_TAGS)])
+    assert groups[:3] == [["A", "B"], ["V[0]{5}"], ["C"] + [f"T{i}" for i in range(MAX_BATCH_TAGS - 1)]]
+    assert groups[3] == [f"T{MAX_BATCH_TAGS - 1}"]
+
+
+def test_multiple_service_reply_split_and_decode():
+    import struct as st
+    from plc_discovery.protocols import cip_symbolic as cs
+    ok = bytes([0xCC, 0, 0, 0]) + st.pack("<Hi", 0xC4, -5)
+    missing = bytes([0xCC, 0, 0x05, 0])
+    data = st.pack("<HHH", 2, 6, 6 + len(ok)) + ok + missing
+    replies = cs._split_multiple_reply(data, 2)
+    assert replies == [ok, missing]
+    assert cs._decode_embedded_reply(None, "A", replies[0]) == (-5, "DINT")
+    with pytest.raises(cs.SymbolicReadError) as err:
+        cs._decode_embedded_reply(None, "B", replies[1])
+    assert err.value.status == StatusCode.NG_ILLEGAL_ADDR
+    assert cs._split_multiple_reply(data, 3) == []          # count mismatch: read one by one
+
+
+def test_string_decoding():
+    from plc_discovery.protocols import cip_symbolic as cs
+    assert cs.decode_values("S", cs.CIP_STRING_TYPE, b"\x05\x00Hello\x00\x00", 1) == ("Hello", "STRING")
+    with pytest.raises(cs.SymbolicReadError):
+        cs.decode_values("S{2}", cs.CIP_STRING_TYPE, b"\x01\x00A", 2)

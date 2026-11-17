@@ -127,6 +127,19 @@ MAX_PROBE_THREADS = 64
 MAX_AUTO_SCAN_PREFIX = 22
 
 
+# Manufacturer / model implied by a verified protocol, used when the device
+# identification fails or the protocol has none. None = cannot be inferred
+# (Modbus/TCP and EtherNet/IP are implemented by many vendors).
+PROTOCOL_IDENTITY_DEFAULTS = {
+    Protocol.SLMP: ("三菱電機/キーエンス", "SLMP対応PLC"),
+    Protocol.S7: ("シーメンス", "S7 PLC"),
+    Protocol.FINS: ("オムロン", "FINS対応PLC"),
+    Protocol.FINS_TCP: ("オムロン", "FINS対応PLC"),
+    Protocol.MODBUS_TCP: (None, "Modbus/TCP対応機器"),
+    Protocol.ETHERNET_IP: (None, "EtherNet/IP対応機器"),
+}
+
+
 class PLCDiscovery:
     """
     PLC Discovery Engine
@@ -439,6 +452,12 @@ class PLCDiscovery:
         except Exception as e:
             logger.debug(f"Failed to get detailed info for {plc_info.ip_address}: {e}")
         
+        # The probe already verified the protocol: when the identification
+        # failed (or the protocol has none), name what the protocol implies
+        # instead of leaving the row blank
+        manufacturer, model = PROTOCOL_IDENTITY_DEFAULTS.get(plc_info.protocol, (None, None))
+        plc_info.manufacturer = plc_info.manufacturer or manufacturer
+        plc_info.model = plc_info.model or model
         return plc_info
     
     async def _query_slmp_info(self, plc_info: PLCInfo) -> PLCInfo:
@@ -599,7 +618,7 @@ class PLCDiscovery:
                     data, status = await handler.read_device_raw(DeviceType.DM, 0, 1)
                     if status == StatusCode.OK:
                         plc_info.manufacturer = plc_info.manufacturer or "オムロン"
-                        plc_info.model = "FINS対応PLC"
+                        plc_info.model = plc_info.model or "FINS対応PLC"
                 finally:
                     await handler.disconnect()
         except Exception as e:

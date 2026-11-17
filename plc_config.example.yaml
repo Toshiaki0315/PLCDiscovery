@@ -96,6 +96,20 @@ scan:
     #   start: 0
     #   end: 2047
   
+  # EtherNet/IP tags (Logix) / variables (Omron NJ/NX) to read in range mode
+  # (same as --tags). "Name[0]{10}" = 10 array elements; structure members
+  # as "Name.Member"; program tags as "Program:MainProgram.Step".
+  # tags:
+  #   - Temperature
+  #   - Motor
+  #   - Values[0]{10}
+  #
+  # Members of structure variables, for controllers that cannot report a
+  # structure's layout (Omron NJ/NX): "Motor" above is read as Motor.Speed,
+  # Motor.Current and Motor.Count ("Motors[0]{2}" as Motors[0].Speed, ...)
+  # tag_members:
+  #   Motor: [Speed, Current, Count]
+  
   # Interval for continuous scanning (0 = single scan)
   interval_seconds: 0
 

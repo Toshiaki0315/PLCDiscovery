@@ -52,10 +52,20 @@ class SimulatorProcess:
         """Start the simulator process"""
         if self.is_running():
             return
-        
+        # Another process (typically simulators/run_all.py) already listens:
+        # the tests would talk to it, with other data / denied ranges, and
+        # fail confusingly. Stop with a clear message instead.
+        if is_port_open("127.0.0.1", self.port, timeout=0.5):
+            pytest.fail(
+                f"Port {self.port} is already in use, so the {self.name} test simulator "
+                f"cannot start (is simulators/run_all.py or start_simulators.sh running?). "
+                f"Stop it and run the integration tests again.",
+                pytrace=False,
+            )
+
         self.process = Process(target=self.start_func, daemon=True)
         self.process.start()
-        
+
         # Wait for port to be available
         if not wait_for_port("127.0.0.1", self.port, timeout=10.0):
             self.stop()

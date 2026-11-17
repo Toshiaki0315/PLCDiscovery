@@ -232,3 +232,55 @@ def test_gui_periodic_with_invalid_options_fails(monkeypatch):
     plc_gui = _import_gui(monkeypatch)
     with pytest.raises(RuntimeError):
         _run_collect(plc_gui, monkeypatch, interval=0.01, connect_error="invalid options")
+
+
+def test_gui_collect_job_reads_tags(monkeypatch):
+    """Range mode with the tag field filled in reads the tags instead of the device range"""
+    from plc_discovery.config import DataPoint, DeviceType, NetworkConfig, Protocol
+    plc_gui = _import_gui(monkeypatch)
+    requested = []
+
+    class TagCollector:
+        connect_error = None
+        is_connected = True
+
+        def __init__(self, plc, config):
+            pass
+
+        def set_progress_callback(self, cb):
+            pass
+
+        async def connect(self):
+            return True
+
+        async def disconnect(self):
+            pass
+
+        def clear_data(self):
+            pass
+
+        async def collect_tags(self, tags):
+            requested.append(tags)
+            return [DataPoint(address=t, status=StatusCode.OK, value=1) for t in tags]
+
+        async def collect_range(self, *a):
+            raise AssertionError("device range must not be read when tags are given")
+
+        def get_denied_addresses(self):
+            return set()
+
+        def get_denied_statuses(self):
+            return {}
+
+        def get_statistics(self):
+            return {}
+
+    monkeypatch.setattr(plc_gui, "PLCDataCollector", TagCollector)
+    app = MagicMock()
+    posted = []
+    app._post = lambda *item: posted.append(item)
+    asyncio.run(plc_gui.PLCScannerApp._collect_job(
+        app, NetworkConfig(), "10.0.0.1", Protocol.ETHERNET_IP, 44818, "range", DeviceType.D, 0, 0,
+        0, None, None, MagicMock(), tags=["Temp", "Motor.Speed"]))
+    assert requested == [["Temp", "Motor.Speed"]]
+    assert [p.address for p in posted[-1][1]] == ["Temp", "Motor.Speed"]

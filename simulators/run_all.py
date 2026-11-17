@@ -18,9 +18,7 @@ This will start:
 import argparse
 import asyncio
 import signal
-import sys
 import logging
-from typing import List, Tuple
 
 logging.basicConfig(
     level=logging.INFO,
@@ -45,29 +43,29 @@ except ImportError:
 
 class SimulatorManager:
     """Manages all PLC simulators"""
-    
+
     def __init__(self, host: str = "127.0.0.1"):
         self.host = host
         self.servers = []
-        
+
         # Default denied ranges for each simulator
         self.slmp_denied = [(5000, 5100), (7000, 7050)]
         self.modbus_denied = [(5000, 5100), (8000, 8050)]
         self.eip_denied = [(100, 150)]
         self.s7_denied = [(500, 550)]
         self.fins_denied = [(5000, 5100), (1000, 1050)]
-        
+
         # UDP transports
         self.udp_transports = []
-    
+
     async def start_all(self):
         """Start all simulators"""
         logger.info("=" * 60)
         logger.info("Starting PLC Simulators")
         logger.info("=" * 60)
-        
+
         loop = asyncio.get_event_loop()
-        
+
         # SLMP Simulator
         try:
             slmp_device = SLMPDevice(self.slmp_denied)
@@ -80,7 +78,7 @@ class SimulatorManager:
             logger.info(f"  Denied ranges: {self.slmp_denied}")
         except Exception as e:
             logger.error(f"✗ Failed to start SLMP Simulator: {e}")
-        
+
         # Modbus Simulator
         try:
             modbus_device = ModbusDevice(self.modbus_denied)
@@ -90,11 +88,11 @@ class SimulatorManager:
             )
             self.servers.append(modbus_server)
             logger.info(f"✓ Modbus/TCP Simulator started on {self.host}:1502")
-            logger.info(f"  (Note: Using port 1502 instead of 502 to avoid privileged port)")
+            logger.info("  (Note: Using port 1502 instead of 502 to avoid privileged port)")
             logger.info(f"  Denied ranges: {self.modbus_denied}")
         except Exception as e:
             logger.error(f"✗ Failed to start Modbus Simulator: {e}")
-        
+
         # EtherNet/IP Simulator
         try:
             eip_device = EtherNetIPDevice(self.eip_denied)
@@ -107,7 +105,7 @@ class SimulatorManager:
             logger.info(f"  Denied ranges: {self.eip_denied}")
         except Exception as e:
             logger.error(f"✗ Failed to start EtherNet/IP Simulator: {e}")
-        
+
         # EtherNet/IP Logix Simulator (symbolic tags, pycomm3 LogixDriver)
         try:
             logix_device = EtherNetIPDevice(mode="logix")
@@ -120,7 +118,7 @@ class SimulatorManager:
             logger.info(f"  Tags: {', '.join(logix_device.logix_tags)}")
         except Exception as e:
             logger.error(f"✗ Failed to start EtherNet/IP Logix Simulator: {e}")
-        
+
         # EtherNet/IP Omron NJ/NX Simulator (variables read by name)
         try:
             omron_device = EtherNetIPDevice(mode="omron")
@@ -133,7 +131,7 @@ class SimulatorManager:
             logger.info(f"  Variables: {', '.join(omron_device.logix_tags)}")
         except Exception as e:
             logger.error(f"✗ Failed to start EtherNet/IP Omron NJ/NX Simulator: {e}")
-        
+
         # S7 Simulator
         try:
             s7_device = S7Device(self.s7_denied)
@@ -143,11 +141,11 @@ class SimulatorManager:
             )
             self.servers.append(s7_server)
             logger.info(f"✓ S7 Simulator started on {self.host}:1102")
-            logger.info(f"  (Note: Using port 1102 instead of 102 to avoid privileged port)")
+            logger.info("  (Note: Using port 1102 instead of 102 to avoid privileged port)")
             logger.info(f"  Denied ranges: {self.s7_denied}")
         except Exception as e:
             logger.error(f"✗ Failed to start S7 Simulator: {e}")
-        
+
         # FINS Simulator (UDP and TCP on the same port, sharing one memory image)
         try:
             fins_simulator = FINSSimulator(self.host, 9600)
@@ -162,17 +160,17 @@ class SimulatorManager:
             )
             self.servers.append(fins_tcp_server)
             logger.info(f"✓ FINS Simulator started on {self.host}:9600 (UDP + TCP)")
-            logger.info(f"  Denied ranges: DM5000-5100, HR1000-1050")
+            logger.info("  Denied ranges: DM5000-5100, HR1000-1050")
         except Exception as e:
             logger.error(f"✗ Failed to start FINS Simulator: {e}")
-        
+
         logger.info("")
         logger.info("=" * 60)
         logger.info(f"All simulators running. {len(self.servers)} server(s) active.")
         logger.info("Press Ctrl+C to stop all simulators.")
         logger.info("=" * 60)
         logger.info("")
-        
+
         # Print test commands (Modbus and S7 use non-privileged ports)
         target = "127.0.0.1" if self.host in ("0.0.0.0", "") else self.host
         commands = [
@@ -189,7 +187,7 @@ class SimulatorManager:
             logger.info(f"  # {title}")
             logger.info(f"  python plc_scanner.py {arguments}")
         logger.info("")
-    
+
     async def stop_all(self):
         """Stop all simulators"""
         logger.info("Stopping all simulators...")
@@ -199,7 +197,7 @@ class SimulatorManager:
         for transport in self.udp_transports:
             transport.close()
         logger.info("All simulators stopped.")
-    
+
     async def run_forever(self):
         """Run until interrupted"""
         await asyncio.gather(*[server.serve_forever() for server in self.servers])
@@ -208,18 +206,18 @@ class SimulatorManager:
 async def main(host: str):
     """Main entry point"""
     manager = SimulatorManager(host)
-    
+
     # Handle shutdown signals
     loop = asyncio.get_event_loop()
-    
+
     def signal_handler():
         logger.info("\nReceived shutdown signal...")
         for task in asyncio.all_tasks(loop):
             task.cancel()
-    
+
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, signal_handler)
-    
+
     try:
         await manager.start_all()
         await manager.run_forever()
@@ -234,7 +232,7 @@ def run():
     parser.add_argument("--host", default="127.0.0.1",
                         help="Host to bind to (default 127.0.0.1; 0.0.0.0 = all interfaces)")
     args = parser.parse_args()
-    
+
     try:
         asyncio.run(main(args.host))
     except KeyboardInterrupt:
@@ -243,4 +241,3 @@ def run():
 
 if __name__ == "__main__":
     run()
-

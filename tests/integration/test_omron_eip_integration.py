@@ -39,6 +39,20 @@ async def test_read_variables_by_name(omron_simulator, omron_plc_info, network_c
     assert by_address["Values[30]"].status == StatusCode.NG_ILLEGAL_ADDR
 
 
+async def test_single_values_share_one_multiple_service_request(omron_simulator, omron_plc_info, network_config):
+    async with PLCDataCollector(omron_plc_info, network_config) as collector:
+        client = collector._handler._client
+        services = []
+        send = client.send
+        client.send = lambda request: (services.append(bytes(request.service)), send(request))[1]
+        points = await collector.collect_tags(["Temperature", "Message", "Nope", "Motor.Count"])
+    assert services.count(b"\x0a") == 1 and b"\x52" not in services
+    by_address = {p.address: p for p in points}
+    assert by_address["Message"].display_value == "Hello NJ"
+    assert by_address["Nope"].status == StatusCode.NG_ILLEGAL_ADDR
+    assert by_address["Motor.Count"].value == 4
+
+
 async def test_large_array_fragmented(omron_simulator, omron_plc_info, network_config):
     """300 DINT (1200 bytes) do not fit one reply: Read Tag Fragmented continues at an offset"""
     async with PLCDataCollector(omron_plc_info, network_config) as collector:

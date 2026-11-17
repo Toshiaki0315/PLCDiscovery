@@ -15,7 +15,10 @@ import logging
 from .base import BaseProtocolHandler
 from ..config import DataPoint, Protocol, DeviceType, StatusCode, PROTOCOL_PORTS
 from ..utils import get_timestamp, value_to_hex
-from .cip_symbolic import SymbolicReadError, read_symbolic, split_element_count
+from .cip_symbolic import (
+    MAX_BATCH_REQUEST_BYTES, MAX_BATCH_TAGS, SymbolicReadError, read_symbolic, read_symbolic_batch,
+    split_element_count,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -389,35 +392,68 @@ class EtherNetIPHandler(BaseProtocolHandler):
     
     async def _read_tags_generic(self, tags: List[str]) -> List[DataPoint]:
         """
-        Read tags one request at a time with raw symbolic Read Tag (Omron
-        NJ/NX: published variables, structure members by name). A CIP error
-        reply is a per-tag status; a transport failure reconnects first.
+        Read tags with raw symbolic Read Tag (Omron NJ/NX: published
+        variables, structure members by name). Single values go in Multiple
+        Service batches; array reads ("V[0]{10}") one request each
+        (fragmented). A CIP error reply is a per-tag status; a transport
+        failure fails the request's tags and reconnects before the next one.
         """
         results: List[DataPoint] = []
-        for tag in tags:
-            base = split_element_count(tag)[0]
+        for group in _generic_request_groups(tags):
             if not await self._ensure_fresh_connection() or not self._connected or not self._client:
-                results.append(_tag_point(base, StatusCode.NG_COMM_ERROR))
+                results += [_tag_point(split_element_count(t)[0], StatusCode.NG_COMM_ERROR) for t in group]
                 continue
             await self._rate_limiter.wait()
             client = self._client
+            if group[0].rstrip().endswith("}"):           # element-count read: alone, fragmented
+                read = lambda: [_capture(read_symbolic, client, group[0])]
+            else:
+                read = lambda: read_symbolic_batch(client, group)
             try:
-                value, _ = await self._run_blocking(lambda: read_symbolic(client, tag))
+                outcomes = await self._run_blocking(read)
             except asyncio.TimeoutError:
-                results.append(_tag_point(base, StatusCode.NG_TIMEOUT))
-                continue
-            except SymbolicReadError as e:
-                logger.debug(f"Tag {tag}: {e}")
-                results.append(_tag_point(base, e.status))
+                results += [_tag_point(split_element_count(t)[0], StatusCode.NG_TIMEOUT) for t in group]
                 continue
             except Exception as e:
                 self._needs_reconnect = True
                 logger.debug(f"EtherNet/IP tag read error: {e}")
-                results.append(_tag_point(base, StatusCode.NG_COMM_ERROR))
+                results += [_tag_point(split_element_count(t)[0], StatusCode.NG_COMM_ERROR) for t in group]
                 continue
-            results += _value_points(tag, value)
+            for tag, outcome in zip(group, outcomes):
+                if isinstance(outcome, SymbolicReadError):
+                    logger.debug(f"Tag {tag}: {outcome}")
+                    results.append(_tag_point(split_element_count(tag)[0], outcome.status))
+                else:
+                    results += _value_points(tag, outcome[0])
         return results
 
+
+def _capture(func, *args):
+    """func(*args), or the SymbolicReadError it raised (other errors propagate)"""
+    try:
+        return func(*args)
+    except SymbolicReadError as e:
+        return e
+
+
+def _generic_request_groups(tags: List[str]) -> List[List[str]]:
+    """Consecutive single-value tags batched (MAX_BATCH_TAGS); element-count reads alone"""
+    groups: List[List[str]] = []
+    batch: List[str] = []
+    for tag in tags:
+        if tag.rstrip().endswith("}"):
+            if batch:
+                groups.append(batch)
+                batch = []
+            groups.append([tag])
+            continue
+        batch.append(tag)
+        if len(batch) >= MAX_BATCH_TAGS or sum(len(t) + 8 for t in batch) >= MAX_BATCH_REQUEST_BYTES:
+            groups.append(batch)
+            batch = []
+    if batch:
+        groups.append(batch)
+    return groups
 
 # Tags per read request batch (LogixDriver packs them into multi-service packets)
 TAG_BATCH_SIZE = 20

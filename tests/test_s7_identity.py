@@ -13,7 +13,7 @@ import pytest
 
 from plc_discovery.config import NetworkConfig, PLCInfo, Protocol
 from plc_discovery.discovery import PLCDiscovery
-from plc_discovery.protocols.s7 import parse_szl_component_ids, read_s7_identity
+from plc_discovery.protocols.s7 import parse_szl_component_ids, parse_szl_module_ids, read_s7_identity
 
 
 def _records(items):
@@ -35,6 +35,14 @@ def test_szl_records_with_header():              # python-snap7 3.x: LENTHDR / N
 def test_szl_flat_layout_is_not_records():
     flat = b"CPU 315-2 PN/DP".ljust(32, b"\x00") + b"S C-1".ljust(24, b"\x00")
     assert parse_szl_component_ids(flat) == {}
+
+
+def test_szl_module_ids_order_code_and_firmware():
+    records = (struct.pack(">H", 1) + b"6ES7 315-2EH14-0AB0 " + struct.pack(">HHH", 0, 0, 3)
+               + struct.pack(">H", 7) + b" " * 20 + struct.pack(">HHH", 0, 0x5603, 0x0302))
+    assert parse_szl_module_ids(records) == {"order_code": "6ES7 315-2EH14-0AB0", "firmware_version": "V3.3.2"}
+    assert parse_szl_module_ids(struct.pack(">HH", 28, 2) + records)["firmware_version"] == "V3.3.2"
+    assert parse_szl_module_ids(b"garbage") == {}
 
 
 def test_identity_falls_back_to_get_cpu_info():
@@ -68,8 +76,38 @@ def test_simulator_answers_cpu_identification():
     try:
         plc = asyncio.run(PLCDiscovery(NetworkConfig())._query_s7_info(
             PLCInfo("127.0.0.1", protocol=Protocol.S7, port=port)))
-        assert (plc.manufacturer, plc.model, plc.cpu_type) == ("シーメンス", "CPU 1515-2 PN Sim", "S7-1500 Sim")
+        assert (plc.manufacturer, plc.model, plc.cpu_type, plc.firmware_version) == (
+            "シーメンス", "CPU 1515-2 PN Sim", "6ES7 515-2AM02-0AB0", "V2.9.4")
     finally:
         loop.call_soon_threadsafe(loop.stop)
         thread.join(5)
         server.close()
+
+
+@pytest.mark.parametrize("protocol, expected", [
+    (Protocol.FINS, ("オムロン", "FINS対応PLC")),
+    (Protocol.FINS_TCP, ("オムロン", "FINS対応PLC")),
+    (Protocol.S7, ("シーメンス", "S7 PLC")),
+    (Protocol.MODBUS_TCP, (None, "Modbus/TCP対応機器")),
+    (Protocol.ETHERNET_IP, (None, "EtherNet/IP対応機器")),
+])
+def test_failed_identification_uses_protocol_defaults(protocol, expected):
+    """Every protocol's identity query fails: the row still names what the protocol implies"""
+    discovery = PLCDiscovery(NetworkConfig())
+    failing = MagicMock(side_effect=RuntimeError("no answer"))
+    with patch.multiple(discovery, _query_fins_info=failing, _query_s7_info=failing,
+                        _query_modbus_info=failing, _query_eip_info=failing):
+        plc = asyncio.run(discovery._get_detailed_info(PLCInfo("10.0.0.1", protocol=protocol, port=1)))
+    assert (plc.manufacturer, plc.model) == expected
+
+
+def test_identified_values_are_kept():
+    discovery = PLCDiscovery(NetworkConfig())
+
+    async def identify(plc):
+        plc.manufacturer, plc.model = "Schneider Electric", "M580"
+        return plc
+
+    with patch.object(discovery, "_query_modbus_info", identify):
+        plc = asyncio.run(discovery._get_detailed_info(PLCInfo("10.0.0.1", protocol=Protocol.MODBUS_TCP)))
+    assert (plc.manufacturer, plc.model) == ("Schneider Electric", "M580")

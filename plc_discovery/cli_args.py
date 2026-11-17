@@ -11,7 +11,9 @@ import argparse
 import dataclasses
 from typing import List, Optional
 
-from .config import DeviceRange, DeviceType, NetworkConfig, Protocol, TagRange, range_size_error
+from .config import (
+    DeviceRange, DeviceType, NetworkConfig, Protocol, TagRange, expand_tag_members, range_size_error,
+)
 from .config_loader import NETWORK_MINIMUMS, ConfigLoader, integer_error
 from .data_types import DataType
 from .names import BYTE_ORDER_NAMES, parse_device_type, parse_protocol
@@ -459,6 +461,8 @@ def resolve_device_ranges(args, config_loader: Optional[ConfigLoader]) -> List[D
     """
     tags = parse_tag_list(args.tags) if getattr(args, "tags", None) else (
         config_loader.get_tags() if config_loader else [])
+    if tags and config_loader:
+        tags = expand_tag_members(tags, config_loader.get_tag_members())
     if tags:
         explicit = bool(args.range) or bool(config_loader and config_loader.get_device_ranges())
         return [TagRange(tags)] + (resolve_device_ranges_only(args, config_loader) if explicit else [])

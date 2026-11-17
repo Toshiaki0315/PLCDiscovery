@@ -57,51 +57,92 @@ SZL_COMPONENT_ID = 0x001C
 SZL_COMPONENT_RECORD_LENGTH = 34
 SZL_COMPONENT_INDEXES = range(0x0001, 0x000C)
 
+# SZL 0x0011 (module identification): records of a 2-byte index, the order
+# number (MlfB, 20 characters), BGTyp, Ausbg and Ausbe. Index 1 = module
+# order number; index 7 = firmware, version in the last 3 bytes
+# (Ausbg = "V" + major, Ausbe = minor, patch).
+SZL_MODULE_ID = 0x0011
+SZL_MODULE_RECORD_LENGTH = 28
+SZL_MODULE_INDEXES = range(0x0001, 0x0010)
 
-def parse_szl_component_ids(data: bytes) -> Dict[int, str]:
-    """
-    Records of an SZL 0x001C reply as {index: text}.
 
-    Accepts the records alone (snap7 1.x strips the SZL header) or preceded
-    by the LENTHDR / N_DR words (python-snap7 3.x keeps them). Returns {} if
-    the data is not in the record format.
+def _szl_records(data: bytes, record_length: int, indexes: range) -> Dict[int, bytes]:
     """
-    record_length = SZL_COMPONENT_RECORD_LENGTH
+    {index: record body} of an SZL reply. Accepts the records alone
+    (snap7 1.x strips the SZL header) or preceded by the LENTHDR / N_DR
+    words (python-snap7 3.x keeps them). {} if not in the record format.
+    """
     if len(data) >= 4:
         length_dr, count = struct.unpack(">HH", data[:4])
         if length_dr >= 4 and 4 + length_dr * count <= len(data) and len(data) % length_dr != 0:
             data, record_length = data[4:4 + length_dr * count], length_dr
-    records: Dict[int, str] = {}
+    records: Dict[int, bytes] = {}
     for start in range(0, len(data) - record_length + 1, record_length):
         index = struct.unpack(">H", data[start:start + 2])[0]
-        if index not in SZL_COMPONENT_INDEXES:
+        if index not in indexes:
             return {}
-        text = data[start + 2:start + record_length].split(b"\x00")[0]
-        records[index] = text.decode("ascii", errors="ignore").strip()
+        records[index] = data[start + 2:start + record_length]
     return records
+
+
+def parse_szl_component_ids(data: bytes) -> Dict[int, str]:
+    """Records of an SZL 0x001C reply as {index: text}"""
+    records = _szl_records(data, SZL_COMPONENT_RECORD_LENGTH, SZL_COMPONENT_INDEXES)
+    return {index: body.split(b"\x00")[0].decode("ascii", errors="ignore").strip()
+            for index, body in records.items()}
+
+
+def parse_szl_module_ids(data: bytes) -> Dict[str, str]:
+    """Order number and firmware version ("V2.9.4") from an SZL 0x0011 reply"""
+    records = _szl_records(data, SZL_MODULE_RECORD_LENGTH, SZL_MODULE_INDEXES)
+    fields: Dict[str, str] = {}
+    if 0x0001 in records:
+        order = records[0x0001][:20].split(b"\x00")[0].decode("ascii", errors="ignore").strip()
+        if order:
+            fields["order_code"] = order
+    firmware = records.get(0x0007)
+    if firmware and len(firmware) >= 26 and firmware[22:23] == b"V":
+        fields["firmware_version"] = f"V{firmware[23]}.{firmware[24]}.{firmware[25]}"
+    return fields
+
+
+def _read_szl_bytes(client, szl_id: int) -> bytes:
+    szl = client.read_szl(szl_id, 0)
+    size = int(szl.Header.LengthDR) * max(1, int(szl.Header.NDR))
+    return bytes(szl.Data[:size])
 
 
 def read_s7_identity(client) -> Dict[str, str]:
     """
-    Model ("CPU 1515-2 PN") and automation system name of a connected snap7
-    client, from SZL 0x001C. Falls back to client.get_cpu_info() when the
-    reply is not in the record format (python-snap7 3.x's own server).
+    Identity of a connected snap7 client:
+    - model ("CPU 1515-2 PN") and cpu_type from SZL 0x001C; falls back to
+      client.get_cpu_info() when the reply is not in the record format
+      (python-snap7 3.x's own server)
+    - cpu_type = order number ("6ES7 515-2AM02-0AB0") and firmware_version
+      ("V2.9.4") from SZL 0x0011 when the CPU provides it
     """
     fields: Dict[str, str] = {}
     try:
-        szl = client.read_szl(SZL_COMPONENT_ID, 0)
-        size = int(szl.Header.LengthDR) * max(1, int(szl.Header.NDR))
-        records = parse_szl_component_ids(bytes(szl.Data[:size]))
+        records = parse_szl_component_ids(_read_szl_bytes(client, SZL_COMPONENT_ID))
     except Exception as e:
         logger.debug(f"S7 SZL 0x001C read failed: {e}")
         records = {}
     if records:
         fields["model"] = records.get(0x0007) or records.get(0x0002, "")
         fields["cpu_type"] = records.get(0x0001, "")
-        return fields
-    info = client.get_cpu_info()
-    fields["model"] = info.ModuleTypeName.decode("utf-8", errors="ignore").strip()
-    fields["cpu_type"] = info.ASName.decode("utf-8", errors="ignore").strip()
+    else:
+        info = client.get_cpu_info()
+        fields["model"] = info.ModuleTypeName.decode("utf-8", errors="ignore").strip()
+        fields["cpu_type"] = info.ASName.decode("utf-8", errors="ignore").strip()
+    try:
+        module = parse_szl_module_ids(_read_szl_bytes(client, SZL_MODULE_ID))
+    except Exception as e:
+        logger.debug(f"S7 SZL 0x0011 read failed: {e}")
+        module = {}
+    if module.get("order_code"):
+        fields["cpu_type"] = module["order_code"]
+    if module.get("firmware_version"):
+        fields["firmware_version"] = module["firmware_version"]
     return fields
 
 

@@ -89,6 +89,9 @@ CIP_TYPES = {
 }
 CIP_TYPE_CODES = {name: code for code, (name, _, _) in CIP_TYPES.items()}
 
+# Omron NJ/NX STRING: type code, then a 2-byte length and the characters
+OMRON_STRING_TYPE = 0xD0
+
 # Structure read reply type (followed by the 2-byte structure handle)
 STRUCTURE_REPLY_TYPE = b"\xa0\x02"
 
@@ -129,13 +132,14 @@ DEFAULT_OMRON_TAGS = {
     "StatusWord": ("WORD", 0x00FF),
     "Values": ("INT", [i * 2 for i in range(20)]),
     "History": ("DINT", list(range(300))),       # larger than one reply: fragmented read
+    "Message": ("STRING", "Hello NJ"),
     "Motor": ("MotorData", {"Speed": 900, "Current": 2.5, "Count": 4}),
 }
 
 
 class EtherNetIPDevice:
     """Simulated EtherNet/IP device"""
-    
+
     def __init__(self, denied_ranges: Optional[List[Tuple[int, int]]] = None, mode: str = "slc"):
         """
         Args:
@@ -152,7 +156,7 @@ class EtherNetIPDevice:
             program: dict(tags) for program, tags in DEFAULT_PROGRAM_TAGS.items()}
         self.denied_ranges = denied_ranges or []
         self.session_handle = 0
-        
+
         # Device identity information
         self.vendor_id = 0x0001  # Rockwell
         self.device_type = 0x0E  # Programmable Logic Controller
@@ -167,7 +171,7 @@ class EtherNetIPDevice:
         }[mode]
         if mode == "omron":
             self.vendor_id = 47        # OMRON Corporation
-        
+
         # Tag data (simulates Allen-Bradley style tags)
         self.tags: Dict[str, any] = {
             "TestDINT": 12345,
@@ -176,31 +180,31 @@ class EtherNetIPDevice:
             "Counter": 0,
             "Status": 1,
         }
-        
+
         # Integer file (N7 style)
         self.integer_file: Dict[int, int] = {}
         self._initialize_data()
-    
+
     def _initialize_data(self):
         """Initialize sample data"""
         for i in range(256):
             self.integer_file[i] = i * 10
-        
+
         self.integer_file[0] = 0x1234
         self.integer_file[1] = 0xABCD
         logger.info("Sample data initialized")
-    
+
     def is_address_denied(self, address: int) -> bool:
         """Check if address is in denied range"""
         for start, end in self.denied_ranges:
             if start <= address <= end:
                 return True
         return False
-    
+
     def get_identity_response(self) -> bytes:
         """Build Identity Object response"""
         response = b""
-        
+
         # Vendor ID
         response += struct.pack("<H", self.vendor_id)
         # Device Type
@@ -216,67 +220,66 @@ class EtherNetIPDevice:
         # Product Name (length + string)
         response += bytes([len(self.product_name)])
         response += self.product_name
-        
+
         return response
-    
+
     def read_bit_file(self, address: int, count: int) -> Tuple[Optional[List[int]], int]:
         """Read words of the bit file B3 (each word holds 16 bits)"""
         if any(self.is_address_denied(address + i) for i in range(count)):
             return None, 0x14
         return [(address + i) & 0xFFFF for i in range(count)], 0
-    
+
     def read_integer_file(self, address: int, count: int) -> Tuple[Optional[List[int]], int]:
         """Read from integer file"""
         if any(self.is_address_denied(address + i) for i in range(count)):
             return None, 0x14  # Path segment error
-        
+
         data = []
         for i in range(count):
             data.append(self.integer_file.get(address + i, 0))
-        
+
         return data, 0
 
 
 class EtherNetIPProtocol(asyncio.Protocol):
     """EtherNet/IP Protocol Handler"""
-    
+
     def __init__(self, device: EtherNetIPDevice):
         self.device = device
         self.transport = None
         self.buffer = b""
         self.session_handle = 0
-    
+
     def connection_made(self, transport):
         self.transport = transport
         peername = transport.get_extra_info('peername')
         logger.info(f"Connection from {peername}")
-    
+
     def connection_lost(self, exc):
         logger.info("Connection closed")
-    
+
     def data_received(self, data: bytes):
         """Process received EtherNet/IP encapsulation"""
         self.buffer += data
-        
+
         # EtherNet/IP encapsulation header is 24 bytes
         while len(self.buffer) >= 24:
             # Parse header
             command = struct.unpack("<H", self.buffer[0:2])[0]
             length = struct.unpack("<H", self.buffer[2:4])[0]
             session = struct.unpack("<I", self.buffer[4:8])[0]
-            status = struct.unpack("<I", self.buffer[8:12])[0]
+            # bytes 8-12: status, 20-24: options (not used by the simulator)
             context = self.buffer[12:20]
-            options = struct.unpack("<I", self.buffer[20:24])[0]
-            
+
             # Check if we have complete packet
             total_length = 24 + length
             if len(self.buffer) < total_length:
                 break
-            
+
             # Extract data
             enc_data = self.buffer[24:total_length]
             self.buffer = self.buffer[total_length:]
-            
+
             # Process command
             try:
                 response = self._process_command(command, session, context, enc_data)
@@ -284,11 +287,11 @@ class EtherNetIPProtocol(asyncio.Protocol):
                     self.transport.write(response)
             except Exception as e:
                 logger.error(f"Error processing command: {e}")
-    
+
     def _process_command(self, command: int, session: int, context: bytes, data: bytes) -> Optional[bytes]:
         """Process EtherNet/IP command"""
         logger.debug(f"Command: {command:04X}, Session: {session:08X}")
-        
+
         if command == EIP_CMD_REGISTER_SESSION:
             return self._handle_register_session(context)
         elif command == EIP_CMD_UNREGISTER_SESSION:
@@ -304,49 +307,49 @@ class EtherNetIPProtocol(asyncio.Protocol):
         else:
             logger.warning(f"Unsupported command: {command:04X}")
             return None
-    
+
     def _handle_register_session(self, context: bytes) -> bytes:
         """Handle Register Session request"""
         self.device.session_handle += 1
         self.session_handle = self.device.session_handle
-        
+
         logger.info(f"Session registered: {self.session_handle:08X}")
-        
+
         # Response data: Protocol version (1) + Options flags (0)
         resp_data = struct.pack("<HH", 1, 0)
-        
+
         return self._make_response(EIP_CMD_REGISTER_SESSION, self.session_handle, context, resp_data)
-    
+
     def _handle_unregister_session(self, session: int, context: bytes) -> bytes:
         """Handle Unregister Session request"""
         logger.info(f"Session unregistered: {session:08X}")
         return self._make_response(EIP_CMD_UNREGISTER_SESSION, 0, context, b"")
-    
+
     def _handle_list_identity(self, context: bytes) -> bytes:
         """Handle List Identity request"""
         # Build identity item
         identity_data = self.device.get_identity_response()
-        
+
         # Socket address (16 bytes)
         socket_addr = struct.pack(">HH", 2, 44818)  # sin_family, sin_port
         socket_addr += struct.pack(">I", 0)  # sin_addr
         socket_addr += b"\x00" * 8  # padding
-        
+
         # ListIdentity ends the identity with a State byte (USINT);
         # 0x03 = "operational"
         identity_data += bytes([0x03])
-        
+
         # Item: Type ID (0x0C) + Length + Protocol Version + Socket + Identity
         item = struct.pack("<HH", 0x000C, len(identity_data) + 2 + 16)
         item += struct.pack("<H", 1)  # Protocol version
         item += socket_addr
         item += identity_data
-        
+
         # Item count + items
         resp_data = struct.pack("<H", 1) + item
-        
+
         return self._make_response(EIP_CMD_LIST_IDENTITY, 0, context, resp_data)
-    
+
     def _handle_list_services(self, context: bytes) -> bytes:
         """Handle List Services request"""
         # Communications service item
@@ -354,70 +357,69 @@ class EtherNetIPProtocol(asyncio.Protocol):
         item = struct.pack("<HH", 0x0100, 20)  # Type + Length
         item += struct.pack("<HH", 1, 0x0120)  # Version + Capability flags
         item += service_name
-        
+
         resp_data = struct.pack("<H", 1) + item
         return self._make_response(EIP_CMD_LIST_SERVICES, 0, context, resp_data)
-    
+
     def _handle_send_rr_data(self, session: int, context: bytes, data: bytes) -> bytes:
         """Handle SendRRData (CIP request/response)"""
         if len(data) < 6:
             return self._make_response(EIP_CMD_SEND_RR_DATA, session, context, b"", status=1)
-        
+
         # Parse Common Packet Format
-        interface_handle = struct.unpack("<I", data[0:4])[0]
-        timeout = struct.unpack("<H", data[4:6])[0]
-        
+        # bytes 0-4: interface handle, 4-6: timeout (not used by the simulator)
+
         if len(data) < 8:
             return self._make_response(EIP_CMD_SEND_RR_DATA, session, context, b"", status=1)
-        
+
         item_count = struct.unpack("<H", data[6:8])[0]
-        
+
         # Parse items
         offset = 8
         items = []
         for _ in range(item_count):
             if offset + 4 > len(data):
                 break
-            type_id = struct.unpack("<H", data[offset:offset+2])[0]
-            item_len = struct.unpack("<H", data[offset+2:offset+4])[0]
-            item_data = data[offset+4:offset+4+item_len]
+            type_id = struct.unpack("<H", data[offset:offset + 2])[0]
+            item_len = struct.unpack("<H", data[offset + 2:offset + 4])[0]
+            item_data = data[offset + 4:offset + 4 + item_len]
             items.append((type_id, item_data))
             offset += 4 + item_len
-        
+
         # Find unconnected data item (0x00B2)
         cip_data = None
         for type_id, item_data in items:
             if type_id == 0x00B2:
                 cip_data = item_data
                 break
-        
+
         if cip_data is None:
             return self._make_response(EIP_CMD_SEND_RR_DATA, session, context, b"", status=1)
-        
+
         # Process CIP request
         cip_response = self._process_cip_request(cip_data)
-        
+
         # Build response
         resp_data = struct.pack("<I", 0)  # Interface handle
         resp_data += struct.pack("<H", 0)  # Timeout
         resp_data += struct.pack("<H", 2)  # Item count
-        
+
         # Null address item
         resp_data += struct.pack("<HH", 0x0000, 0)
-        
+
         # Unconnected data item
         resp_data += struct.pack("<HH", 0x00B2, len(cip_response))
         resp_data += cip_response
-        
+
         return self._make_response(EIP_CMD_SEND_RR_DATA, session, context, resp_data)
-    
+
     def _process_cip_request(self, data: bytes) -> bytes:
         """Process CIP request and return response"""
         if len(data) < 1:
             return bytes([0x80 | CIP_GET_ATTRIBUTE_ALL, 0x08, 0x00])
-        
+
         service = data[0]
-        
+
         if service == CIP_GET_ATTRIBUTE_ALL:
             return self._handle_get_attribute_all(data[1:])
         elif service == CIP_UNCONNECTED_SEND and data[2:4] == bytes([0x20, CIP_CLASS_CONNECTION_MANAGER]):
@@ -435,26 +437,26 @@ class EtherNetIPProtocol(asyncio.Protocol):
         else:
             # Generic success response
             return bytes([service | 0x80, 0x00, 0x00])
-    
+
     def _handle_get_attribute_all(self, path_data: bytes) -> bytes:
         """Handle Get Attribute All service"""
         if len(path_data) < 2:
             return bytes([CIP_GET_ATTRIBUTE_ALL | 0x80, 0x00, 0x04, 0x00])  # Path segment error
-        
+
         # path_data: path size (words), then the class segment 0x20 <class>
         class_id = path_data[2] if len(path_data) > 2 and path_data[1] == 0x20 else 0
-        
+
         if class_id == CIP_CLASS_IDENTITY:
             identity_data = self.device.get_identity_response()
             # Reply header: service, reserved, general status, extended status size
             return bytes([CIP_GET_ATTRIBUTE_ALL | 0x80, 0x00, 0x00, 0x00]) + identity_data
         else:
             return bytes([CIP_GET_ATTRIBUTE_ALL | 0x80, 0x00, 0x08, 0x00])  # Service not supported
-    
+
     def _handle_forward_open(self, service: int, data: bytes) -> bytes:
         """
         Forward Open: grant a connection (connected messaging for PCCC).
-        
+
         Request after service + path: priority(1) ticks(1) O->T cid(4) T->O cid(4)
         conn serial(2) vendor(2) originator serial(4) ...
         """
@@ -467,7 +469,7 @@ class EtherNetIPProtocol(asyncio.Protocol):
                  + struct.pack("<II", 0x00204001, 0x00204001)   # O->T / T->O API
                  + b"\x00\x00")                                 # application reply size, reserved
         return bytes([service | 0x80, 0x00, 0x00, 0x00]) + reply
-    
+
     def _handle_send_unit_data(self, session: int, context: bytes, data: bytes) -> Optional[bytes]:
         """SendUnitData: connected CIP message (Execute PCCC typed reads)"""
         if len(data) < 8:
@@ -488,7 +490,7 @@ class EtherNetIPProtocol(asyncio.Protocol):
         resp += struct.pack("<HH", 0x00A1, 4) + address
         resp += struct.pack("<HH", 0x00B1, len(sequence) + len(reply)) + sequence + reply
         return self._make_response(EIP_CMD_SEND_UNIT_DATA, session, context, resp)
-    
+
     def _process_connected_request(self, cip: bytes) -> bytes:
         """Connected request: PCCC (SLC mode) or Logix services (Logix mode)"""
         service = cip[0]
@@ -515,7 +517,7 @@ class EtherNetIPProtocol(asyncio.Protocol):
             return head + bytes([PCCC_CMD_TYPED | 0x40, PCCC_STS_ADDRESS_ERROR]) + tns
         return head + bytes([PCCC_CMD_TYPED | 0x40, 0x00]) + tns + b"".join(
             struct.pack("<H", v & 0xFFFF) for v in values)
-    
+
     # ------------------------------------------------------------------
     # Logix mode
     # ------------------------------------------------------------------
@@ -693,7 +695,10 @@ class EtherNetIPProtocol(asyncio.Protocol):
         return type_name, value
 
     def _encode_values(self, type_name: str, values: list) -> Tuple[bytes, bytes]:
-        """(reply type bytes, encoded values) for atomic or UDT elements"""
+        """(reply type bytes, encoded values) for atomic, STRING (Omron) or UDT elements"""
+        if type_name == "STRING":
+            text = values[0].encode()
+            return struct.pack("<H", OMRON_STRING_TYPE), struct.pack("<H", len(text)) + text
         if type_name in self.device.udts:
             template_id, members = self.device.udts[type_name]
             layout, size = self._udt_layout(members)
@@ -753,17 +758,17 @@ class EtherNetIPProtocol(asyncio.Protocol):
 async def run_server(host: str, port: int, denied_ranges: List[Tuple[int, int]], mode: str = "slc"):
     """Run EtherNet/IP simulator server ("slc" data files or "logix" tags)"""
     device = EtherNetIPDevice(denied_ranges, mode=mode)
-    
+
     loop = asyncio.get_event_loop()
     server = await loop.create_server(
         lambda: EtherNetIPProtocol(device),
         host, port
     )
-    
+
     addr = server.sockets[0].getsockname()
     logger.info(f"EtherNet/IP Simulator running on {addr[0]}:{addr[1]}")
     logger.info(f"Denied address ranges: {denied_ranges}")
-    
+
     async with server:
         await server.serve_forever()
 
@@ -774,20 +779,20 @@ def main():
                         help="Host to bind to (default 127.0.0.1; 0.0.0.0 = all interfaces)")
     parser.add_argument("--port", type=int, default=44818, help="Port to listen on")
     parser.add_argument("--denied", default="100-150",
-                       help="Denied address ranges")
+                        help="Denied address ranges")
     parser.add_argument("--mode", choices=["slc", "logix", "omron"], default="slc",
                         help="slc = PLC-5/SLC/MicroLogix data files (default), "
                              "logix = ControlLogix style symbolic tags (tag list, UDTs, program tags), "
                              "omron = Omron NJ/NX style variables (read by name only)")
     args = parser.parse_args()
-    
+
     denied_ranges = []
     if args.denied:
         for range_str in args.denied.split(","):
             if "-" in range_str:
                 start, end = range_str.split("-")
                 denied_ranges.append((int(start), int(end)))
-    
+
     try:
         asyncio.run(run_server(args.host, args.port, denied_ranges, args.mode))
     except KeyboardInterrupt:
@@ -796,5 +801,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-

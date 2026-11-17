@@ -288,6 +288,35 @@ class TagRange:
         return f"tags: {shown}"
 
 
+def expand_tag_members(tags: List[str], members: Dict[str, List[str]]) -> List[str]:
+    """
+    Replace structure variables by their members (config scan.tag_members),
+    for controllers that cannot report a structure's layout (Omron NJ/NX):
+    "Motor" -> "Motor.Speed", "Motor.Current"; "Motors[0]{2}" ->
+    "Motors[0].Speed", ..., "Motors[1].Current". Keys are the variable name
+    without index; tags without an entry are kept as they are.
+    """
+    expanded: List[str] = []
+    for tag in tags:
+        text = tag.strip()
+        count = 1
+        match = re.match(r"^(.*)\{(\d+)\}$", text)
+        if match:
+            text, count = match.group(1), max(1, int(match.group(2)))
+        base, _, index = text.partition("[")
+        names = members.get(base) if not index or index.rstrip("]").isdigit() else None
+        if not names or (match and not index):
+            expanded.append(tag)
+            continue
+        if index:
+            first = int(index.rstrip("]"))
+            elements = [f"{base}[{first + i}]" for i in range(count)]
+        else:
+            elements = [base]
+        expanded += [f"{element}.{member}" for element in elements for member in names]
+    return expanded
+
+
 # C0/C1 control characters (ESC, BEL, CSI, ...). Text reported by devices
 # (EtherNet/IP product names, Modbus identification, S7 module names) is
 # untrusted: escape sequences in it would drive the operator's terminal.

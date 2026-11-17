@@ -44,6 +44,7 @@ from plc_discovery import settings_file
 from plc_gui_settings import JobOutputs, SettingsTabsMixin  # noqa: F401  (JobOutputs re-exported)
 from plc_discovery.discovery import PLCDiscovery, discover_plcs, merge_discovery_results
 from plc_discovery.output import DEFAULT_OUTPUT_DIR, CSVExporter
+from plc_discovery.cli_args import parse_tag_list
 from plc_discovery.utils import MAX_IP_RANGE_HOSTS, ip_range_error, melsec_address, target_address_error
 from plc_scanner import BYTE_ORDER_MAP, DATA_TYPE_MAP, apply_data_type_conversion, status_report_message
 
@@ -199,6 +200,7 @@ class PLCScannerApp(SettingsTabsMixin):
         self.var_device = tk.StringVar(value=DeviceType.D.value)
         self.var_start = tk.StringVar(value="0")
         self.var_end = tk.StringVar(value="99")
+        self.var_tags = tk.StringVar()
         self.var_periodic = tk.BooleanVar(value=False)
         self.var_interval = tk.StringVar(value="60")
         self.var_data_type = tk.StringVar(value="(変換なし)")
@@ -332,9 +334,9 @@ class PLCScannerApp(SettingsTabsMixin):
         self.lbl_discover_count = ttk.Label(btns, text="")
         self.lbl_discover_count.pack(side=tk.RIGHT)
 
-        cols = ("ip", "manufacturer", "model", "protocol", "port", "mac")
-        headings = ("IPアドレス", "メーカー", "機種", "プロトコル", "ポート", "MACアドレス")
-        widths = (140, 140, 180, 120, 70, 150)
+        cols = ("ip", "manufacturer", "model", "cpu", "firmware", "protocol", "port", "mac")
+        headings = ("IPアドレス", "メーカー", "機種", "型式・CPU", "ファームウェア", "プロトコル", "ポート", "MACアドレス")
+        widths = (120, 140, 180, 150, 90, 110, 60, 130)
         self.tree_plc = self._make_tree(f, cols, headings, widths)
         self.tree_plc.bind("<<TreeviewSelect>>", lambda e: self.btn_to_collect.configure(
             state=tk.NORMAL if self.tree_plc.selection() else tk.DISABLED))
@@ -385,8 +387,18 @@ class PLCScannerApp(SettingsTabsMixin):
         ttk.Label(mode, text="アドレスは10進数で入力（X/Y/B/W も。例: X1F → 31）",
                   style="Hint.TLabel").grid(row=2, column=0, columnspan=4, sticky=tk.W, padx=(20, 0))
 
+        # EtherNet/IP symbolic tags (Logix / Omron NJ/NX): read instead of
+        # the device range when filled in
+        tag_row = ttk.Frame(mode)
+        tag_row.grid(row=3, column=0, columnspan=4, sticky=tk.W, padx=(20, 0), pady=(4, 0))
+        ttk.Label(tag_row, text="タグ（EtherNet/IP）").pack(side=tk.LEFT)
+        self.ent_tags = ttk.Entry(tag_row, textvariable=self.var_tags, width=24)
+        self.ent_tags.pack(side=tk.LEFT, padx=(4, 0))
+        ttk.Label(mode, text="カンマ区切り。入力するとアドレスの代わりに読みます",
+                  style="Hint.TLabel").grid(row=4, column=0, columnspan=4, sticky=tk.W, padx=(20, 0))
+
         per = ttk.Frame(mode)
-        per.grid(row=3, column=0, columnspan=4, sticky=tk.W, padx=(20, 0), pady=(4, 0))
+        per.grid(row=5, column=0, columnspan=4, sticky=tk.W, padx=(20, 0), pady=(4, 0))
         self.chk_periodic = ttk.Checkbutton(per, text="周期実行:", variable=self.var_periodic,
                                             command=self._on_mode_change)
         self.chk_periodic.pack(side=tk.LEFT)
@@ -395,9 +407,9 @@ class PLCScannerApp(SettingsTabsMixin):
         ttk.Label(per, text="秒ごと（停止ボタンで終了）").pack(side=tk.LEFT)
 
         ttk.Radiobutton(mode, text="フルスキャン（工場停止時のみ推奨）", value="full", variable=self.var_mode,
-                        command=self._on_mode_change).grid(row=4, column=0, columnspan=4, sticky=tk.W, pady=(8, 0))
+                        command=self._on_mode_change).grid(row=6, column=0, columnspan=4, sticky=tk.W, pady=(8, 0))
         ttk.Label(mode, text="プロトコルごとの全デバイス範囲を読み取ります。時間がかかります。",
-                  style="Hint.TLabel").grid(row=5, column=0, columnspan=4, sticky=tk.W, padx=(20, 0))
+                  style="Hint.TLabel").grid(row=7, column=0, columnspan=4, sticky=tk.W, padx=(20, 0))
 
         # データ型変換
         dt = ttk.LabelFrame(top, text="データ型変換（任意）", padding=8)
@@ -506,7 +518,7 @@ class PLCScannerApp(SettingsTabsMixin):
     def _on_mode_change(self) -> None:
         is_range = self.var_mode.get() == "range"
         st = tk.NORMAL if is_range else tk.DISABLED
-        for w in (self.ent_start, self.ent_end, self.chk_periodic):
+        for w in (self.ent_start, self.ent_end, self.chk_periodic, self.ent_tags):
             w.configure(state=st)
         self.cb_device.configure(state="readonly" if is_range else tk.DISABLED)
         self.ent_interval.configure(state=tk.NORMAL if is_range and self.var_periodic.get() else tk.DISABLED)
@@ -684,6 +696,7 @@ class PLCScannerApp(SettingsTabsMixin):
             d = p.to_dict()
             self.tree_plc.insert("", tk.END, iid=str(i), values=(
                 d["ip_address"], d["manufacturer"] or "-", d["model"] or "-",
+                d.get("cpu_type") or "-", d.get("firmware_version") or "-",
                 d["protocol"] or "-", d["port"], d["mac_address"] or "-"))
         if plcs:
             hosts = len({p.ip_address for p in plcs})
@@ -714,11 +727,15 @@ class PLCScannerApp(SettingsTabsMixin):
 
             mode = self.var_mode.get()
             device_type = DeviceType(self.var_device.get())
+            tags = parse_tag_list(self.var_tags.get()) if mode == "range" else []
+            if tags and protocol not in (None, Protocol.ETHERNET_IP):
+                raise ValueError("タグを読めるのは EtherNet/IP（Logix・オムロン NJ/NX）だけです。\n"
+                                 "プロトコルを「ETHERNET_IP」か「自動検出」にするか、タグ欄を空にしてください。")
             start = self._int_field(self.var_start, "開始アドレス")
             end = self._int_field(self.var_end, "終了アドレス")
-            if mode == "range" and end < start:
+            if mode == "range" and not tags and end < start:
                 raise ValueError("終了アドレスは開始アドレス以上にしてください。")
-            if mode == "range" and end - start + 1 > MAX_RANGE_POINTS:
+            if mode == "range" and not tags and end - start + 1 > MAX_RANGE_POINTS:
                 raise ValueError(
                     f"一度に読み取れるのは {MAX_RANGE_POINTS:,} 点までです"
                     f"（指定: {end - start + 1:,} 点）。範囲を分けて実行してください。")
@@ -754,13 +771,13 @@ class PLCScannerApp(SettingsTabsMixin):
         self.var_summary.set("")
         self._run_job(
             self._collect_job(config, ip, protocol, port, mode, device_type, start, end, interval,
-                              data_type, byte_order, self._exporter(), outputs),
+                              data_type, byte_order, self._exporter(), outputs, tags=tags),
             f"{ip} に接続しています...",
         )
 
     async def _collect_job(self, config, ip, protocol, port, mode, device_type, start, end, interval,
                            data_type, byte_order, exporter: CSVExporter,
-                           outputs: Optional[JobOutputs] = None) -> None:
+                           outputs: Optional[JobOutputs] = None, tags: Optional[List[str]] = None) -> None:
         """指定PLCに接続してデータを読み取り、CSVに保存する（周期実行時は停止まで繰り返す）"""
         outputs = outputs or JobOutputs(None, None)
         # プロトコル決定（自動検出または手動指定）
@@ -812,7 +829,10 @@ class PLCScannerApp(SettingsTabsMixin):
                     if interval:
                         self._post("status", f"周期実行 {iteration} 回目: 読み取り中...")
                     collector.clear_data()
-                    points = await collector.collect_range(device_type, start, end)
+                    if tags:
+                        points = await collector.collect_tags(tags)
+                    else:
+                        points = await collector.collect_range(device_type, start, end)
 
                 if data_type:
                     points = apply_data_type_conversion(points, data_type, byte_order, None)

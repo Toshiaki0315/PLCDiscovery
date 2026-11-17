@@ -217,12 +217,13 @@ python plc_scanner.py --mode range --target 127.0.0.1 --protocol eip --port 4481
 | Values | INT[20] | 0, 2, 4, ... 38 |
 | History | DINT[300] | 0〜299（分割読み出しになる） |
 | Motor | MotorData（構造体） | 900 / 2.5 / 4 |
+| Message | STRING | "Hello NJ" |
 
 ```bash
 python plc_scanner.py --mode range --target 127.0.0.1 --protocol eip --port 44820 --tags "Temperature,Pressure,Values[0]{5},Motor.Speed"
 ```
 
-構造体の変数は、メンバー（`Motor.Speed`）を指定すると読めます。全体（`Motor`）は `NG_UNSUPPORTED` になります（タグ一覧がないため構造体の並びが分からない）。書き込みには対応していません（本ツールは読み取り専用のため不要）。
+1 つずつの変数をまとめた要求（Multiple Service Packet）にも応答します。構造体の変数は、メンバー（`Motor.Speed`）を指定すると読めます。全体（`Motor`）は `NG_UNSUPPORTED` になります（タグ一覧がないため構造体の並びが分からない）。書き込みには対応していません（本ツールは読み取り専用のため不要）。
 
 ### S7 Simulator
 
@@ -231,7 +232,7 @@ python plc_scanner.py --mode range --target 127.0.0.1 --protocol eip --port 4482
 **対応ファンクション：**
 - Setup Communication
 - Read Var (DB, M領域)
-- CPU 情報の読み出し（USER_DATA の SZL 0x001C。snap7 の `get_cpu_info()`）：機種名 "CPU 1515-2 PN Sim"、システム名 "S7-1500 Sim"。探索結果のメーカー・機種に表示されます
+- CPU 情報の読み出し（USER_DATA の SZL 0x001C・0x0011）：機種名 "CPU 1515-2 PN Sim"、型式 "6ES7 515-2AM02-0AB0"、ファームウェア V2.9.4。探索結果の機種・型式・ファームウェアに表示されます
 
 **サンプルデータ：**
 - DB1: 1000ワードのテストパターン
