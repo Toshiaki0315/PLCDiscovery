@@ -12,24 +12,20 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import plc_scanner
-from plc_discovery.config import (
-    DataPoint, DeviceRange, DeviceType, NetworkConfig, PLCInfo, Protocol, StatusCode
-)
+from plc_discovery.config import DataPoint, DeviceRange, DeviceType, NetworkConfig, PLCInfo, Protocol, StatusCode
 from plc_discovery.data_types import ByteOrder, DataType
 from plc_discovery.discovery import PLCDiscovery
 from plc_discovery.output import CSVExporter
-from plc_discovery.probes import (
-    probe_ethernet_ip, probe_modbus, probe_s7, probe_slmp, verify_protocol
-)
+from plc_discovery.probes import probe_ethernet_ip, probe_modbus, probe_s7, probe_slmp, verify_protocol
 from plc_discovery.protocols.base import BaseProtocolHandler
 from plc_discovery.protocols.ethernet_ip import EtherNetIPHandler, is_slc_identity
 from plc_discovery.protocols.modbus import ModbusHandler
 from plc_discovery.retry import RetryConfig, RetryStrategy
 
-
 # ---------------------------------------------------------------------------
 # R1: cached denied addresses in the middle of a chunk are skipped
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_r1_denied_address_mid_chunk_skipped_next_scan():
@@ -51,7 +47,9 @@ async def test_r1_denied_address_mid_chunk_skipped_next_scan():
             return [start] * count, StatusCode.OK
 
     handler = Handler(
-        "127.0.0.1", 5001, NetworkConfig(packet_interval_ms=0, retry_interval_ms=0),
+        "127.0.0.1",
+        5001,
+        NetworkConfig(packet_interval_ms=0, retry_interval_ms=0),
         retry_config=RetryConfig(strategy=RetryStrategy.FIXED, max_retries=0, initial_delay_ms=0),
         use_circuit_breaker=False,
     )
@@ -72,6 +70,7 @@ async def test_r1_denied_address_mid_chunk_skipped_next_scan():
 # R2: words consumed by multi-word conversion stay in the CSV
 # ---------------------------------------------------------------------------
 
+
 def test_r2_csv_keeps_second_word(tmp_path):
     points = [
         DataPoint("D0", 0x0000, "0x0000", StatusCode.OK),
@@ -89,6 +88,7 @@ def test_r2_csv_keeps_second_word(tmp_path):
 # ---------------------------------------------------------------------------
 # R3: discovery requires a protocol reply, not just an open port
 # ---------------------------------------------------------------------------
+
 
 @contextmanager
 def tcp_server(respond):
@@ -132,26 +132,28 @@ def HTTP(req):
 class TestR3Probes:
 
     def test_slmp_error_reply_counts(self):
-        reply = b"\xD0\x00\x00\xFF\xFF\x03\x00\x02\x00\x59\xC0"  # end code C059
+        reply = b"\xd0\x00\x00\xff\xff\x03\x00\x02\x00\x59\xc0"  # end code C059
         with tcp_server(lambda req: reply) as port:
             assert probe_slmp("127.0.0.1", port, 1.0)
 
     def test_modbus_requires_matching_transaction(self):
         def respond(req):
-            return req[:2] + b"\x00\x00\x00\x05\x01\x03\x02\x00\x2A"
+            return req[:2] + b"\x00\x00\x00\x05\x01\x03\x02\x00\x2a"
+
         with tcp_server(respond) as port:
             assert probe_modbus("127.0.0.1", port, 1.0)
         with tcp_server(lambda req: b"\x99\x99" + respond(req)[2:]) as port:
             assert not probe_modbus("127.0.0.1", port, 1.0)
 
     def test_s7_connection_confirm(self):
-        cc = b"\x03\x00\x00\x16\x11\xD0" + b"\x00" * 16
+        cc = b"\x03\x00\x00\x16\x11\xd0" + b"\x00" * 16
         with tcp_server(lambda req: cc) as port:
             assert probe_s7("127.0.0.1", port, 1.0)
 
     def test_eip_list_identity_context_echo(self):
         def respond(req):
             return struct.pack("<HHII", 0x0063, 0, 0, 0) + req[12:20] + b"\x00" * 4
+
         with tcp_server(respond) as port:
             assert probe_ethernet_ip("127.0.0.1", port, 1.0)
 
@@ -163,14 +165,17 @@ class TestR3Probes:
     @pytest.mark.asyncio
     async def test_open_port_without_protocol_not_reported(self):
         discovery = PLCDiscovery(NetworkConfig(discovery_timeout_ms=200))
-        with patch("plc_discovery.discovery.is_port_open", side_effect=lambda ip, p, t: p == 5001), \
-                patch("plc_discovery.discovery.verify_protocol", return_value=False):
+        with (
+            patch("plc_discovery.discovery.is_port_open", side_effect=lambda ip, p, t: p == 5001),
+            patch("plc_discovery.discovery.verify_protocol", return_value=False),
+        ):
             assert await discovery._probe_host("192.0.2.10") is None
 
 
 # ---------------------------------------------------------------------------
 # R4: pymodbus internal retries disabled
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_r4_modbus_client_without_internal_retries():
@@ -184,6 +189,7 @@ async def test_r4_modbus_client_without_internal_retries():
 # ---------------------------------------------------------------------------
 # R5: periodic scans read every target each cycle
 # ---------------------------------------------------------------------------
+
 
 class FakeCollector:
     def __init__(self, ip, connected=True):
@@ -230,10 +236,11 @@ async def test_r5_periodic_scan_round_robin():
     exporter = MagicMock()
 
     with patch.object(plc_scanner, "PLCDataCollector", lambda plc, cfg: collectors[plc.ip_address]):
-        task = asyncio.ensure_future(plc_scanner.run_periodic_scan(
-            plcs, NetworkConfig(), exporter, Display(),
-            [DeviceRange(DeviceType.D, 0, 0)], interval=0.01
-        ))
+        task = asyncio.ensure_future(
+            plc_scanner.run_periodic_scan(
+                plcs, NetworkConfig(), exporter, Display(), [DeviceRange(DeviceType.D, 0, 0)], interval=0.01
+            )
+        )
         while collectors["10.0.0.3"].collect_calls < 3:
             await asyncio.sleep(0.005)
         task.cancel()
@@ -253,21 +260,55 @@ async def test_r5_periodic_scan_round_robin():
 # R6: SLC driver only for real SLC/PLC-5/MicroLogix controllers
 # ---------------------------------------------------------------------------
 
+
 class TestR6SLCIdentity:
 
-    @pytest.mark.parametrize("identity, expected", [
-        ({"vendor": "Rockwell Automation/Allen-Bradley", "product_type": "Programmable Logic Controller",
-          "product_name": "1747-L552/C C/10 - DC 3.46"}, True),
-        ({"vendor": "Rockwell Automation/Allen-Bradley", "product_type": "Programmable Logic Controller",
-          "product_name": "1766-L32BWA B/14.00 MicroLogix 1400"}, True),
-        ({"vendor": "Rockwell Automation/Allen-Bradley", "product_type": "Programmable Logic Controller",
-          "product_name": "1756-L71/B LOGIX5571"}, False),
-        ({"vendor": "OMRON Corporation", "product_type": "Programmable Logic Controller",
-          "product_name": "NJ501-1300"}, False),
-        ({"vendor": "Rockwell Automation/Allen-Bradley", "product_type": "Communications Adapter",
-          "product_name": "1756-EN2T"}, False),
-        (None, False),
-    ])
+    @pytest.mark.parametrize(
+        "identity, expected",
+        [
+            (
+                {
+                    "vendor": "Rockwell Automation/Allen-Bradley",
+                    "product_type": "Programmable Logic Controller",
+                    "product_name": "1747-L552/C C/10 - DC 3.46",
+                },
+                True,
+            ),
+            (
+                {
+                    "vendor": "Rockwell Automation/Allen-Bradley",
+                    "product_type": "Programmable Logic Controller",
+                    "product_name": "1766-L32BWA B/14.00 MicroLogix 1400",
+                },
+                True,
+            ),
+            (
+                {
+                    "vendor": "Rockwell Automation/Allen-Bradley",
+                    "product_type": "Programmable Logic Controller",
+                    "product_name": "1756-L71/B LOGIX5571",
+                },
+                False,
+            ),
+            (
+                {
+                    "vendor": "OMRON Corporation",
+                    "product_type": "Programmable Logic Controller",
+                    "product_name": "NJ501-1300",
+                },
+                False,
+            ),
+            (
+                {
+                    "vendor": "Rockwell Automation/Allen-Bradley",
+                    "product_type": "Communications Adapter",
+                    "product_name": "1756-EN2T",
+                },
+                False,
+            ),
+            (None, False),
+        ],
+    )
     def test_is_slc_identity(self, identity, expected):
         assert is_slc_identity(identity) is expected
 
@@ -276,7 +317,8 @@ class TestR6SLCIdentity:
         handler = EtherNetIPHandler("127.0.0.1", config=NetworkConfig())
         driver = MagicMock()
         driver._list_identity.return_value = {
-            "vendor": "OMRON Corporation", "product_type": "Programmable Logic Controller",
+            "vendor": "OMRON Corporation",
+            "product_type": "Programmable Logic Controller",
             "product_name": "NJ501-1300",
         }
         with patch("pycomm3.SLCDriver", return_value=driver):

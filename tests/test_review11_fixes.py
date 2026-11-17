@@ -14,31 +14,32 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import plc_scanner
-from plc_discovery.config import (
-    DataPoint, DeviceRange, DeviceType, NetworkConfig, PLCInfo, Protocol, StatusCode
-)
+from plc_discovery.config import DataPoint, DeviceRange, DeviceType, NetworkConfig, PLCInfo, Protocol, StatusCode
 from plc_discovery.database import SCHEMA_VERSION, DatabaseConfig, DatabaseExporter
 from plc_discovery.protocols.fins import FINSHandler
-
 
 # ---------------------------------------------------------------------------
 # B1: FINS end codes
 # ---------------------------------------------------------------------------
 
+
 def fins_error(sid, end_code):
     return bytes([0xC0, 0, 2, 0, 1, 0, 0, 1, 0, sid, 1, 1, end_code >> 8, end_code & 0xFF])
 
 
-@pytest.mark.parametrize("end_code, status", [
-    (0x1103, StatusCode.NG_ILLEGAL_ADDR),   # address range error
-    (0x1104, StatusCode.NG_ILLEGAL_ADDR),   # address range exceeded
-    (0x1101, StatusCode.NG_UNSUPPORTED),    # area classification missing
-    (0x0401, StatusCode.NG_UNSUPPORTED),    # undefined command
-    (0x0402, StatusCode.NG_UNSUPPORTED),    # not supported by model/version
-    (0x0205, StatusCode.NG_TIMEOUT),        # response timeout (relayed)
-    (0x1001, StatusCode.NG_COMM_ERROR),     # command too long: a format error, not an address
-    (0x1002, StatusCode.NG_COMM_ERROR),     # command too short
-])
+@pytest.mark.parametrize(
+    "end_code, status",
+    [
+        (0x1103, StatusCode.NG_ILLEGAL_ADDR),  # address range error
+        (0x1104, StatusCode.NG_ILLEGAL_ADDR),  # address range exceeded
+        (0x1101, StatusCode.NG_UNSUPPORTED),  # area classification missing
+        (0x0401, StatusCode.NG_UNSUPPORTED),  # undefined command
+        (0x0402, StatusCode.NG_UNSUPPORTED),  # not supported by model/version
+        (0x0205, StatusCode.NG_TIMEOUT),  # response timeout (relayed)
+        (0x1001, StatusCode.NG_COMM_ERROR),  # command too long: a format error, not an address
+        (0x1002, StatusCode.NG_COMM_ERROR),  # command too short
+    ],
+)
 def test_fins_end_code_classification(end_code, status):
     assert FINSHandler("127.0.0.1")._parse_read_response(fins_error(1, end_code))[1] == status
 
@@ -58,14 +59,16 @@ async def test_fins_partly_valid_range_found_by_binary_search():
     handler._send_udp = plc
     points = await handler.read_device_range(DeviceRange(DeviceType.HR, 0, 99))
     assert collections.Counter(p.status for p in points) == {
-        StatusCode.OK: 50, StatusCode.NG_ILLEGAL_ADDR: 50,
-    }   # previously 100 x NG_COMM_ERROR
+        StatusCode.OK: 50,
+        StatusCode.NG_ILLEGAL_ADDR: 50,
+    }  # previously 100 x NG_COMM_ERROR
     assert handler.get_denied_addresses() == {f"HR{a}" for a in range(50, 100)}
     assert handler.circuit_breaker_state == "closed"
 
 
 def test_fins_simulator_uses_address_range_error():
     from simulators.fins_simulator import INACCESSIBLE_RANGES, FINSSimulator
+
     area, start, _ = INACCESSIBLE_RANGES[0]
     request = bytes([0x80, 0, 2, 0, 1, 0, 0, 2, 0, 5, 1, 1, area, start >> 8, start & 0xFF, 0, 0, 1])
     response = FINSSimulator().handle_frame(request, ("127.0.0.1", 9600))
@@ -99,10 +102,12 @@ def rows(db):
 
 def test_database_keeps_each_protocol_of_one_ip(tmp_path):
     db = DatabaseExporter(DatabaseConfig(enabled=True, path=str(tmp_path / "d.db")))
-    plcs = [PLCInfo("127.0.0.1", protocol=Protocol.SLMP, port=5001),
-            PLCInfo("127.0.0.1", protocol=Protocol.MODBUS_TCP, port=1502)]
+    plcs = [
+        PLCInfo("127.0.0.1", protocol=Protocol.SLMP, port=5001),
+        PLCInfo("127.0.0.1", protocol=Protocol.MODBUS_TCP, port=1502),
+    ]
     assert db.export_discovery_results(plcs) == 2
-    assert db.export_discovery_results(plcs) == 2           # second run updates, no duplicates
+    assert db.export_discovery_results(plcs) == 2  # second run updates, no duplicates
     assert rows(db) == [("127.0.0.1", "MODBUS_TCP", 1502, None), ("127.0.0.1", "SLMP", 5001, None)]
 
 
@@ -120,21 +125,26 @@ def test_v1_database_is_migrated(tmp_path):
     conn.close()
 
     db = DatabaseExporter(DatabaseConfig(enabled=True, path=str(path)))
-    db.export_discovery_results([
-        PLCInfo("10.0.0.1", protocol=Protocol.SLMP, port=5001, model="Q03UDE"),
-        PLCInfo("10.0.0.1", protocol=Protocol.MODBUS_TCP, port=502),
-    ])
+    db.export_discovery_results(
+        [
+            PLCInfo("10.0.0.1", protocol=Protocol.SLMP, port=5001, model="Q03UDE"),
+            PLCInfo("10.0.0.1", protocol=Protocol.MODBUS_TCP, port=502),
+        ]
+    )
     assert rows(db) == [("10.0.0.1", "MODBUS_TCP", 502, None), ("10.0.0.1", "SLMP", 5001, "Q03UDE")]
     old = [p for p in db.get_plcs() if p["protocol"] == "SLMP"][0]
-    assert old["manufacturer"] == "Mitsubishi" and old["first_seen"] == "2026-01-01"   # existing data kept
-    assert db._connection.execute("SELECT MAX(version) FROM schema_info").fetchone()[0] == SCHEMA_VERSION   # migrated to the current version
+    assert old["manufacturer"] == "Mitsubishi" and old["first_seen"] == "2026-01-01"  # existing data kept
+    assert (
+        db._connection.execute("SELECT MAX(version) FROM schema_info").fetchone()[0] == SCHEMA_VERSION
+    )  # migrated to the current version
     db.close()
-    DatabaseExporter(DatabaseConfig(enabled=True, path=str(path))).close()   # reopening is a no-op
+    DatabaseExporter(DatabaseConfig(enabled=True, path=str(path))).close()  # reopening is a no-op
 
 
 def test_setup_script_uses_scanner_schema():
-    from scripts import setup_database
     from plc_discovery import database
+    from scripts import setup_database
+
     assert setup_database.CREATE_TABLES_SQL is database.CREATE_TABLES_SQL
 
 
@@ -142,8 +152,10 @@ def test_setup_script_uses_scanner_schema():
 # B3: periodic scan keeps targets that were offline at the start
 # ---------------------------------------------------------------------------
 
+
 class LateCollector:
     """Unreachable for the first two cycles, then answers"""
+
     instances = []
 
     def __init__(self, plc, config=None):
@@ -190,9 +202,16 @@ async def run_periodic(plcs, cycles):
     LateCollector.instances.clear()
     exporter = MagicMock()
     with patch.object(plc_scanner, "PLCDataCollector", LateCollector):
-        task = asyncio.ensure_future(plc_scanner.run_periodic_scan(
-            plcs, NetworkConfig(), exporter, Display(), [DeviceRange(DeviceType.D, 0, 0)], interval=0.01,
-        ))
+        task = asyncio.ensure_future(
+            plc_scanner.run_periodic_scan(
+                plcs,
+                NetworkConfig(),
+                exporter,
+                Display(),
+                [DeviceRange(DeviceType.D, 0, 0)],
+                interval=0.01,
+            )
+        )
         while not LateCollector.instances or max(c.cycles for c in LateCollector.instances) < cycles:
             await asyncio.sleep(0.005)
         task.cancel()
@@ -203,8 +222,8 @@ async def run_periodic(plcs, cycles):
 async def test_periodic_scan_picks_up_target_that_comes_online():
     (outcome,), exporter = await run_periodic([PLCInfo("10.0.0.1", protocol=Protocol.SLMP, port=5001)], 4)
     statuses = [c.args[0][0].status for c in exporter.export_plc_data.call_args_list]
-    assert statuses[:2] == [StatusCode.NG_COMM_ERROR] * 2     # offline cycles are logged
-    assert StatusCode.OK in statuses[2:]                      # previously never read at all
+    assert statuses[:2] == [StatusCode.NG_COMM_ERROR] * 2  # offline cycles are logged
+    assert StatusCode.OK in statuses[2:]  # previously never read at all
     assert outcome.success and outcome.error is None
 
 
@@ -221,4 +240,4 @@ async def test_periodic_scan_skips_target_with_invalid_options():
     outcomes, _ = await run_periodic([good, bad], 4)
     by_ip = {o.ip_address: o for o in outcomes}
     assert by_ip["10.0.0.2"].success is False
-    assert [c for c in LateCollector.instances if c.plc is bad][0].cycles == 0   # never polled
+    assert [c for c in LateCollector.instances if c.plc is bad][0].cycles == 0  # never polled

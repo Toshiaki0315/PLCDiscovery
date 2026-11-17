@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parent.parent
 # V1: Shift-JIS output never fails on unrepresentable characters
 # ---------------------------------------------------------------------------
 
+
 class TestShiftJIS:
 
     @pytest.mark.parametrize("name", ["shift-jis", "shift_jis", "SJIS", "cp932"])
@@ -36,7 +37,7 @@ class TestShiftJIS:
         rows = list(csv.DictReader(open(path, encoding="cp932")))
         assert rows[0]["manufacturer"] == "D?rr Somac GmbH"
         assert rows[1]["manufacturer"] == "三菱電機"
-        assert rows[1]["model"] == "①号機 ㈱テスト～"    # CP932-only characters kept
+        assert rows[1]["model"] == "①号機 ㈱テスト～"  # CP932-only characters kept
 
     @pytest.mark.asyncio
     async def test_discovery_results_shown_when_csv_fails(self):
@@ -50,19 +51,21 @@ class TestShiftJIS:
             mp.setattr(plc_scanner, "discover_plcs", _async_return(plcs))
             result = await plc_scanner.run_discovery([], NetworkConfig(), exporter, display, errors=errors)
         assert result == plcs
-        display.print_discovery_results.assert_called_once()     # list still shown
+        display.print_discovery_results.assert_called_once()  # list still shown
         assert errors and "locked" in errors[0]
 
 
 def _async_return(value):
     async def fn(*args, **kwargs):
         return value
+
     return fn
 
 
 # ---------------------------------------------------------------------------
 # V2: UTF-8 with BOM for Excel; BOM only once when appending
 # ---------------------------------------------------------------------------
+
 
 class TestUTF8BOM:
 
@@ -86,7 +89,7 @@ class TestUTF8BOM:
         path = exporter.export_denied_addresses({"D20"}, "10.0.0.1")
         raw = Path(path).read_bytes()
         assert raw.count(b"\xef\xbb\xbf") == 1
-        assert load_denied_addresses(path) == {"D10", "D20"}   # BOM stripped when reading
+        assert load_denied_addresses(path) == {"D10", "D20"}  # BOM stripped when reading
 
     def test_plain_utf8_has_no_bom(self, tmp_path):
         path = CSVExporter(str(tmp_path), "utf-8").export_plc_data(
@@ -98,6 +101,7 @@ class TestUTF8BOM:
 # ---------------------------------------------------------------------------
 # V3: --generate-config never overwrites
 # ---------------------------------------------------------------------------
+
 
 class TestGenerateConfig:
 
@@ -126,6 +130,7 @@ class TestGenerateConfig:
 # ---------------------------------------------------------------------------
 # V4: templates default to the production-safe range mode
 # ---------------------------------------------------------------------------
+
 
 def test_generated_template_defaults_to_range(tmp_path):
     path = tmp_path / "template.yaml"

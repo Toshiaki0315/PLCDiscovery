@@ -9,31 +9,31 @@ Supports:
 """
 
 import asyncio
+import logging
 import re
 import struct
-from typing import Dict, List, Optional, Tuple
-import logging
+from typing import Any, Dict, List, Optional, Tuple
 
+from ..config import PROTOCOL_PORTS, DeviceType, Protocol, StatusCode
 from .base import BaseProtocolHandler
-from ..config import Protocol, DeviceType, StatusCode, PROTOCOL_PORTS
 
 logger = logging.getLogger(__name__)
 
 # S7 Area codes
-S7_AREA_PE = 0x81    # Process inputs
-S7_AREA_PA = 0x82    # Process outputs
-S7_AREA_MK = 0x83    # Merkers (flags)
-S7_AREA_DB = 0x84    # Data blocks
-S7_AREA_CT = 0x1C    # Counters
-S7_AREA_TM = 0x1D    # Timers
+S7_AREA_PE = 0x81  # Process inputs
+S7_AREA_PA = 0x82  # Process outputs
+S7_AREA_MK = 0x83  # Merkers (flags)
+S7_AREA_DB = 0x84  # Data blocks
+S7_AREA_CT = 0x1C  # Counters
+S7_AREA_TM = 0x1D  # Timers
 
 # S7 data item return codes sent by the CPU (the PLC answered)
 _S7_ITEM_CODES = {
-    0x03: StatusCode.NG_ILLEGAL_ADDR,   # accessing the object not allowed
-    0x05: StatusCode.NG_ILLEGAL_ADDR,   # invalid address / address out of range
-    0x0A: StatusCode.NG_ILLEGAL_ADDR,   # object does not exist (e.g. past the DB end)
-    0x06: StatusCode.NG_UNSUPPORTED,    # data type not supported
-    0x07: StatusCode.NG_UNSUPPORTED,    # data type inconsistent
+    0x03: StatusCode.NG_ILLEGAL_ADDR,  # accessing the object not allowed
+    0x05: StatusCode.NG_ILLEGAL_ADDR,  # invalid address / address out of range
+    0x0A: StatusCode.NG_ILLEGAL_ADDR,  # object does not exist (e.g. past the DB end)
+    0x06: StatusCode.NG_UNSUPPORTED,  # data type not supported
+    0x07: StatusCode.NG_UNSUPPORTED,  # data type inconsistent
 }
 
 # The same answers as worded by snap7 1.x (C library)
@@ -75,21 +75,20 @@ def _szl_records(data: bytes, record_length: int, indexes: range) -> Dict[int, b
     if len(data) >= 4:
         length_dr, count = struct.unpack(">HH", data[:4])
         if length_dr >= 4 and 4 + length_dr * count <= len(data) and len(data) % length_dr != 0:
-            data, record_length = data[4:4 + length_dr * count], length_dr
+            data, record_length = data[4 : 4 + length_dr * count], length_dr
     records: Dict[int, bytes] = {}
     for start in range(0, len(data) - record_length + 1, record_length):
-        index = struct.unpack(">H", data[start:start + 2])[0]
+        index = struct.unpack(">H", data[start : start + 2])[0]
         if index not in indexes:
             return {}
-        records[index] = data[start + 2:start + record_length]
+        records[index] = data[start + 2 : start + record_length]
     return records
 
 
 def parse_szl_component_ids(data: bytes) -> Dict[int, str]:
     """Records of an SZL 0x001C reply as {index: text}"""
     records = _szl_records(data, SZL_COMPONENT_RECORD_LENGTH, SZL_COMPONENT_INDEXES)
-    return {index: body.split(b"\x00")[0].decode("ascii", errors="ignore").strip()
-            for index, body in records.items()}
+    return {index: body.split(b"\x00")[0].decode("ascii", errors="ignore").strip() for index, body in records.items()}
 
 
 def parse_szl_module_ids(data: bytes) -> Dict[str, str]:
@@ -106,13 +105,13 @@ def parse_szl_module_ids(data: bytes) -> Dict[str, str]:
     return fields
 
 
-def _read_szl_bytes(client, szl_id: int) -> bytes:
+def _read_szl_bytes(client: Any, szl_id: int) -> bytes:
     szl = client.read_szl(szl_id, 0)
     size = int(szl.Header.LengthDR) * max(1, int(szl.Header.NDR))
     return bytes(szl.Data[:size])
 
 
-def read_s7_identity(client) -> Dict[str, str]:
+def read_s7_identity(client: Any) -> Dict[str, str]:
     """
     Identity of a connected snap7 client:
     - model ("CPU 1515-2 PN") and cpu_type from SZL 0x001C; falls back to
@@ -174,11 +173,11 @@ def classify_s7_error(error: Exception) -> Optional[StatusCode]:
 
 # Device type to S7 area mapping
 S7_DEVICE_MAP = {
-    DeviceType.X: S7_AREA_PE,   # Inputs
-    DeviceType.Y: S7_AREA_PA,   # Outputs
-    DeviceType.M: S7_AREA_MK,   # Merkers
+    DeviceType.X: S7_AREA_PE,  # Inputs
+    DeviceType.Y: S7_AREA_PA,  # Outputs
+    DeviceType.M: S7_AREA_MK,  # Merkers
     DeviceType.DB: S7_AREA_DB,  # Data blocks
-    DeviceType.D: S7_AREA_DB,   # Data (map to DB)
+    DeviceType.D: S7_AREA_DB,  # Data (map to DB)
 }
 
 
@@ -201,7 +200,7 @@ class S7Handler(BaseProtocolHandler):
         rack: int = 0,
         slot: int = 0,
         db_number: int = 1,
-        **kwargs
+        **kwargs: Any,
     ):
         """
         Addressing used by read_device_raw():
@@ -210,7 +209,7 @@ class S7Handler(BaseProtocolHandler):
             M/X/Y read the merker/input/output areas (M address 5 = MW10).
         """
         super().__init__(ip_address, port or PROTOCOL_PORTS[Protocol.S7], **kwargs)
-        self._client = None
+        self._client: Any = None
         self._rack = rack
         self._slot = slot
         self._db_number = db_number
@@ -237,10 +236,7 @@ class S7Handler(BaseProtocolHandler):
             loop = asyncio.get_running_loop()
             self._client, used_slot = await loop.run_in_executor(None, _connect)
             self._connected = True
-            logger.info(
-                f"S7 connected to {self.ip_address}:{self.port} "
-                f"(rack={self._rack}, slot={used_slot})"
-            )
+            logger.info(f"S7 connected to {self.ip_address}:{self.port} " f"(rack={self._rack}, slot={used_slot})")
             return True
 
         except ImportError:
@@ -255,6 +251,7 @@ class S7Handler(BaseProtocolHandler):
         """Close S7 connection"""
         if self._client:
             try:
+
                 def _disconnect():
                     self._client.disconnect()
 
@@ -268,10 +265,7 @@ class S7Handler(BaseProtocolHandler):
                 logger.info(f"S7 disconnected from {self.ip_address}")
 
     async def read_device_raw(
-        self,
-        device_type: DeviceType,
-        start_address: int,
-        count: int
+        self, device_type: DeviceType, start_address: int, count: int
     ) -> Tuple[Optional[List[int]], StatusCode]:
         """
         Read device data using S7 protocol.

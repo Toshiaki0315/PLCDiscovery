@@ -3,18 +3,18 @@ Tests for config module
 """
 
 from plc_discovery.config import (
-    Protocol,
-    DeviceType,
-    StatusCode,
-    NetworkConfig,
-    DeviceRange,
-    PLCInfo,
-    DataPoint,
-    PROTOCOL_PORTS,
-    MAX_READ_WORDS,
-    SAFE_READ_WORDS,
-    MANUFACTURER_OUI,
     DEFAULT_DEVICE_RANGES,
+    MANUFACTURER_OUI,
+    MAX_READ_WORDS,
+    PROTOCOL_PORTS,
+    SAFE_READ_WORDS,
+    DataPoint,
+    DeviceRange,
+    DeviceType,
+    NetworkConfig,
+    PLCInfo,
+    Protocol,
+    StatusCode,
 )
 
 
@@ -79,11 +79,7 @@ class TestNetworkConfig:
 
     def test_custom_values(self):
         """Test custom configuration values"""
-        config = NetworkConfig(
-            discovery_timeout_ms=500,
-            packet_interval_ms=100,
-            max_concurrent=5
-        )
+        config = NetworkConfig(discovery_timeout_ms=500, packet_interval_ms=100, max_concurrent=5)
         assert config.discovery_timeout_ms == 500
         assert config.packet_interval_ms == 100
         assert config.max_concurrent == 5
@@ -126,18 +122,14 @@ class TestPLCInfo:
             manufacturer="三菱電機",
             model="iQ-R",
             protocol=Protocol.SLMP,
-            port=5001
+            port=5001,
         )
         assert plc.manufacturer == "三菱電機"
         assert plc.protocol == Protocol.SLMP
 
     def test_plc_info_to_dict(self):
         """Test PLCInfo to_dict method"""
-        plc = PLCInfo(
-            ip_address="192.168.1.10",
-            protocol=Protocol.SLMP,
-            port=5001
-        )
+        plc = PLCInfo(ip_address="192.168.1.10", protocol=Protocol.SLMP, port=5001)
         d = plc.to_dict()
 
         assert d["ip_address"] == "192.168.1.10"
@@ -152,11 +144,7 @@ class TestDataPoint:
     def test_data_point_creation(self):
         """Test DataPoint creation"""
         dp = DataPoint(
-            address="D100",
-            value=1234,
-            raw_hex="0x04D2",
-            status=StatusCode.OK,
-            timestamp="2024-01-01 10:00:00"
+            address="D100", value=1234, raw_hex="0x04D2", status=StatusCode.OK, timestamp="2024-01-01 10:00:00"
         )
         assert dp.address == "D100"
         assert dp.value == 1234
@@ -165,11 +153,7 @@ class TestDataPoint:
 
     def test_data_point_error(self):
         """Test DataPoint with error status"""
-        dp = DataPoint(
-            address="D999",
-            status=StatusCode.NG_ILLEGAL_ADDR,
-            timestamp="2024-01-01 10:00:00"
-        )
+        dp = DataPoint(address="D999", status=StatusCode.NG_ILLEGAL_ADDR, timestamp="2024-01-01 10:00:00")
         assert dp.value is None
         assert dp.raw_hex is None
         assert dp.status == StatusCode.NG_ILLEGAL_ADDR
@@ -177,11 +161,7 @@ class TestDataPoint:
     def test_data_point_to_dict(self):
         """Test DataPoint to_dict method"""
         dp = DataPoint(
-            address="D100",
-            value=1234,
-            raw_hex="0x04D2",
-            status=StatusCode.OK,
-            timestamp="2024-01-01 10:00:00"
+            address="D100", value=1234, raw_hex="0x04D2", status=StatusCode.OK, timestamp="2024-01-01 10:00:00"
         )
         d = dp.to_dict()
 

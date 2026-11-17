@@ -5,8 +5,12 @@ Tests for data_types module
 import struct
 
 from plc_discovery.data_types import (
-    DataType, ByteOrder, TypedValue, DataTypeConverter,
-    DataTypeMapping, DataTypeManager
+    ByteOrder,
+    DataType,
+    DataTypeConverter,
+    DataTypeManager,
+    DataTypeMapping,
+    TypedValue,
 )
 
 
@@ -64,9 +68,9 @@ class TestDataTypeConverter:
         """Test FLOAT (32-bit IEEE 754) conversion"""
         # Pack a known float value
         test_value = 3.14159
-        packed = struct.pack('<f', test_value)
-        low = struct.unpack('<H', packed[0:2])[0]
-        high = struct.unpack('<H', packed[2:4])[0]
+        packed = struct.pack("<f", test_value)
+        low = struct.unpack("<H", packed[0:2])[0]
+        high = struct.unpack("<H", packed[2:4])[0]
 
         words = [low, high]
         result = DataTypeConverter.convert(words, DataType.FLOAT, ByteOrder.LITTLE_ENDIAN)
@@ -93,12 +97,12 @@ class TestDataTypeConverter:
     def test_double_conversion(self):
         """Test DOUBLE (64-bit IEEE 754) conversion"""
         test_value = 3.141592653589793
-        packed = struct.pack('<d', test_value)
+        packed = struct.pack("<d", test_value)
         words = [
-            struct.unpack('<H', packed[0:2])[0],
-            struct.unpack('<H', packed[2:4])[0],
-            struct.unpack('<H', packed[4:6])[0],
-            struct.unpack('<H', packed[6:8])[0],
+            struct.unpack("<H", packed[0:2])[0],
+            struct.unpack("<H", packed[2:4])[0],
+            struct.unpack("<H", packed[4:6])[0],
+            struct.unpack("<H", packed[6:8])[0],
         ]
 
         result = DataTypeConverter.convert(words, DataType.DOUBLE, ByteOrder.LITTLE_ENDIAN)
@@ -179,10 +183,10 @@ class TestDataTypeConverter:
         """The four byte orders give four distinct layouts (CDAB/ABCD/DCBA/BADC)"""
         words = [0x1122, 0x3344]  # AB, CD
         expected = {
-            ByteOrder.LITTLE_ENDIAN: 0x33441122,            # CDAB
-            ByteOrder.BIG_ENDIAN: 0x11223344,               # ABCD
+            ByteOrder.LITTLE_ENDIAN: 0x33441122,  # CDAB
+            ByteOrder.BIG_ENDIAN: 0x11223344,  # ABCD
             ByteOrder.LITTLE_ENDIAN_WORD_SWAP: 0x44332211,  # DCBA
-            ByteOrder.BIG_ENDIAN_WORD_SWAP: 0x22114433,     # BADC
+            ByteOrder.BIG_ENDIAN_WORD_SWAP: 0x22114433,  # BADC
         }
         for byte_order, value in expected.items():
             assert DataTypeConverter.convert(words, DataType.DWORD, byte_order) == value
@@ -210,9 +214,7 @@ class TestDataTypeConverter:
 
         # 2 DWORD values
         words = [0x1234, 0x5678, 0xABCD, 0xEF01]
-        results = DataTypeConverter.convert_batch(
-            words, DataType.DWORD, ByteOrder.LITTLE_ENDIAN
-        )
+        results = DataTypeConverter.convert_batch(words, DataType.DWORD, ByteOrder.LITTLE_ENDIAN)
         assert len(results) == 2
 
 
@@ -239,11 +241,7 @@ class TestTypedValue:
 
     def test_auto_conversion(self):
         """Test automatic conversion on creation"""
-        typed = TypedValue(
-            raw_words=[0x1234],
-            data_type=DataType.WORD,
-            byte_order=ByteOrder.LITTLE_ENDIAN
-        )
+        typed = TypedValue(raw_words=[0x1234], data_type=DataType.WORD, byte_order=ByteOrder.LITTLE_ENDIAN)
 
         assert typed.converted_value == 0x1234
         assert typed.display_string == "4660"
@@ -251,11 +249,7 @@ class TestTypedValue:
     def test_float_typed_value(self):
         """Test TypedValue with float"""
         # 1.0 in IEEE 754
-        typed = TypedValue(
-            raw_words=[0x0000, 0x3F80],
-            data_type=DataType.FLOAT,
-            byte_order=ByteOrder.LITTLE_ENDIAN
-        )
+        typed = TypedValue(raw_words=[0x0000, 0x3F80], data_type=DataType.FLOAT, byte_order=ByteOrder.LITTLE_ENDIAN)
 
         assert typed.converted_value == 1.0
 
@@ -265,11 +259,7 @@ class TestDataTypeMapping:
 
     def test_contains(self):
         """Test address containment check"""
-        mapping = DataTypeMapping(
-            start_address=100,
-            end_address=199,
-            data_type=DataType.FLOAT
-        )
+        mapping = DataTypeMapping(start_address=100, end_address=199, data_type=DataType.FLOAT)
 
         assert mapping.contains(100)
         assert mapping.contains(150)
@@ -326,7 +316,7 @@ class TestDataTypeManager:
             "mappings": [
                 {"start": 0, "end": 99, "type": "FLOAT", "description": "Temperatures"},
                 {"start": 100, "end": 199, "type": "INT32", "byte_order": "little"},
-            ]
+            ],
         }
 
         manager = DataTypeManager.from_config(config)

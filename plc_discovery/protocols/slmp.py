@@ -8,23 +8,23 @@ Supports:
 """
 
 import asyncio
-from typing import List, Optional, Tuple
 import logging
+from typing import Any, List, Optional, Tuple
 
+from ..config import PROTOCOL_PORTS, DeviceType, Protocol, StatusCode
 from .base import BaseProtocolHandler
-from ..config import Protocol, DeviceType, StatusCode, PROTOCOL_PORTS
 
 logger = logging.getLogger(__name__)
 
 # Device type mapping for pymcprotocol
 SLMP_DEVICE_MAP = {
-    DeviceType.D: "D",    # Data register
-    DeviceType.M: "M",    # Internal relay
-    DeviceType.W: "W",    # Link register
-    DeviceType.R: "R",    # File register
-    DeviceType.X: "X",    # Input
-    DeviceType.Y: "Y",    # Output
-    DeviceType.B: "B",    # Link relay
+    DeviceType.D: "D",  # Data register
+    DeviceType.M: "M",  # Internal relay
+    DeviceType.W: "W",  # Link register
+    DeviceType.R: "R",  # File register
+    DeviceType.X: "X",  # Input
+    DeviceType.Y: "Y",  # Output
+    DeviceType.B: "B",  # Link relay
     DeviceType.SM: "SM",  # Special relay
 }
 
@@ -53,11 +53,14 @@ def slmp_head_device(device_type: DeviceType, address: int) -> str:
 # SLMP end codes meaning the requested device/address/size is invalid
 # (the PLC answered; the address range itself is the problem)
 SLMP_ADDRESS_END_CODES = (
-    "c051", "c052", "c053", "c054",  # number of points out of range
-    "c055",                          # file/device data error
-    "c056",                          # request exceeds the maximum address
-    "c05b",                          # CPU cannot access the specified device
-    "c05c",                          # request content error (device specification)
+    "c051",
+    "c052",
+    "c053",
+    "c054",  # number of points out of range
+    "c055",  # file/device data error
+    "c056",  # request exceeds the maximum address
+    "c05b",  # CPU cannot access the specified device
+    "c05c",  # request content error (device specification)
 )
 
 
@@ -65,12 +68,12 @@ SLMP_ADDRESS_END_CODES = (
 #   3E: D0 00 | net | pc | io(2) | station | length(2)                     -> 9 bytes
 #   4E: D4 00 | serial(2) | 00 00 | net | pc | io(2) | station | length(2) -> 13 bytes
 _FRAME_LAYOUT = {
-    "3E": (9, b"\xD0\x00", 7),
-    "4E": (13, b"\xD4\x00", 11),
+    "3E": (9, b"\xd0\x00", 7),
+    "4E": (13, b"\xd4\x00", 11),
 }
 
 
-def _framed_client_class(frame: str):
+def _framed_client_class(frame: str) -> Any:
     """
     pymcprotocol client whose _recv() reads exactly one complete response.
 
@@ -100,7 +103,7 @@ def _framed_client_class(frame: str):
             header = self._recv_exact(header_size)
             if header[:2] != subheader:
                 raise ConnectionError(f"unexpected SLMP response header: {header[:2].hex()}")
-            length = int.from_bytes(header[length_offset:length_offset + 2], "little")
+            length = int.from_bytes(header[length_offset : length_offset + 2], "little")
             return header + self._recv_exact(length)
 
     FramedClient.__name__ = f"Framed{Base.__name__}"
@@ -125,14 +128,9 @@ class SLMPHandler(BaseProtocolHandler):
     # pymcprotocol uses by default (a larger number raises OverflowError)
     MAX_ADDRESS = 0xFFFFFF
 
-    def __init__(
-        self,
-        ip_address: str,
-        port: Optional[int] = None,
-        **kwargs
-    ):
+    def __init__(self, ip_address: str, port: Optional[int] = None, **kwargs: Any):
         super().__init__(ip_address, port or PROTOCOL_PORTS[Protocol.SLMP], **kwargs)
-        self._client = None
+        self._client: Any = None
 
     async def connect(self) -> bool:
         """Establish SLMP connection"""
@@ -165,6 +163,7 @@ class SLMPHandler(BaseProtocolHandler):
         """Close SLMP connection"""
         if self._client:
             try:
+
                 def _disconnect():
                     self._client.close()
 
@@ -178,10 +177,7 @@ class SLMPHandler(BaseProtocolHandler):
                 logger.info(f"SLMP disconnected from {self.ip_address}")
 
     async def read_device_raw(
-        self,
-        device_type: DeviceType,
-        start_address: int,
-        count: int
+        self, device_type: DeviceType, start_address: int, count: int
     ) -> Tuple[Optional[List[int]], StatusCode]:
         """
         Read device data using SLMP protocol.
@@ -208,6 +204,7 @@ class SLMPHandler(BaseProtocolHandler):
         headdevice = slmp_head_device(device_type, start_address)
 
         try:
+
             def _read():
                 # Bit devices are read in bit units, every other device in words
                 if device_type in SLMP_BIT_DEVICES:
@@ -248,8 +245,7 @@ class SLMPHandler(BaseProtocolHandler):
         end_code = getattr(e, "errorcode", None)
         code_str = str(end_code).lower() if end_code is not None else error_str
 
-        if any(c in code_str for c in SLMP_ADDRESS_END_CODES) or \
-                "illegal" in error_str or "0x4001" in error_str:
+        if any(c in code_str for c in SLMP_ADDRESS_END_CODES) or "illegal" in error_str or "0x4001" in error_str:
             logger.debug(f"SLMP illegal address: {device_type.value}{start_address} ({e})")
             return StatusCode.NG_ILLEGAL_ADDR
 
@@ -266,5 +262,5 @@ class SLMPBinaryHandler(SLMPHandler):
 
     FRAME = "4E"
 
-    def __init__(self, ip_address: str, port: Optional[int] = None, **kwargs):
+    def __init__(self, ip_address: str, port: Optional[int] = None, **kwargs: Any):
         super().__init__(ip_address, port or 5000, **kwargs)

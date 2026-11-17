@@ -15,15 +15,26 @@ import pytest
 import plc_scanner
 from plc_discovery.collector import PLCDataCollector, collect_item
 from plc_discovery.config import (
-    DataPoint, DeviceRange, DeviceType, NetworkConfig, PLCInfo, Protocol, StatusCode, TagRange,
+    DataPoint,
+    DeviceRange,
+    DeviceType,
+    NetworkConfig,
+    PLCInfo,
+    Protocol,
+    StatusCode,
+    TagRange,
 )
 from plc_discovery.config_loader import ConfigLoader
 from plc_discovery.notifications import (
-    NotificationConfig, NotificationEvent, NotificationManager, NotificationPriority,
-    NotificationType, TeamsHandler,
+    NotificationConfig,
+    NotificationEvent,
+    NotificationManager,
+    NotificationPriority,
+    NotificationType,
+    TeamsHandler,
 )
 from plc_discovery.output import CSVExporter
-from plc_discovery.protocols.ethernet_ip import EtherNetIPHandler, MAX_TAG_ARRAY_ELEMENTS
+from plc_discovery.protocols.ethernet_ip import MAX_TAG_ARRAY_ELEMENTS, EtherNetIPHandler
 from plc_discovery.utils import melsec_address
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -33,13 +44,20 @@ ROOT = Path(__file__).resolve().parent.parent
 # 4: Teams Adaptive Card
 # ---------------------------------------------------------------------------
 
+
 def _teams(**kwargs):
     return TeamsHandler(NotificationConfig(name="t", type="teams", url="https://x", **kwargs))
 
 
 def _event():
-    return NotificationEvent(type=NotificationType.SCAN_ERROR, title="PLC Scan Error", message="10.0.0.1 down",
-                             priority=NotificationPriority.HIGH, timestamp="ts", data={"plc_ip": "10.0.0.1"})
+    return NotificationEvent(
+        type=NotificationType.SCAN_ERROR,
+        title="PLC Scan Error",
+        message="10.0.0.1 down",
+        priority=NotificationPriority.HIGH,
+        timestamp="ts",
+        data={"plc_ip": "10.0.0.1"},
+    )
 
 
 def test_teams_sends_adaptive_card_by_default():
@@ -59,8 +77,9 @@ def test_teams_sends_adaptive_card_by_default():
 def test_teams_legacy_message_card_on_request():
     payload = _teams(card_format="messagecard").build_payload(_event())
     assert payload["@type"] == "MessageCard"
-    manager = NotificationManager.from_config({"notifications": [
-        {"name": "t", "type": "teams", "url": "https://x", "format": "MessageCard"}]})
+    manager = NotificationManager.from_config(
+        {"notifications": [{"name": "t", "type": "teams", "url": "https://x", "format": "MessageCard"}]}
+    )
     assert manager._handlers["t"].config.card_format == "messagecard"
 
 
@@ -76,9 +95,18 @@ def test_teams_format_validated(tmp_path):
 # 6: MELSEC hex addresses
 # ---------------------------------------------------------------------------
 
+
 def test_melsec_address():
-    assert [melsec_address(a) for a in ("X31", "Y0", "B255", "W2047", "D100", "M31", "SM400", "HR5")] == \
-        ["X1F", "Y0", "BFF", "W7FF", "D100", "M31", "SM400", "HR5"]
+    assert [melsec_address(a) for a in ("X31", "Y0", "B255", "W2047", "D100", "M31", "SM400", "HR5")] == [
+        "X1F",
+        "Y0",
+        "BFF",
+        "W7FF",
+        "D100",
+        "M31",
+        "SM400",
+        "HR5",
+    ]
 
 
 def _points(*addresses):
@@ -125,24 +153,25 @@ def test_cli_and_config_hex_option(monkeypatch, tmp_path):
 # 5: one CSV per day for periodic scans
 # ---------------------------------------------------------------------------
 
+
 def test_daily_csv_appends_cycles(tmp_path):
     exporter = CSVExporter(str(tmp_path), "utf-8-sig")
     first = exporter.append_plc_data(_points("D0", "D1"), "10.0.0.1")
     second = exporter.append_plc_data(_points("D0", "D1"), "10.0.0.1")
     assert first == second and Path(first).name.startswith("plc_data_10_0_0_1_2")
     raw = Path(first).read_bytes()
-    assert raw.count(b"\xef\xbb\xbf") == 1                    # BOM once
+    assert raw.count(b"\xef\xbb\xbf") == 1  # BOM once
     rows = list(csv.DictReader(open(first, encoding="utf-8-sig")))
     assert [r["address"] for r in rows] == ["D0", "D1", "D0", "D1"]
-    assert "converted_value" in rows[0]                       # fixed extended columns
+    assert "converted_value" in rows[0]  # fixed extended columns
 
 
 def test_daily_csv_keeps_existing_columns(tmp_path):
     exporter = CSVExporter(str(tmp_path), "utf-8")
     path = exporter.append_plc_data(_points("X31"), "10.0.0.1")
-    exporter.append_plc_data(_points("X31"), "10.0.0.1", hex_addresses=True)   # switched on later
+    exporter.append_plc_data(_points("X31"), "10.0.0.1", hex_addresses=True)  # switched on later
     header = open(path, encoding="utf-8").readline()
-    assert "address_hex" not in header                        # same columns for the whole day
+    assert "address_hex" not in header  # same columns for the whole day
 
 
 def test_periodic_writer_uses_daily_file(tmp_path):
@@ -157,6 +186,7 @@ def test_periodic_writer_uses_daily_file(tmp_path):
 # ---------------------------------------------------------------------------
 # 3: EtherNet/IP Logix tags
 # ---------------------------------------------------------------------------
+
 
 class _Tag:
     def __init__(self, tag, value, error=None):
@@ -176,9 +206,13 @@ def _logix(tags_info=None, reply=None):
 
 def test_tag_values_become_data_points():
     replies = {
-        "Speed": _Tag("Speed", 1500), "Temp": _Tag("Temp", 23.5), "Run": _Tag("Run", True),
-        "Recipe[2]{3}": _Tag("Recipe", [7, 8, 9]), "Missing": _Tag("Missing", None, "Tag doesn't exist"),
-        "Udt": _Tag("Udt", {"a": 1}), "Total": _Tag("Total", 100000),
+        "Speed": _Tag("Speed", 1500),
+        "Temp": _Tag("Temp", 23.5),
+        "Run": _Tag("Run", True),
+        "Recipe[2]{3}": _Tag("Recipe", [7, 8, 9]),
+        "Missing": _Tag("Missing", None, "Tag doesn't exist"),
+        "Udt": _Tag("Udt", {"a": 1}),
+        "Total": _Tag("Total", 100000),
     }
     handler, client = _logix(reply=lambda *tags: [replies[t] for t in tags])
     points = asyncio.run(handler.read_tags(list(replies)))
@@ -188,7 +222,7 @@ def test_tag_values_become_data_points():
     assert by_address["Run"].value == 1
     assert [by_address[f"Recipe[{i}]"].value for i in (2, 3, 4)] == [7, 8, 9]
     assert by_address["Missing"].status == StatusCode.NG_ILLEGAL_ADDR
-    assert by_address["Udt.a"].value == 1           # structures are reported per member
+    assert by_address["Udt.a"].value == 1  # structures are reported per member
     assert by_address["Total"].raw_hex == "0x000186A0"
 
 
@@ -213,25 +247,40 @@ def test_tag_read_timeout_reconnects(monkeypatch):
 
 
 def test_tag_scan_list_atomic_controller_tags():
-    handler, _ = _logix(tags_info={
-        "Speed": {"tag_type": "atomic", "dimensions": [0, 0, 0]},
-        "Big": {"tag_type": "atomic", "dimensions": [5000, 0, 0]},
-        "Arr": {"tag_type": "atomic", "dimensions": [10, 0, 0]},
-        "Udt": {"tag_type": "struct", "dimensions": [0, 0, 0]},
-        "Program:Main.Step": {"tag_type": "atomic", "dimensions": [0, 0, 0]},
-        "Odd": {"tag_type": "other"},
-    })
-    assert handler.tag_scan_list() == ["Arr[0]{10}", f"Big[0]{{{MAX_TAG_ARRAY_ELEMENTS}}}",
-                                       "Program:Main.Step", "Speed", "Udt"]
+    handler, _ = _logix(
+        tags_info={
+            "Speed": {"tag_type": "atomic", "dimensions": [0, 0, 0]},
+            "Big": {"tag_type": "atomic", "dimensions": [5000, 0, 0]},
+            "Arr": {"tag_type": "atomic", "dimensions": [10, 0, 0]},
+            "Udt": {"tag_type": "struct", "dimensions": [0, 0, 0]},
+            "Program:Main.Step": {"tag_type": "atomic", "dimensions": [0, 0, 0]},
+            "Odd": {"tag_type": "other"},
+        }
+    )
+    assert handler.tag_scan_list() == [
+        "Arr[0]{10}",
+        f"Big[0]{{{MAX_TAG_ARRAY_ELEMENTS}}}",
+        "Program:Main.Step",
+        "Speed",
+        "Udt",
+    ]
 
 
 def test_nested_struct_values_flattened():
     from plc_discovery.protocols.ethernet_ip import _value_points
+
     value = [{"a": 1, "sub": {"b": 2.5}, "arr": [3, 4]}, {"a": 5, "sub": {"b": 0.5}, "arr": [6, 7]}]
     points = _value_points("U[1]{2}", value)
     assert [p.address for p in points] == [
-        "U[1].a", "U[1].sub.b", "U[1].arr[0]", "U[1].arr[1]",
-        "U[2].a", "U[2].sub.b", "U[2].arr[0]", "U[2].arr[1]"]
+        "U[1].a",
+        "U[1].sub.b",
+        "U[1].arr[0]",
+        "U[1].arr[1]",
+        "U[2].a",
+        "U[2].sub.b",
+        "U[2].arr[0]",
+        "U[2].arr[1]",
+    ]
     assert points[1].display_value == "2.5" and points[7].value == 7
 
 
@@ -243,6 +292,7 @@ def test_generic_cip_tag_list_empty_and_full_scan_falls_back():
 
 def test_symbolic_read_decoding():
     from plc_discovery.protocols import cip_symbolic as cs
+
     assert cs.split_element_count("V[2]{5}") == ("V[2]", 5)
     assert cs.split_element_count(" V ") == ("V", 1)
     assert cs.decode_values("V", 0xC8, (123456).to_bytes(4, "little"), 1) == (123456, "UDINT")
@@ -259,8 +309,9 @@ def test_symbolic_read_decoding():
 
 
 def test_full_scan_of_logix_reads_tags():
-    handler, _ = _logix(tags_info={"Speed": {"tag_type": "atomic", "dimensions": []}},
-                        reply=lambda *tags: [_Tag(t, 1) for t in tags])
+    handler, _ = _logix(
+        tags_info={"Speed": {"tag_type": "atomic", "dimensions": []}}, reply=lambda *tags: [_Tag(t, 1) for t in tags]
+    )
     collector = PLCDataCollector(PLCInfo("10.0.0.1", protocol=Protocol.ETHERNET_IP, port=44818))
     collector._handler = handler
     points = asyncio.run(collector.collect_full_scan())
@@ -301,15 +352,19 @@ def test_collect_item_dispatch():
 # 8: simulator PCCC reads through pycomm3's SLCDriver
 # ---------------------------------------------------------------------------
 
+
 def test_simulator_serves_slc_data_files():
     pytest.importorskip("pycomm3")
     import threading
+
     from pycomm3 import SLCDriver
+
     from simulators.ethernet_ip_simulator import EtherNetIPDevice, EtherNetIPProtocol
 
     loop = asyncio.new_event_loop()
-    server = loop.run_until_complete(loop.create_server(
-        lambda: EtherNetIPProtocol(EtherNetIPDevice([(100, 150)])), "127.0.0.1", 0))
+    server = loop.run_until_complete(
+        loop.create_server(lambda: EtherNetIPProtocol(EtherNetIPDevice([(100, 150)])), "127.0.0.1", 0)
+    )
     port = server.sockets[0].getsockname()[1]
     thread = threading.Thread(target=loop.run_forever, daemon=True)
     thread.start()
@@ -317,7 +372,7 @@ def test_simulator_serves_slc_data_files():
         with SLCDriver(f"127.0.0.1:{port}") as plc:
             assert plc.read("N7:2{3}").value == [20, 30, 40]
             assert plc.read("B3:5{2}").value == [5, 6]
-            assert plc.read("N7:99{3}").error             # 100 is denied
+            assert plc.read("N7:99{3}").error  # 100 is denied
     finally:
         loop.call_soon_threadsafe(loop.stop)
         thread.join(5)
@@ -328,11 +383,20 @@ def test_simulator_serves_slc_data_files():
 # Omron NJ/NX: structure members from config, Multiple Service, STRING
 # ---------------------------------------------------------------------------
 
+
 def test_expand_tag_members():
     from plc_discovery.config import expand_tag_members
+
     members = {"Motor": ["Speed", "Current"], "Motors": ["A"]}
     assert expand_tag_members(["Motor", "Motors[1]{2}", "X", "Motor.Speed", "Values[0]{3}"], members) == [
-        "Motor.Speed", "Motor.Current", "Motors[1].A", "Motors[2].A", "X", "Motor.Speed", "Values[0]{3}"]
+        "Motor.Speed",
+        "Motor.Current",
+        "Motors[1].A",
+        "Motors[2].A",
+        "X",
+        "Motor.Speed",
+        "Values[0]{3}",
+    ]
 
 
 def test_tag_members_from_config(monkeypatch, tmp_path):
@@ -351,7 +415,8 @@ def test_tag_members_from_config(monkeypatch, tmp_path):
 
 
 def test_generic_request_groups():
-    from plc_discovery.protocols.ethernet_ip import _generic_request_groups, MAX_BATCH_TAGS
+    from plc_discovery.protocols.ethernet_ip import MAX_BATCH_TAGS, _generic_request_groups
+
     groups = _generic_request_groups(["A", "B", "V[0]{5}", "C"] + [f"T{i}" for i in range(MAX_BATCH_TAGS)])
     assert groups[:3] == [["A", "B"], ["V[0]{5}"], ["C"] + [f"T{i}" for i in range(MAX_BATCH_TAGS - 1)]]
     assert groups[3] == [f"T{MAX_BATCH_TAGS - 1}"]
@@ -359,7 +424,9 @@ def test_generic_request_groups():
 
 def test_multiple_service_reply_split_and_decode():
     import struct as st
+
     from plc_discovery.protocols import cip_symbolic as cs
+
     ok = bytes([0xCC, 0, 0, 0]) + st.pack("<Hi", 0xC4, -5)
     missing = bytes([0xCC, 0, 0x05, 0])
     data = st.pack("<HHH", 2, 6, 6 + len(ok)) + ok + missing
@@ -369,11 +436,12 @@ def test_multiple_service_reply_split_and_decode():
     with pytest.raises(cs.SymbolicReadError) as err:
         cs._decode_embedded_reply(None, "B", replies[1])
     assert err.value.status == StatusCode.NG_ILLEGAL_ADDR
-    assert cs._split_multiple_reply(data, 3) == []          # count mismatch: read one by one
+    assert cs._split_multiple_reply(data, 3) == []  # count mismatch: read one by one
 
 
 def test_string_decoding():
     from plc_discovery.protocols import cip_symbolic as cs
+
     assert cs.decode_values("S", cs.CIP_STRING_TYPE, b"\x05\x00Hello\x00\x00", 1) == ("Hello", "STRING")
     with pytest.raises(cs.SymbolicReadError):
         cs.decode_values("S{2}", cs.CIP_STRING_TYPE, b"\x01\x00A", 2)

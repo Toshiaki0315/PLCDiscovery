@@ -14,14 +14,28 @@ from plc_discovery.names import parse_byte_order, parse_device_type, parse_proto
 from plc_discovery.utils import status_counts, success_rate_text
 
 
-@pytest.mark.parametrize("name,expected", [
-    ("slmp", Protocol.SLMP), ("MC", Protocol.SLMP), ("eip", Protocol.ETHERNET_IP),
-    ("ethernet_ip", Protocol.ETHERNET_IP), ("cip", Protocol.ETHERNET_IP),
-    ("modbus", Protocol.MODBUS_TCP), ("modbus_tcp", Protocol.MODBUS_TCP),
-    ("s7", Protocol.S7), ("s7comm", Protocol.S7), ("fins", Protocol.FINS),
-    ("fins_udp", Protocol.FINS), ("fins_tcp", Protocol.FINS_TCP), ("FINS-TCP", Protocol.FINS_TCP),
-    (" slmp ", Protocol.SLMP), ("", None), (None, None), ("profinet", None),
-])
+@pytest.mark.parametrize(
+    "name,expected",
+    [
+        ("slmp", Protocol.SLMP),
+        ("MC", Protocol.SLMP),
+        ("eip", Protocol.ETHERNET_IP),
+        ("ethernet_ip", Protocol.ETHERNET_IP),
+        ("cip", Protocol.ETHERNET_IP),
+        ("modbus", Protocol.MODBUS_TCP),
+        ("modbus_tcp", Protocol.MODBUS_TCP),
+        ("s7", Protocol.S7),
+        ("s7comm", Protocol.S7),
+        ("fins", Protocol.FINS),
+        ("fins_udp", Protocol.FINS),
+        ("fins_tcp", Protocol.FINS_TCP),
+        ("FINS-TCP", Protocol.FINS_TCP),
+        (" slmp ", Protocol.SLMP),
+        ("", None),
+        (None, None),
+        ("profinet", None),
+    ],
+)
 def test_protocol_names_same_everywhere(name, expected):
     assert parse_protocol(name) == expected
     assert plc_scanner.get_protocol_from_string(name) == expected
@@ -40,15 +54,20 @@ def test_unknown_device_and_byte_order():
     assert parse_device_type("ZR") is None and parse_device_type("") is None
     assert parse_byte_order("middle") is None
     assert {name: parse_byte_order(name) for name in ("little", "BIG", "little_swap", "big_swap")} == {
-        "little": ByteOrder.LITTLE_ENDIAN, "BIG": ByteOrder.BIG_ENDIAN,
-        "little_swap": ByteOrder.LITTLE_ENDIAN_WORD_SWAP, "big_swap": ByteOrder.BIG_ENDIAN_WORD_SWAP,
+        "little": ByteOrder.LITTLE_ENDIAN,
+        "BIG": ByteOrder.BIG_ENDIAN,
+        "little_swap": ByteOrder.LITTLE_ENDIAN_WORD_SWAP,
+        "big_swap": ByteOrder.BIG_ENDIAN_WORD_SWAP,
     }
     assert plc_scanner.BYTE_ORDER_MAP == {o.value: o for o in ByteOrder}
 
 
 def test_status_helpers():
-    points = [DataPoint("D0", 1, None, StatusCode.OK), DataPoint("D1", None, None, StatusCode.NG_TIMEOUT),
-              DataPoint("D2", 2, None, StatusCode.OK)]
+    points = [
+        DataPoint("D0", 1, None, StatusCode.OK),
+        DataPoint("D1", None, None, StatusCode.NG_TIMEOUT),
+        DataPoint("D2", 2, None, StatusCode.OK),
+    ]
     counts = status_counts(points)
     assert counts[StatusCode.OK] == 2 and counts[StatusCode.NG_TIMEOUT] == 1
     assert counts[StatusCode.NG_UNSUPPORTED] == 0

@@ -2,27 +2,27 @@
 Base Protocol Handler - Abstract interface for PLC communication
 """
 
-from abc import ABC, abstractmethod
-from typing import Dict, List, Optional, Tuple
 import asyncio
 import dataclasses
 import logging
+from abc import ABC, abstractmethod
+from typing import Callable, Dict, List, Optional, Tuple, TypeVar
 
-from ..config import (
-    Protocol, DeviceType, DeviceRange, DataPoint, StatusCode,
-    NetworkConfig, SAFE_READ_WORDS
-)
-from ..utils import get_timestamp, value_to_hex, RateLimiter, SessionCache
+from ..config import SAFE_READ_WORDS, DataPoint, DeviceRange, DeviceType, NetworkConfig, Protocol, StatusCode
 from ..retry import (
-    RetryConfig,
-    RetryHandler,
+    PLC_RETRY_CONFIG,
     CircuitBreaker,
     CircuitBreakerConfig,
+    RetryConfig,
     RetryError,
-    PLC_RETRY_CONFIG,
+    RetryHandler,
 )
+from ..utils import RateLimiter, SessionCache, get_timestamp, value_to_hex
 
 logger = logging.getLogger(__name__)
+
+
+_T = TypeVar("_T")
 
 
 class BaseProtocolHandler(ABC):
@@ -34,7 +34,7 @@ class BaseProtocolHandler(ABC):
     """
 
     # Class-level protocol identifier
-    protocol: Protocol = None
+    protocol: Optional[Protocol] = None
 
     # Binary search limits (log2(4096) = 12)
     MAX_SPLIT_DEPTH = 12
@@ -66,7 +66,7 @@ class BaseProtocolHandler(ABC):
         port: Optional[int] = None,
         config: Optional[NetworkConfig] = None,
         retry_config: Optional[RetryConfig] = None,
-        use_circuit_breaker: bool = True
+        use_circuit_breaker: bool = True,
     ):
         self.ip_address = ip_address
         self.port = port
@@ -90,11 +90,9 @@ class BaseProtocolHandler(ABC):
         )
         self._circuit_breaker = None
         if use_circuit_breaker:
-            self._circuit_breaker = CircuitBreaker(CircuitBreakerConfig(
-                failure_threshold=5,
-                success_threshold=2,
-                timeout_seconds=30.0
-            ))
+            self._circuit_breaker = CircuitBreaker(
+                CircuitBreakerConfig(failure_threshold=5, success_threshold=2, timeout_seconds=30.0)
+            )
         self._retry_handler = RetryHandler(self._retry_config, self._circuit_breaker)
 
     @abstractmethod
@@ -116,10 +114,7 @@ class BaseProtocolHandler(ABC):
 
     @abstractmethod
     async def read_device_raw(
-        self,
-        device_type: DeviceType,
-        start_address: int,
-        count: int
+        self, device_type: DeviceType, start_address: int, count: int
     ) -> Tuple[Optional[List[int]], StatusCode]:
         """
         Read raw device data from PLC.
@@ -137,17 +132,14 @@ class BaseProtocolHandler(ABC):
     @property
     def max_read_size(self) -> int:
         """Maximum number of words that can be read in a single request"""
-        return SAFE_READ_WORDS.get(self.protocol, 100)
+        return SAFE_READ_WORDS.get(self.protocol, 100) if self.protocol else 100
 
     @property
     def is_connected(self) -> bool:
         """Check if connected to PLC"""
         return self._connected
 
-    async def read_device_range(
-        self,
-        device_range: DeviceRange
-    ) -> List[DataPoint]:
+    async def read_device_range(self, device_range: DeviceRange) -> List[DataPoint]:
         """
         Read a range of device data with automatic chunking.
 
@@ -172,11 +164,13 @@ class BaseProtocolHandler(ABC):
             address_key = f"{device_type.value}{start}"
             if self._session_cache.is_denied(address_key):
                 # Report with the status that was learned and move to next
-                results.append(DataPoint(
-                    address=address_key,
-                    status=self._session_cache.get_status(address_key),
-                    timestamp=get_timestamp()
-                ))
+                results.append(
+                    DataPoint(
+                        address=address_key,
+                        status=self._session_cache.get_status(address_key) or StatusCode.NG_ILLEGAL_ADDR,
+                        timestamp=get_timestamp(),
+                    )
+                )
                 start += 1
                 continue
 
@@ -189,9 +183,7 @@ class BaseProtocolHandler(ABC):
             await self._rate_limiter.wait()
 
             # Try to read chunk
-            data, status = await self._read_with_retry(
-                device_type, start, chunk_size
-            )
+            data, status = await self._read_with_retry(device_type, start, chunk_size)
 
             if status == StatusCode.OK and data:
                 # Success - add all data points
@@ -200,8 +192,7 @@ class BaseProtocolHandler(ABC):
                 # Error - use binary search to find bad addresses.
                 # The full chunk has just failed, so skip re-reading it.
                 chunk_results = await self._binary_search_read(
-                    device_type, start, start + chunk_size - 1,
-                    known_failure=status
+                    device_type, start, start + chunk_size - 1, known_failure=status
                 )
                 results.extend(chunk_results)
             start += chunk_size
@@ -221,12 +212,7 @@ class BaseProtocolHandler(ABC):
                 return offset
         return chunk_size
 
-    def _ok_points(
-        self,
-        device_type: DeviceType,
-        start: int,
-        data: List[int]
-    ) -> List[DataPoint]:
+    def _ok_points(self, device_type: DeviceType, start: int, data: List[int]) -> List[DataPoint]:
         """Build OK data points for consecutive addresses starting at start"""
         return [
             DataPoint(
@@ -234,18 +220,13 @@ class BaseProtocolHandler(ABC):
                 value=value,
                 raw_hex=value_to_hex(value),
                 status=StatusCode.OK,
-                timestamp=get_timestamp()
+                timestamp=get_timestamp(),
             )
             for i, value in enumerate(data)
         ]
 
     def _failed_points(
-        self,
-        device_type: DeviceType,
-        start: int,
-        end: int,
-        status: StatusCode,
-        learn: bool = True
+        self, device_type: DeviceType, start: int, end: int, status: StatusCode, learn: bool = True
     ) -> List[DataPoint]:
         """
         Build failed data points for a range.
@@ -260,26 +241,17 @@ class BaseProtocolHandler(ABC):
             address_key = f"{device_type.value}{addr}"
             if learn:
                 self._session_cache.add_denied(address_key, status)
-            results.append(DataPoint(
-                address=address_key,
-                status=status,
-                timestamp=get_timestamp()
-            ))
+            results.append(DataPoint(address=address_key, status=status, timestamp=get_timestamp()))
         return results
 
     async def _tracked_read(
-        self,
-        device_type: DeviceType,
-        start_address: int,
-        count: int
+        self, device_type: DeviceType, start_address: int, count: int
     ) -> Tuple[Optional[List[int]], StatusCode]:
         """
         Call read_device_raw, validate the response length and keep track
         of consecutive communication failures (to detect a lost link).
         """
-        if start_address < 0 or (
-            self.MAX_ADDRESS is not None and start_address + count - 1 > self.MAX_ADDRESS
-        ):
+        if start_address < 0 or (self.MAX_ADDRESS is not None and start_address + count - 1 > self.MAX_ADDRESS):
             # Decided locally: nothing sent, the link state is unchanged
             logger.debug(
                 f"{device_type.value}{start_address} x{count} exceeds the "
@@ -321,11 +293,7 @@ class BaseProtocolHandler(ABC):
         return self._comm_failure_streak >= self.COMM_FAILURE_ABORT_THRESHOLD
 
     async def _read_with_retry(
-        self,
-        device_type: DeviceType,
-        start_address: int,
-        count: int,
-        max_retries: int = None
+        self, device_type: DeviceType, start_address: int, count: int, max_retries: Optional[int] = None
     ) -> Tuple[Optional[List[int]], StatusCode]:
         """
         Read with retry logic using exponential backoff.
@@ -342,9 +310,7 @@ class BaseProtocolHandler(ABC):
         last_status = [StatusCode.NG_COMM_ERROR]
 
         async def do_read():
-            data, status = await self._tracked_read(
-                device_type, start_address, count
-            )
+            data, status = await self._tracked_read(device_type, start_address, count)
             last_status[0] = status
 
             if status == StatusCode.OK:
@@ -358,7 +324,8 @@ class BaseProtocolHandler(ABC):
             raise ConnectionError(f"Read failed with status: {status.value}")
 
         try:
-            return await self._retry_handler.execute(do_read)
+            result: Tuple[Optional[List[int]], StatusCode] = await self._retry_handler.execute(do_read)
+            return result
         except RetryError as e:
             logger.debug(f"All retries exhausted: {e}")
             if last_status[0] in self._TRANSIENT_FAILURES:
@@ -369,12 +336,7 @@ class BaseProtocolHandler(ABC):
             return None, StatusCode.NG_COMM_ERROR
 
     async def _binary_search_read(
-        self,
-        device_type: DeviceType,
-        start: int,
-        end: int,
-        depth: int = 0,
-        known_failure: Optional[StatusCode] = None
+        self, device_type: DeviceType, start: int, end: int, depth: int = 0, known_failure: Optional[StatusCode] = None
     ) -> List[DataPoint]:
         """
         Binary search algorithm for finding accessible addresses.
@@ -406,7 +368,7 @@ class BaseProtocolHandler(ABC):
         else:
             await self._rate_limiter.wait()
             data, status = await self._tracked_read(device_type, start, count)
-            if status == StatusCode.OK:
+            if status == StatusCode.OK and data is not None:
                 return self._ok_points(device_type, start, data)
 
         # Base case: single address
@@ -442,12 +404,8 @@ class BaseProtocolHandler(ABC):
         # Wait before retry
         await asyncio.sleep(self.config.retry_interval_ms / 1000)
 
-        results = await self._binary_search_read(
-            device_type, start, mid, depth + 1
-        )
-        results.extend(await self._binary_search_read(
-            device_type, mid + 1, end, depth + 1
-        ))
+        results = await self._binary_search_read(device_type, start, mid, depth + 1)
+        results.extend(await self._binary_search_read(device_type, mid + 1, end, depth + 1))
         return results
 
     async def _edges_illegal(self, device_type: DeviceType, start: int, end: int) -> bool:
@@ -463,7 +421,7 @@ class BaseProtocolHandler(ABC):
     # Blocking client helpers (for handlers built on synchronous libraries)
     # ------------------------------------------------------------------
 
-    async def _run_blocking(self, func, timeout: Optional[float] = None):
+    async def _run_blocking(self, func: Callable[[], _T], timeout: Optional[float] = None) -> _T:
         """
         Run a blocking client call in the executor with a timeout.
 
@@ -478,9 +436,7 @@ class BaseProtocolHandler(ABC):
             timeout = self.config.request_timeout_ms / 1000
         loop = asyncio.get_running_loop()
         try:
-            return await asyncio.wait_for(
-                loop.run_in_executor(None, func), timeout=timeout
-            )
+            return await asyncio.wait_for(loop.run_in_executor(None, func), timeout=timeout)
         except asyncio.TimeoutError:
             self._needs_reconnect = True
             raise

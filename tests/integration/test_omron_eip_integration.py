@@ -17,14 +17,25 @@ async def test_connects_as_generic_cip_with_tag_support(omron_simulator, omron_p
     async with PLCDataCollector(omron_plc_info, network_config) as collector:
         assert collector._handler._plc_type == "generic"
         assert collector._handler.supports_tags
-        assert collector._handler.tag_scan_list() == []        # no tag list on NJ/NX
+        assert collector._handler.tag_scan_list() == []  # no tag list on NJ/NX
 
 
 async def test_read_variables_by_name(omron_simulator, omron_plc_info, network_config):
     async with PLCDataCollector(omron_plc_info, network_config) as collector:
-        points = await collector.collect_tags([
-            "Temperature", "Pressure", "TotalCount", "StatusWord", "Values[2]{3}",
-            "Motor.Speed", "Motor.Current", "Motor", "Nope", "Values[30]"])
+        points = await collector.collect_tags(
+            [
+                "Temperature",
+                "Pressure",
+                "TotalCount",
+                "StatusWord",
+                "Values[2]{3}",
+                "Motor.Speed",
+                "Motor.Current",
+                "Motor",
+                "Nope",
+                "Values[30]",
+            ]
+        )
     by_address = {p.address: p for p in points}
     assert by_address["Temperature"].converted_value == pytest.approx(25.5)
     assert by_address["Pressure"].converted_value == pytest.approx(0.101325)

@@ -14,17 +14,17 @@ Features:
 - Query interface for analysis
 """
 
-import sqlite3
 import json
 import logging
+import sqlite3
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Dict, Iterator, List, Optional, Set
 
-from .config import PLCInfo, DataPoint, StatusCode
+from .config import DataPoint, PLCInfo, StatusCode
 from .report import json_safe
 
 logger = logging.getLogger(__name__)
@@ -139,6 +139,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_plcs_identity
 @dataclass
 class DatabaseConfig:
     """Configuration for database output"""
+
     enabled: bool = False
     path: str = "./plc_data.db"
     track_history: bool = True
@@ -153,7 +154,7 @@ class DatabaseConfig:
     cleanup_interval_hours: float = 24
 
     @classmethod
-    def from_dict(cls, config: Dict) -> 'DatabaseConfig':
+    def from_dict(cls, config: Dict) -> "DatabaseConfig":
         """Create from dictionary"""
         return cls(
             enabled=config.get("enabled", False),
@@ -188,7 +189,7 @@ class DatabaseExporter:
         history = db.get_address_history("192.168.1.10", "D100", days=7)
     """
 
-    def __init__(self, config: DatabaseConfig = None):
+    def __init__(self, config: Optional[DatabaseConfig] = None):
         """
         Initialize database exporter.
 
@@ -208,7 +209,7 @@ class DatabaseExporter:
             self._initialize_database()
 
     @classmethod
-    def create(cls, path: str, track_history: bool = True) -> 'DatabaseExporter':
+    def create(cls, path: str, track_history: bool = True) -> "DatabaseExporter":
         """
         Create an enabled database exporter.
 
@@ -219,11 +220,7 @@ class DatabaseExporter:
         Returns:
             Configured DatabaseExporter instance
         """
-        config = DatabaseConfig(
-            enabled=True,
-            path=path,
-            track_history=track_history
-        )
+        config = DatabaseConfig(enabled=True, path=path, track_history=track_history)
         return cls(config)
 
     @property
@@ -237,10 +234,7 @@ class DatabaseExporter:
             db_path = Path(self.config.path)
             db_path.parent.mkdir(parents=True, exist_ok=True)
 
-            self._connection = sqlite3.connect(
-                str(db_path),
-                check_same_thread=False
-            )
+            self._connection = sqlite3.connect(str(db_path), check_same_thread=False)
             self._connection.row_factory = sqlite3.Row
 
             # Databases created by schema v1 allowed one PLC row per IP;
@@ -250,21 +244,19 @@ class DatabaseExporter:
             self._add_target_columns()
 
             # Create tables
-            self._connection.executescript(CREATE_TABLES_SQL)
+            self._db.executescript(CREATE_TABLES_SQL)
 
             # Check/update schema version
-            cursor = self._connection.execute(
-                "SELECT version FROM schema_info ORDER BY version DESC LIMIT 1"
-            )
+            cursor = self._db.execute("SELECT version FROM schema_info ORDER BY version DESC LIMIT 1")
             row = cursor.fetchone()
 
             if not row or row[0] < SCHEMA_VERSION:
-                self._connection.execute(
+                self._db.execute(
                     "INSERT INTO schema_info (version, created_at) VALUES (?, ?)",
-                    (SCHEMA_VERSION, datetime.now().isoformat())
+                    (SCHEMA_VERSION, datetime.now().isoformat()),
                 )
 
-            self._connection.commit()
+            self._db.commit()
             logger.info(f"Database initialized: {self.config.path}")
 
             # Apply max_history_days (it was never applied automatically, so
@@ -279,9 +271,7 @@ class DatabaseExporter:
 
     def _migrate_plcs_table(self):
         """Schema v1 -> v2: drop UNIQUE(ip_address) from the plcs table"""
-        row = self._connection.execute(
-            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'plcs'"
-        ).fetchone()
+        row = self._db.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'plcs'").fetchone()
         if not row or "UNIQUE(ip_address)" not in row[0].replace(" ", ""):
             return
         logger.info("Upgrading database schema: one PLC row per IP, protocol and port")
@@ -289,9 +279,9 @@ class DatabaseExporter:
             "id, ip_address, mac_address, manufacturer, model, protocol, port, "
             "cpu_type, firmware_version, first_seen, last_seen"
         )
-        with self._connection:   # one transaction: all or nothing
-            self._connection.execute("ALTER TABLE plcs RENAME TO plcs_v1")
-            self._connection.execute("""
+        with self._db:  # one transaction: all or nothing
+            self._db.execute("ALTER TABLE plcs RENAME TO plcs_v1")
+            self._db.execute("""
                 CREATE TABLE plcs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     ip_address TEXT NOT NULL,
@@ -306,21 +296,26 @@ class DatabaseExporter:
                     last_seen TEXT NOT NULL
                 )
             """)
-            self._connection.execute(
-                f"INSERT INTO plcs ({columns}) SELECT {columns} FROM plcs_v1"
-            )
-            self._connection.execute("DROP TABLE plcs_v1")
+            self._db.execute(f"INSERT INTO plcs ({columns}) SELECT {columns} FROM plcs_v1")
+            self._db.execute("DROP TABLE plcs_v1")
 
     def _add_target_columns(self):
         """Schema v2 -> v3: add protocol and port to the per-target tables"""
         for table in TARGET_TABLES:
-            columns = {row[1] for row in self._connection.execute(f"PRAGMA table_info({table})")}
+            columns = {row[1] for row in self._db.execute(f"PRAGMA table_info({table})")}
             if not columns or "protocol" in columns:
-                continue   # table not created yet, or already v3
+                continue  # table not created yet, or already v3
             logger.info(f"Upgrading database schema: protocol/port columns on {table}")
-            with self._connection:
-                self._connection.execute(f"ALTER TABLE {table} ADD COLUMN protocol TEXT")
-                self._connection.execute(f"ALTER TABLE {table} ADD COLUMN port INTEGER")
+            with self._db:
+                self._db.execute(f"ALTER TABLE {table} ADD COLUMN protocol TEXT")
+                self._db.execute(f"ALTER TABLE {table} ADD COLUMN port INTEGER")
+
+    @property
+    def _db(self) -> sqlite3.Connection:
+        """The open connection (connect() first)"""
+        if self._connection is None:
+            raise RuntimeError("Database is not connected")
+        return self._connection
 
     def close(self):
         """Close database connection"""
@@ -329,7 +324,7 @@ class DatabaseExporter:
             self._connection = None
 
     @contextmanager
-    def session(self, mode: str = "scan"):
+    def session(self, mode: str = "scan") -> Iterator[Optional[int]]:
         """
         Context manager for a scan session.
 
@@ -368,27 +363,23 @@ class DatabaseExporter:
 
     def _start_session(self, mode: str) -> int:
         """Start a new scan session"""
-        cursor = self._connection.execute(
+        cursor = self._db.execute(
             """
             INSERT INTO scan_sessions (started_at, mode, status)
             VALUES (?, ?, 'running')
             """,
-            (datetime.now().isoformat(), mode)
+            (datetime.now().isoformat(), mode),
         )
-        self._connection.commit()
-        session_id = cursor.lastrowid
+        self._db.commit()
+        session_id = int(cursor.lastrowid or 0)
         self._current_session_id = session_id
         logger.debug(f"Started database session: {session_id}")
         return session_id
 
-    def _complete_session(
-        self,
-        session_id: int,
-        status: str = "completed"
-    ):
+    def _complete_session(self, session_id: int, status: str = "completed") -> None:
         """Complete a scan session"""
         # Get statistics
-        cursor = self._connection.execute(
+        cursor = self._db.execute(
             """
             SELECT
                 COUNT(DISTINCT plc_ip) as plc_count,
@@ -397,11 +388,11 @@ class DatabaseExporter:
             FROM data_points
             WHERE session_id = ?
             """,
-            (session_id,)
+            (session_id,),
         )
         stats = cursor.fetchone()
 
-        self._connection.execute(
+        self._db.execute(
             """
             UPDATE scan_sessions
             SET completed_at = ?, status = ?,
@@ -414,18 +405,14 @@ class DatabaseExporter:
                 stats["plc_count"] or 0,
                 stats["success_count"] or 0,
                 stats["error_count"] or 0,
-                session_id
-            )
+                session_id,
+            ),
         )
-        self._connection.commit()
+        self._db.commit()
         self._current_session_id = None
         logger.debug(f"Completed database session: {session_id}")
 
-    def export_discovery_results(
-        self,
-        plc_list: List[PLCInfo],
-        session_id: Optional[int] = None
-    ) -> int:
+    def export_discovery_results(self, plc_list: List[PLCInfo], session_id: Optional[int] = None) -> int:
         """
         Export PLC discovery results.
 
@@ -445,7 +432,7 @@ class DatabaseExporter:
         for plc in plc_list:
             try:
                 # Upsert PLC record
-                self._connection.execute(
+                self._db.execute(
                     """
                     INSERT INTO plcs (
                         ip_address, mac_address, manufacturer, model,
@@ -470,14 +457,14 @@ class DatabaseExporter:
                         plc.cpu_type,
                         plc.firmware_version,
                         now,
-                        now
-                    )
+                        now,
+                    ),
                 )
                 count += 1
             except Exception as e:
                 logger.warning(f"Failed to export PLC {plc.ip_address}: {e}")
 
-        self._connection.commit()
+        self._db.commit()
         logger.info(f"Exported {count} PLCs to database")
         return count
 
@@ -487,7 +474,7 @@ class DatabaseExporter:
         plc_ip: str,
         session_id: Optional[int] = None,
         protocol: Optional[str] = None,
-        port: Optional[int] = None
+        port: Optional[int] = None,
     ) -> int:
         """
         Export PLC data points.
@@ -522,7 +509,7 @@ class DatabaseExporter:
         for dp in data_points:
             try:
                 # Insert data point
-                self._connection.execute(
+                self._db.execute(
                     """
                     INSERT INTO data_points (
                         session_id, plc_ip, protocol, port, address, value, raw_hex,
@@ -540,12 +527,15 @@ class DatabaseExporter:
                         dp.raw_hex,
                         dp.data_type,
                         # NaN / Infinity stored as JSON null (valid JSON for any reader)
-                        json.dumps(json_safe(dp.converted_value), allow_nan=False)
-                        if dp.converted_value is not None else None,
+                        (
+                            json.dumps(json_safe(dp.converted_value), allow_nan=False)
+                            if dp.converted_value is not None
+                            else None
+                        ),
                         dp.display_value,
                         dp.status.value if isinstance(dp.status, StatusCode) else dp.status,
-                        dp.timestamp
-                    )
+                        dp.timestamp,
+                    ),
                 )
                 count += 1
 
@@ -559,13 +549,12 @@ class DatabaseExporter:
             except Exception as e:
                 logger.warning(f"Failed to export data point {dp.address}: {e}")
 
-        self._connection.commit()
+        self._db.commit()
         logger.debug(f"Exported {count} data points for {plc_ip}")
 
         # Long runs: delete expired rows once a day (no VACUUM, which would
         # block the monitoring cycle while it rewrites the whole file)
-        if (self._last_cleanup is not None
-                and time.monotonic() - self._last_cleanup >= self._cleanup_interval_seconds):
+        if self._last_cleanup is not None and time.monotonic() - self._last_cleanup >= self._cleanup_interval_seconds:
             self._apply_retention(vacuum=False)
         return count
 
@@ -576,7 +565,7 @@ class DatabaseExporter:
         session_id: Optional[int] = None,
         statuses: Optional[Dict[str, StatusCode]] = None,
         protocol: Optional[str] = None,
-        port: Optional[int] = None
+        port: Optional[int] = None,
     ) -> int:
         """
         Export denied addresses.
@@ -599,28 +588,34 @@ class DatabaseExporter:
 
         for address in denied_addresses:
             try:
-                self._connection.execute(
+                self._db.execute(
                     """
                     INSERT INTO denied_addresses (
                         session_id, plc_ip, protocol, port, address, status, timestamp
                     ) VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (session_id, plc_ip, protocol, port, address,
-                     statuses[address].value if statuses and address in statuses else "DENIED",
-                     now)
+                    (
+                        session_id,
+                        plc_ip,
+                        protocol,
+                        port,
+                        address,
+                        statuses[address].value if statuses and address in statuses else "DENIED",
+                        now,
+                    ),
                 )
                 count += 1
             except Exception as e:
                 logger.warning(f"Failed to export denied address {address}: {e}")
 
-        self._connection.commit()
+        self._db.commit()
         return count
 
     def _get_latest_values(
         self, plc_ip: str, protocol: Optional[str] = None, port: Optional[int] = None
     ) -> Dict[str, int]:
         """Get the most recent value of each address of one scan target"""
-        cursor = self._connection.execute(
+        cursor = self._db.execute(
             """
             SELECT address, value
             FROM data_points
@@ -631,7 +626,7 @@ class DatabaseExporter:
                 GROUP BY address
             )
             """,
-            (plc_ip, protocol, port, plc_ip, protocol, port)
+            (plc_ip, protocol, port, plc_ip, protocol, port),
         )
         return {row["address"]: row["value"] for row in cursor}
 
@@ -642,16 +637,16 @@ class DatabaseExporter:
         old_value: int,
         new_value: int,
         protocol: Optional[str] = None,
-        port: Optional[int] = None
-    ):
+        port: Optional[int] = None,
+    ) -> None:
         """Record a value change in history"""
-        self._connection.execute(
+        self._db.execute(
             """
             INSERT INTO data_history (
                 plc_ip, protocol, port, address, old_value, new_value, changed_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (plc_ip, protocol, port, address, old_value, new_value, datetime.now().isoformat())
+            (plc_ip, protocol, port, address, old_value, new_value, datetime.now().isoformat()),
         )
 
     # Query methods
@@ -661,21 +656,15 @@ class DatabaseExporter:
         if not self.is_enabled:
             return []
 
-        cursor = self._connection.execute(
-            "SELECT * FROM plcs ORDER BY last_seen DESC"
-        )
+        cursor = self._db.execute("SELECT * FROM plcs ORDER BY last_seen DESC")
         return [dict(row) for row in cursor]
 
-    def get_latest_data(
-        self,
-        plc_ip: str,
-        limit: int = 1000
-    ) -> List[Dict]:
+    def get_latest_data(self, plc_ip: str, limit: int = 1000) -> List[Dict]:
         """Get latest data for a PLC"""
         if not self.is_enabled:
             return []
 
-        cursor = self._connection.execute(
+        cursor = self._db.execute(
             """
             SELECT protocol, port, address, value, raw_hex, data_type,
                    converted_value, display_value, status, timestamp
@@ -689,16 +678,11 @@ class DatabaseExporter:
             ORDER BY protocol, port, address
             LIMIT ?
             """,
-            (plc_ip, plc_ip, limit)
+            (plc_ip, plc_ip, limit),
         )
         return [dict(row) for row in cursor]
 
-    def get_address_history(
-        self,
-        plc_ip: str,
-        address: str,
-        days: int = 7
-    ) -> List[Dict]:
+    def get_address_history(self, plc_ip: str, address: str, days: int = 7) -> List[Dict]:
         """
         Get historical values for an address.
 
@@ -713,7 +697,7 @@ class DatabaseExporter:
         if not self.is_enabled:
             return []
 
-        cursor = self._connection.execute(
+        cursor = self._db.execute(
             """
             SELECT protocol, port, value, raw_hex, timestamp
             FROM data_points
@@ -721,15 +705,11 @@ class DatabaseExporter:
             AND datetime(timestamp) >= datetime('now', 'localtime', ?)
             ORDER BY timestamp DESC
             """,
-            (plc_ip, address, f'-{days} days')
+            (plc_ip, address, f"-{days} days"),
         )
         return [dict(row) for row in cursor]
 
-    def get_changes(
-        self,
-        plc_ip: str = None,
-        days: int = 7
-    ) -> List[Dict]:
+    def get_changes(self, plc_ip: Optional[str] = None, days: int = 7) -> List[Dict]:
         """
         Get value change history.
 
@@ -744,7 +724,7 @@ class DatabaseExporter:
             return []
 
         if plc_ip:
-            cursor = self._connection.execute(
+            cursor = self._db.execute(
                 """
                 SELECT plc_ip, protocol, port, address, old_value, new_value, changed_at
                 FROM data_history
@@ -752,17 +732,17 @@ class DatabaseExporter:
                 AND datetime(changed_at) >= datetime('now', 'localtime', ?)
                 ORDER BY changed_at DESC
                 """,
-                (plc_ip, f'-{days} days')
+                (plc_ip, f"-{days} days"),
             )
         else:
-            cursor = self._connection.execute(
+            cursor = self._db.execute(
                 """
                 SELECT plc_ip, protocol, port, address, old_value, new_value, changed_at
                 FROM data_history
                 WHERE datetime(changed_at) >= datetime('now', 'localtime', ?)
                 ORDER BY changed_at DESC
                 """,
-                (f'-{days} days',)
+                (f"-{days} days",),
             )
 
         return [dict(row) for row in cursor]
@@ -772,13 +752,13 @@ class DatabaseExporter:
         if not self.is_enabled:
             return []
 
-        cursor = self._connection.execute(
+        cursor = self._db.execute(
             """
             SELECT * FROM scan_sessions
             ORDER BY started_at DESC
             LIMIT ?
             """,
-            (limit,)
+            (limit,),
         )
         return [dict(row) for row in cursor]
 
@@ -790,32 +770,30 @@ class DatabaseExporter:
         stats = {}
 
         # PLC count
-        cursor = self._connection.execute("SELECT COUNT(*) FROM plcs")
+        cursor = self._db.execute("SELECT COUNT(*) FROM plcs")
         stats["total_plcs"] = cursor.fetchone()[0]
 
         # Data point count
-        cursor = self._connection.execute("SELECT COUNT(*) FROM data_points")
+        cursor = self._db.execute("SELECT COUNT(*) FROM data_points")
         stats["total_data_points"] = cursor.fetchone()[0]
 
         # Session count
-        cursor = self._connection.execute("SELECT COUNT(*) FROM scan_sessions")
+        cursor = self._db.execute("SELECT COUNT(*) FROM scan_sessions")
         stats["total_sessions"] = cursor.fetchone()[0]
 
         # Change count
-        cursor = self._connection.execute("SELECT COUNT(*) FROM data_history")
+        cursor = self._db.execute("SELECT COUNT(*) FROM data_history")
         stats["total_changes"] = cursor.fetchone()[0]
 
         # Database file size
         try:
-            stats["database_size_mb"] = round(
-                Path(self.config.path).stat().st_size / (1024 * 1024), 2
-            )
+            stats["database_size_mb"] = round(Path(self.config.path).stat().st_size / (1024 * 1024), 2)
         except Exception:
             stats["database_size_mb"] = 0
 
         return stats
 
-    def cleanup_old_data(self, days: int = None):
+    def cleanup_old_data(self, days: Optional[int] = None) -> int:
         self._latest_values.clear()
         return self._cleanup_old_data(days)
 
@@ -838,14 +816,16 @@ class DatabaseExporter:
                 if vacuum:
                     # Give the freed space back to the file system (only when
                     # opening: VACUUM rewrites the whole file)
-                    self._connection.execute("VACUUM")
+                    self._db.execute("VACUUM")
         except Exception as e:
             logger.warning(f"Database retention cleanup failed: {e}")
 
     def used_bytes(self) -> int:
         """Bytes of data in the database (excluding free pages)"""
+
         def pragma(name: str) -> int:
-            return self._connection.execute(f"PRAGMA {name}").fetchone()[0]
+            return int(self._db.execute(f"PRAGMA {name}").fetchone()[0])
+
         return (pragma("page_count") - pragma("freelist_count")) * pragma("page_size")
 
     def _enforce_size_limit(self) -> int:
@@ -880,8 +860,8 @@ class DatabaseExporter:
                        ORDER BY id LIMIT
                        (SELECT MAX(1000, COUNT(*) / 10) FROM data_points))""",
             ):
-                removed += self._connection.execute(sql).rowcount
-            self._connection.commit()
+                removed += self._db.execute(sql).rowcount
+            self._db.commit()
             if not removed:
                 logger.warning(
                     f"Database still uses {self.used_bytes() / 1048576:.1f} MB after keeping only "
@@ -891,7 +871,7 @@ class DatabaseExporter:
             deleted += removed
         return deleted
 
-    def _cleanup_old_data(self, days: int = None, vacuum: Optional[bool] = True) -> int:
+    def _cleanup_old_data(self, days: Optional[int] = None, vacuum: Optional[bool] = True) -> int:
         """
         Clean up old data to manage database size.
 
@@ -910,7 +890,7 @@ class DatabaseExporter:
         deleted = 0
 
         # Delete old data points (keep latest per address)
-        deleted += self._connection.execute(
+        deleted += self._db.execute(
             """
             DELETE FROM data_points
             WHERE datetime(timestamp) < datetime('now', 'localtime', ?)
@@ -919,34 +899,34 @@ class DatabaseExporter:
                 GROUP BY plc_ip, protocol, port, address
             )
             """,
-            (f'-{days} days',)
+            (f"-{days} days",),
         ).rowcount
 
         # Delete old history
-        deleted += self._connection.execute(
+        deleted += self._db.execute(
             """
             DELETE FROM data_history
             WHERE datetime(changed_at) < datetime('now', 'localtime', ?)
             """,
-            (f'-{days} days',)
+            (f"-{days} days",),
         ).rowcount
 
         # Delete old denied addresses
-        deleted += self._connection.execute(
+        deleted += self._db.execute(
             """
             DELETE FROM denied_addresses
             WHERE datetime(timestamp) < datetime('now', 'localtime', ?)
             """,
-            (f'-{days} days',)
+            (f"-{days} days",),
         ).rowcount
 
         # Commit the deletions first: SQLite cannot VACUUM inside a
         # transaction (the DELETEs above opened one)
-        self._connection.commit()
+        self._db.commit()
 
         # Vacuum to reclaim space
         if vacuum or (vacuum is None and deleted):
-            self._connection.execute("VACUUM")
+            self._db.execute("VACUUM")
 
         logger.info(f"Cleaned up data older than {days} days ({deleted} rows)")
         return deleted
@@ -961,12 +941,13 @@ class DatabaseExporter:
 
 # Convenience functions
 
+
 def create_database(path: str = "./plc_data.db") -> DatabaseExporter:
     """Create an enabled database exporter"""
     return DatabaseExporter.create(path)
 
 
-def get_database_exporter(config: Dict = None) -> DatabaseExporter:
+def get_database_exporter(config: Optional[Dict] = None) -> DatabaseExporter:
     """
     Get database exporter from configuration.
 

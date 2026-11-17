@@ -7,12 +7,12 @@ This is faster than TCP port scanning for same-segment discovery.
 
 import asyncio
 import ipaddress
+import logging
 import socket
 import struct
-from typing import Dict, List, Optional, Tuple, Callable
-import logging
+from typing import Callable, Dict, List, Optional, Tuple
 
-from .config import Protocol, PLCInfo, NetworkConfig
+from .config import NetworkConfig, PLCInfo, Protocol
 from .probes import parse_eip_identity
 from .utils import get_local_networks
 
@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 SLMP_DISCOVERY_PORT = 5001
 # SLMP 3E binary subheaders (byte sequences as sent on the wire)
 SLMP_REQUEST_SUBHEADER = b"\x50\x00"
-SLMP_RESPONSE_SUBHEADER = b"\xD0\x00"
+SLMP_RESPONSE_SUBHEADER = b"\xd0\x00"
 SLMP_DISCOVERY_MAGIC = b"\x00\x00\x00\x00"  # Simplified discovery request
 
 # EtherNet/IP UDP Discovery (List Identity)
@@ -45,7 +45,7 @@ class UDPDiscoveryProtocol(asyncio.DatagramProtocol):
     def connection_made(self, transport):
         self.transport = transport
 
-    def datagram_received(self, data: bytes, addr: Tuple[str, int]):
+    def datagram_received(self, data: bytes, addr: Tuple[str, int]) -> None:
         """Handle received datagram"""
         ip, port = addr
         logger.debug(f"UDP response from {ip}:{port}, {len(data)} bytes")
@@ -72,11 +72,11 @@ class BroadcastDiscovery:
         self.discovered_plcs: Dict[tuple, PLCInfo] = {}
         self._progress_callback: Optional[Callable[[str, int, int], None]] = None
 
-    def set_progress_callback(self, callback: Callable[[str, int, int], None]):
+    def set_progress_callback(self, callback: Callable[[str, int, int], None]) -> None:
         """Set progress callback"""
         self._progress_callback = callback
 
-    def _report_progress(self, message: str, current: int = 0, total: int = 0):
+    def _report_progress(self, message: str, current: int = 0, total: int = 0) -> None:
         """Report progress"""
         if self._progress_callback:
             self._progress_callback(message, current, total)
@@ -96,9 +96,7 @@ class BroadcastDiscovery:
         request = self._build_slmp_discovery_request()
 
         responses = await self._send_broadcast(
-            port=SLMP_DISCOVERY_PORT,
-            data=request,
-            timeout=self.config.discovery_timeout_ms / 1000
+            port=SLMP_DISCOVERY_PORT, data=request, timeout=self.config.discovery_timeout_ms / 1000
         )
 
         plcs = []
@@ -123,9 +121,7 @@ class BroadcastDiscovery:
         request = self._build_eip_list_identity_request()
 
         responses = await self._send_broadcast(
-            port=EIP_DISCOVERY_PORT,
-            data=request,
-            timeout=self.config.discovery_timeout_ms / 1000
+            port=EIP_DISCOVERY_PORT, data=request, timeout=self.config.discovery_timeout_ms / 1000
         )
 
         plcs = []
@@ -148,9 +144,7 @@ class BroadcastDiscovery:
 
         # Run discoveries in parallel
         results = await asyncio.gather(
-            self.discover_slmp_broadcast(),
-            self.discover_eip_broadcast(),
-            return_exceptions=True
+            self.discover_slmp_broadcast(), self.discover_eip_broadcast(), return_exceptions=True
         )
 
         # Collect all results
@@ -163,19 +157,14 @@ class BroadcastDiscovery:
 
         # One entry per IP, protocol and port: a device answering both
         # SLMP and EtherNet/IP (e.g. Keyence KV) is listed for each
-        unique_plcs = {}
+        unique_plcs: Dict[tuple, PLCInfo] = {}
         for plc in all_plcs:
             unique_plcs.setdefault((plc.ip_address, plc.protocol, plc.port), plc)
 
         logger.info(f"Total broadcast discovery: {len(unique_plcs)} unique devices")
         return list(unique_plcs.values())
 
-    async def _send_broadcast(
-        self,
-        port: int,
-        data: bytes,
-        timeout: float
-    ) -> Dict[str, bytes]:
+    async def _send_broadcast(self, port: int, data: bytes, timeout: float) -> Dict[str, bytes]:
         """
         Send UDP broadcast and collect responses.
 
@@ -187,7 +176,7 @@ class BroadcastDiscovery:
         Returns:
             Dictionary mapping IP address to response data
         """
-        responses = {}
+        responses: Dict[str, bytes] = {}
 
         try:
             # Directed broadcast address of every connected network (a PC may
@@ -208,7 +197,7 @@ class BroadcastDiscovery:
 
             try:
                 # Enable broadcast
-                sock = transport.get_extra_info('socket')
+                sock = transport.get_extra_info("socket")
                 sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
 
                 for broadcast in broadcasts + ["255.255.255.255"]:
@@ -318,8 +307,7 @@ class BroadcastDiscovery:
 
 
 async def discover_broadcast(
-    config: Optional[NetworkConfig] = None,
-    progress_callback: Optional[Callable[[str, int, int], None]] = None
+    config: Optional[NetworkConfig] = None, progress_callback: Optional[Callable[[str, int, int], None]] = None
 ) -> List[PLCInfo]:
     """
     Convenience function for broadcast discovery.

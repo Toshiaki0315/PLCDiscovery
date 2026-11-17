@@ -32,8 +32,10 @@ async def test_batch_does_not_queue_on_small_default_pool():
     asyncio.get_running_loop().set_default_executor(concurrent.futures.ThreadPoolExecutor(max_workers=2))
     discovery = PLCDiscovery(NetworkConfig())
     hosts = [f"192.0.2.{i}" for i in range(1, 11)]
-    with patch.object(discovery_module, "is_port_open", side_effect=slow_closed), \
-            patch.object(discovery_module, "verify_protocol", side_effect=slow_silent):
+    with (
+        patch.object(discovery_module, "is_port_open", side_effect=slow_closed),
+        patch.object(discovery_module, "verify_protocol", side_effect=slow_silent),
+    ):
         started = time.monotonic()
         await discovery._probe_hosts(hosts, {})
         elapsed = time.monotonic() - started
@@ -44,8 +46,10 @@ async def test_batch_does_not_queue_on_small_default_pool():
 @pytest.mark.asyncio
 async def test_probe_pool_is_released_after_scan():
     discovery = PLCDiscovery(NetworkConfig())
-    with patch.object(discovery_module, "is_port_open", return_value=False), \
-            patch.object(discovery_module, "verify_protocol", return_value=False):
+    with (
+        patch.object(discovery_module, "is_port_open", return_value=False),
+        patch.object(discovery_module, "verify_protocol", return_value=False),
+    ):
         await discovery._probe_hosts(["192.0.2.1", "192.0.2.2"], {})
     assert discovery._probe_executor is None
     await asyncio.sleep(0.2)
@@ -55,8 +59,10 @@ async def test_probe_pool_is_released_after_scan():
 @pytest.mark.asyncio
 async def test_single_host_probe_works_without_batch_pool():
     discovery = PLCDiscovery(NetworkConfig())
-    with patch.object(discovery_module, "is_port_open", return_value=False), \
-            patch.object(discovery_module, "verify_protocol", return_value=False):
+    with (
+        patch.object(discovery_module, "is_port_open", return_value=False),
+        patch.object(discovery_module, "verify_protocol", return_value=False),
+    ):
         assert await discovery._probe_host("192.0.2.1") is None
     assert discovery._probe_executor is None
 

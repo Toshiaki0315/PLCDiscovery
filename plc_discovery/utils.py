@@ -7,7 +7,7 @@ import logging
 import re
 import socket
 from datetime import datetime
-from typing import Dict, Generator, List, Optional, Tuple
+from typing import Any, Awaitable, Dict, Generator, Iterable, List, Optional, Tuple
 
 from .config import MANUFACTURER_OUI, StatusCode
 
@@ -22,7 +22,7 @@ def get_local_ip() -> str:
         # Create a socket to determine the local IP
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("8.8.8.8", 80))
-        local_ip = s.getsockname()[0]
+        local_ip = str(s.getsockname()[0])
         s.close()
         return local_ip
     except Exception:
@@ -67,7 +67,7 @@ def parse_interfaces(text: str) -> List[Tuple[str, str, str]]:
         ip_o = _IP_O_NAME.match(line)
         if ip_o:
             name = ip_o.group(1)
-        elif "|" in line:   # PowerShell: InterfaceAlias|address/prefix
+        elif "|" in line:  # PowerShell: InterfaceAlias|address/prefix
             name = line.split("|", 1)[0].strip()
 
         match = _IFCONFIG_INET.search(line)
@@ -93,13 +93,45 @@ def parse_interface_listing(text: str) -> List[Tuple[str, str]]:
 # Matched case-insensitively: Windows interface aliases by substring,
 # Unix interface names by prefix.
 VIRTUAL_ALIAS_KEYWORDS = (
-    "vethernet", "hyper-v", "wsl", "vmware", "virtualbox", "vbox", "docker",
-    "loopback", "tap-windows", "wintun", "wireguard", "tailscale", "zerotier",
-    "openvpn", "forticlient", "cisco anyconnect",
+    "vethernet",
+    "hyper-v",
+    "wsl",
+    "vmware",
+    "virtualbox",
+    "vbox",
+    "docker",
+    "loopback",
+    "tap-windows",
+    "wintun",
+    "wireguard",
+    "tailscale",
+    "zerotier",
+    "openvpn",
+    "forticlient",
+    "cisco anyconnect",
 )
 VIRTUAL_NAME_PREFIXES = (
-    "docker", "br-", "virbr", "veth", "vmnet", "vboxnet", "bridge", "utun",
-    "tun", "tap", "wg", "zt", "tailscale", "llw", "awdl", "anpi", "ap1", "lxc", "lxd", "cni", "flannel",
+    "docker",
+    "br-",
+    "virbr",
+    "veth",
+    "vmnet",
+    "vboxnet",
+    "bridge",
+    "utun",
+    "tun",
+    "tap",
+    "wg",
+    "zt",
+    "tailscale",
+    "llw",
+    "awdl",
+    "anpi",
+    "ap1",
+    "lxc",
+    "lxd",
+    "cni",
+    "flannel",
 )
 
 
@@ -119,13 +151,18 @@ def _networks_from_os() -> List[Tuple[str, str, str]]:
     import sys
 
     if sys.platform.startswith("win"):
-        commands = [[
-            "powershell", "-NoProfile", "-NonInteractive", "-Command",
-            # UTF-8 output so localized aliases (e.g. "イーサネット") survive
-            "[Console]::OutputEncoding = [Text.Encoding]::UTF8; "
-            "Get-NetIPAddress -AddressFamily IPv4 | "
-            "ForEach-Object { $_.InterfaceAlias + '|' + $_.IPAddress + '/' + $_.PrefixLength }",
-        ]]
+        commands = [
+            [
+                "powershell",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                # UTF-8 output so localized aliases (e.g. "イーサネット") survive
+                "[Console]::OutputEncoding = [Text.Encoding]::UTF8; "
+                "Get-NetIPAddress -AddressFamily IPv4 | "
+                "ForEach-Object { $_.InterfaceAlias + '|' + $_.IPAddress + '/' + $_.PrefixLength }",
+            ]
+        ]
     elif sys.platform.startswith("linux"):
         commands = [["ip", "-o", "-4", "addr", "show"], ["ifconfig"]]
     else:
@@ -207,7 +244,7 @@ def get_subnet_hosts(ip: str, netmask: str) -> Generator[str, None, None]:
 MAX_IP_RANGE_HOSTS = 65536
 
 
-def _ip_range_hosts(ip_range: str):
+def _ip_range_hosts(ip_range: str) -> Tuple[Iterable[str], int]:
     """
     Hosts of an IP range specification as an iterable plus its size.
 
@@ -238,8 +275,7 @@ def _ip_range_hosts(ip_range: str):
                 raise ValueError("end address is lower than start address")
         except ValueError as e:
             raise ValueError(f"Invalid hyphen notation: {ip_range} - {e}") from None
-        return (str(ipaddress.IPv4Address(i)) for i in range(int(start), int(end) + 1)), \
-            int(end) - int(start) + 1
+        return (str(ipaddress.IPv4Address(i)) for i in range(int(start), int(end) + 1)), int(end) - int(start) + 1
 
     try:
         ipaddress.IPv4Address(ip_range)
@@ -307,8 +343,7 @@ def target_address_error(address: str) -> Optional[str]:
         pass
     labels = text.rstrip(".").split(".")
     looks_numeric = all(label.isdigit() for label in labels)
-    if (not looks_numeric and len(text) <= 253
-            and all(_HOST_LABEL.fullmatch(label) for label in labels)):
+    if not looks_numeric and len(text) <= 253 and all(_HOST_LABEL.fullmatch(label) for label in labels):
         return None
     return f"'{text}' is not an IPv4 address or host name (e.g. 192.168.1.10)"
 
@@ -418,11 +453,11 @@ def address_sort_key(address: str) -> tuple:
     """Sort key ordering addresses by device, then number ("D17" < "D5000" < "M0")"""
     match = _ADDRESS_PARTS.fullmatch(address or "")
     if not match:
-        return ("~", 0, address or "")   # unparseable addresses last
+        return ("~", 0, address or "")  # unparseable addresses last
     return (match.group(1).upper(), int(match.group(2)), "")
 
 
-def sorted_addresses(addresses) -> List[str]:
+def sorted_addresses(addresses: Iterable[str]) -> List[str]:
     """Addresses sorted by device and number"""
     return sorted(addresses, key=address_sort_key)
 
@@ -443,7 +478,7 @@ def melsec_address(address: str) -> str:
     return f"{match.group(1).upper()}{int(match.group(2)):X}"
 
 
-def status_counts(points) -> Dict[StatusCode, int]:
+def status_counts(points: Iterable[Any]) -> Dict[StatusCode, int]:
     """Number of data points per status (every StatusCode present, 0 if unused)"""
     counts = {status: 0 for status in StatusCode}
     for point in points:
@@ -484,9 +519,10 @@ def is_port_open(ip: str, port: int, timeout: float = 1.0) -> bool:
         return False
 
 
-def async_sleep(ms: int):
+def async_sleep(ms: int) -> Awaitable[None]:
     """Async-compatible sleep in milliseconds"""
     import asyncio
+
     return asyncio.sleep(ms / 1000.0)
 
 
@@ -495,7 +531,7 @@ class RateLimiter:
 
     def __init__(self, interval_ms: int):
         self.interval_ms = interval_ms
-        self._last_call = 0
+        self._last_call = 0.0
 
     async def wait(self):
         """Wait for the required interval"""
@@ -523,7 +559,7 @@ class SessionCache:
     def __init__(self):
         self._denied_addresses: Dict[str, Optional[StatusCode]] = {}
 
-    def add_denied(self, address: str, status: Optional[StatusCode] = None):
+    def add_denied(self, address: str, status: Optional[StatusCode] = None) -> None:
         """Mark an address as inaccessible (status defaults to NG_ILLEGAL_ADDR)"""
         self._denied_addresses[address] = status or StatusCode.NG_ILLEGAL_ADDR
 
@@ -544,7 +580,7 @@ class SessionCache:
 
     def get_all_statuses(self) -> Dict[str, StatusCode]:
         """Get denied addresses with their status"""
-        return dict(self._denied_addresses)
+        return {address: status or StatusCode.NG_ILLEGAL_ADDR for address, status in self._denied_addresses.items()}
 
     def clear(self):
         """Clear the cache"""

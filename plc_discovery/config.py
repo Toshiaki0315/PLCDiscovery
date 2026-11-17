@@ -47,12 +47,13 @@ class Protocol(Enum):
         >>> protocol = Protocol.SLMP
         >>> port = PROTOCOL_PORTS[protocol]
     """
+
     SLMP = auto()
     ETHERNET_IP = auto()
     MODBUS_TCP = auto()
     S7 = auto()
-    FINS = auto()        # FINS over UDP
-    FINS_TCP = auto()    # FINS over TCP (same port, node address handshake)
+    FINS = auto()  # FINS over UDP
+    FINS_TCP = auto()  # FINS over TCP (same port, node address handshake)
 
 
 class DeviceType(Enum):
@@ -75,6 +76,7 @@ class DeviceType(Enum):
         B: リンクリレー
         SM: 特殊リレー
     """
+
     # Word devices
     D = "D"
     W = "W"
@@ -103,6 +105,7 @@ class StatusCode(Enum):
         NG_COMM_ERROR: 通信エラー
         NG_UNSUPPORTED: デバイスタイプがサポートされていない
     """
+
     OK = "OK"
     NG_ILLEGAL_ADDR = "NG_ILLEGAL_ADDR"
     NG_TIMEOUT = "NG_TIMEOUT"
@@ -119,6 +122,7 @@ class ScanMode(Enum):
         FULL: フルスキャンモード（工場停止時）
         RANGE: 範囲指定モード（生産時）
     """
+
     DISCOVER = "discover"
     FULL = "full"
     RANGE = "range"
@@ -178,19 +182,30 @@ SAFE_READ_WORDS: Dict[Protocol, int] = {
 # carry the module maker's OUI and are identified by protocol instead.
 MANUFACTURER_OUI: Dict[str, str] = {
     # オムロン
-    "00:00:0A": "オムロン", "3C:F7:D1": "オムロン",
+    "00:00:0A": "オムロン",
+    "3C:F7:D1": "オムロン",
     # キーエンス
-    "00:01:FC": "キーエンス", "74:95:A7": "キーエンス",
+    "00:01:FC": "キーエンス",
+    "74:95:A7": "キーエンス",
     # 三菱電機
     "00:26:92": "三菱電機",
     # 横河電機
-    "00:00:64": "横河電機", "00:60:41": "横河電機", "D0:0A:AB": "横河電機",
+    "00:00:64": "横河電機",
+    "00:60:41": "横河電機",
+    "D0:0A:AB": "横河電機",
     # ロックウェル (Allen-Bradley)
-    "00:00:BC": "ロックウェル", "00:1D:9C": "ロックウェル", "08:61:95": "ロックウェル",
-    "18:4C:08": "ロックウェル", "34:C0:F9": "ロックウェル", "40:41:01": "ロックウェル",
-    "5C:21:67": "ロックウェル", "5C:88:16": "ロックウェル",
+    "00:00:BC": "ロックウェル",
+    "00:1D:9C": "ロックウェル",
+    "08:61:95": "ロックウェル",
+    "18:4C:08": "ロックウェル",
+    "34:C0:F9": "ロックウェル",
+    "40:41:01": "ロックウェル",
+    "5C:21:67": "ロックウェル",
+    "5C:88:16": "ロックウェル",
     # シーメンス
-    "00:1B:1B": "シーメンス", "00:0E:8C": "シーメンス", "00:01:E3": "シーメンス",
+    "00:1B:1B": "シーメンス",
+    "00:0E:8C": "シーメンス",
+    "00:01:E3": "シーメンス",
     "00:0B:A3": "シーメンス",
     # 富士電機
     "00:40:1A": "富士電機",
@@ -203,9 +218,12 @@ MANUFACTURER_OUI: Dict[str, str] = {
     # IDEC
     "00:03:7B": "IDEC",
     # デルタ電子
-    "00:06:6E": "デルタ電子", "00:18:23": "デルタ電子", "20:F8:5E": "デルタ電子",
+    "00:06:6E": "デルタ電子",
+    "00:18:23": "デルタ電子",
+    "20:F8:5E": "デルタ電子",
     # シュナイダーエレクトリック
-    "00:00:54": "シュナイダー", "00:01:23": "シュナイダー",
+    "00:00:54": "シュナイダー",
+    "00:01:23": "シュナイダー",
     # 東芝
     "00:00:39": "東芝",
     # パナソニック (産業デバイス)
@@ -235,6 +253,7 @@ class NetworkConfig:
         ...     max_concurrent=3          # 同時3接続
         ... )
     """
+
     discovery_timeout_ms: int = 1000
     discovery_retry_count: int = 3
     packet_interval_ms: int = 50
@@ -262,6 +281,7 @@ class DeviceRange:
         >>> device_range = DeviceRange(DeviceType.D, 0, 999)
         >>> print(device_range.count)  # 1000
     """
+
     device_type: DeviceType
     start_address: int
     end_address: int
@@ -279,6 +299,7 @@ class TagRange:
     mode next to (or instead of) DeviceRange entries. Array elements are
     read with "Tag[0]{10}" (10 elements from index 0).
     """
+
     tags: List[str]
 
     @property
@@ -358,6 +379,7 @@ class PLCInfo:
         ...     protocol=Protocol.SLMP
         ... )
     """
+
     ip_address: str
     mac_address: Optional[str] = None
     manufacturer: Optional[str] = None
@@ -428,6 +450,7 @@ class DataPoint:
         ...     status=StatusCode.OK
         ... )
     """
+
     address: str
     value: Optional[int] = None
     raw_hex: Optional[str] = None

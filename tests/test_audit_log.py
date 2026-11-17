@@ -7,11 +7,11 @@ import os
 import tempfile
 
 from plc_discovery.audit_log import (
-    AuditLogger,
     AuditEvent,
-    init_audit_logger,
-    get_audit_logger,
+    AuditLogger,
     close_audit_logger,
+    get_audit_logger,
+    init_audit_logger,
 )
 
 
@@ -80,9 +80,7 @@ class TestAuditLogger:
 
     def test_log_to_file(self):
         """Test logging events to file"""
-        with tempfile.NamedTemporaryFile(
-            mode='w', suffix='.log', delete=False
-        ) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".log", delete=False) as f:
             log_path = f.name
 
         try:
@@ -94,9 +92,7 @@ class TestAuditLogger:
             # Log events
             logger.log_session_start({"test": True})
             logger.log_connect("192.168.1.10", "SLMP", 5001, True)
-            logger.log_read_success(
-                "192.168.1.10", "SLMP", "D", 0, 100, 100, 50.0
-            )
+            logger.log_read_success("192.168.1.10", "SLMP", "D", 0, 100, 100, 50.0)
             logger.log_session_end()
             logger.close()
 
@@ -118,9 +114,7 @@ class TestAuditLogger:
 
     def test_log_connect_events(self):
         """Test logging connect/disconnect events"""
-        with tempfile.NamedTemporaryFile(
-            mode='w', suffix='.log', delete=False
-        ) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".log", delete=False) as f:
             log_path = f.name
 
         try:
@@ -147,9 +141,7 @@ class TestAuditLogger:
 
     def test_log_read_events(self):
         """Test logging read events"""
-        with tempfile.NamedTemporaryFile(
-            mode='w', suffix='.log', delete=False
-        ) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".log", delete=False) as f:
             log_path = f.name
 
         try:
@@ -184,9 +176,7 @@ class TestAuditLogger:
 
     def test_log_scan_events(self):
         """Test logging scan events"""
-        with tempfile.NamedTemporaryFile(
-            mode='w', suffix='.log', delete=False
-        ) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".log", delete=False) as f:
             log_path = f.name
 
         try:
@@ -245,9 +235,7 @@ class TestGlobalFunctions:
 
     def test_init_and_get_audit_logger(self):
         """Test initializing and getting global audit logger"""
-        with tempfile.NamedTemporaryFile(
-            mode='w', suffix='.log', delete=False
-        ) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".log", delete=False) as f:
             log_path = f.name
 
         try:

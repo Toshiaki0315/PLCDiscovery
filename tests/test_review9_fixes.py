@@ -24,6 +24,7 @@ def cp932_stream(errors="strict"):
 # Output encoding: redirected output on Japanese Windows (CP932)
 # ---------------------------------------------------------------------------
 
+
 def test_ascii_markers_when_symbols_not_encodable(monkeypatch):
     stream = cp932_stream()
     monkeypatch.setattr(sys, "stdout", stream)
@@ -49,7 +50,7 @@ def test_make_streams_safe_replaces_unencodable(monkeypatch):
     monkeypatch.setattr(sys, "stdout", out)
     monkeypatch.setattr(sys, "stderr", err)
     plc_scanner.make_streams_safe()
-    print("Dürr ✓ 三菱電機")          # would raise UnicodeEncodeError before
+    print("Dürr ✓ 三菱電機")  # would raise UnicodeEncodeError before
     out.flush()
     assert out.buffer.getvalue().decode("cp932").strip() == "D?rr ? 三菱電機"
 
@@ -57,6 +58,7 @@ def test_make_streams_safe_replaces_unencodable(monkeypatch):
 # ---------------------------------------------------------------------------
 # Z2: --no-rich gives plain output
 # ---------------------------------------------------------------------------
+
 
 def test_no_rich_disables_console():
     assert RichProgressDisplay(use_rich=False).console is None
@@ -77,6 +79,7 @@ def test_rich_markup_in_messages_is_escaped():
 # Z1: library log noise and EtherNet/IP reconnects
 # ---------------------------------------------------------------------------
 
+
 def test_third_party_loggers_quiet_unless_verbose():
     plc_scanner.quiet_third_party_loggers(verbose=False)
     assert logging.getLogger("pycomm3").level == logging.CRITICAL
@@ -87,12 +90,21 @@ def test_third_party_loggers_quiet_unless_verbose():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("plc_type, expected", [("slc", "_connect_slc"), ("generic", "_connect_generic"),
-                                                (None, "_connect_logix_first"), ("logix", "_connect_logix_first")])
+@pytest.mark.parametrize(
+    "plc_type, expected",
+    [
+        ("slc", "_connect_slc"),
+        ("generic", "_connect_generic"),
+        (None, "_connect_logix_first"),
+        ("logix", "_connect_logix_first"),
+    ],
+)
 async def test_reconnect_uses_detected_driver(plc_type, expected):
     handler = EtherNetIPHandler("127.0.0.1", config=NetworkConfig())
     handler._plc_type = plc_type
-    mocks = {name: AsyncMock(return_value=True) for name in ("_connect_slc", "_connect_generic", "_connect_logix_first")}
+    mocks = {
+        name: AsyncMock(return_value=True) for name in ("_connect_slc", "_connect_generic", "_connect_logix_first")
+    }
     with patch.multiple(handler, **mocks):
         assert await handler.connect()
     assert mocks[expected].await_count == 1

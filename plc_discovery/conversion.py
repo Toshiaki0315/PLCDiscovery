@@ -5,6 +5,7 @@ mapping files) and the data type settings of the CLI.
 Split out of plc_scanner.py; plc_scanner re-exports every name.
 """
 
+import argparse
 import dataclasses
 import json
 import logging
@@ -12,11 +13,16 @@ import re
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from .cli_args import BYTE_ORDER_MAP, DATA_TYPE_MAP
 from .config import DataPoint, StatusCode
 from .config_loader import ConfigLoader
-from .cli_args import BYTE_ORDER_MAP, DATA_TYPE_MAP
 from .data_types import (
-    BIT_DEVICES, VARIABLE_LENGTH_TYPES, ByteOrder, DataType, DataTypeConverter, DataTypeManager,
+    BIT_DEVICES,
+    VARIABLE_LENGTH_TYPES,
+    ByteOrder,
+    DataType,
+    DataTypeConverter,
+    DataTypeManager,
 )
 
 logger = logging.getLogger(__name__)
@@ -31,12 +37,13 @@ def load_type_mapping(path: str, overrides: Optional[Dict[str, str]] = None) -> 
     without their own byte_order follow --byte-order.
     """
     try:
-        with open(path, 'r', encoding='utf-8') as f:
-            if path.endswith('.json'):
+        with open(path, "r", encoding="utf-8") as f:
+            if path.endswith(".json"):
                 config = json.load(f)
             else:
                 try:
                     import yaml
+
                     config = yaml.safe_load(f)
                 except ImportError:
                     raise ImportError("PyYAML required for YAML type mapping files")
@@ -61,7 +68,7 @@ def apply_data_type_conversion(
     data_points: List[DataPoint],
     data_type: Optional[DataType],
     byte_order: ByteOrder,
-    type_manager: Optional[DataTypeManager] = None
+    type_manager: Optional[DataTypeManager] = None,
 ) -> List[DataPoint]:
     """
     Apply data type conversion to data points.
@@ -94,7 +101,7 @@ def apply_data_type_conversion(
     # Parse addresses and find the start/end of each contiguous run
     parsed: List[Optional[tuple]] = [_split_address(dp.address) for dp in data_points]
 
-    def continues(prev, addr) -> bool:
+    def continues(prev: Optional[tuple], addr: Optional[tuple]) -> bool:
         return bool(addr and prev and prev[0] == addr[0] and prev[1] + 1 == addr[1])
 
     run_start: List[Optional[int]] = []
@@ -125,7 +132,9 @@ def apply_data_type_conversion(
         prefix, number = addr
 
         # Determine data type, value size and alignment base for this address
-        align_base = run_start[i]
+        start = run_start[i]
+        align_base = start if start is not None else number
+        dt: Optional[DataType]
         mapping = type_manager.get_mapping_for_address(number, prefix) if type_manager else None
         if mapping:
             dt, bo, align_base = mapping.data_type, mapping.byte_order, mapping.start_address
@@ -137,7 +146,8 @@ def apply_data_type_conversion(
                 dt, bo = data_type, byte_order
             if dt in VARIABLE_LENGTH_TYPES:
                 # STRING / RAW without a mapping: the whole requested range
-                word_count = run_end[i] - run_start[i] + 1
+                end = run_end[i]
+                word_count = end - align_base + 1 if end is not None else 1
             else:
                 word_count = DataTypeConverter.get_word_count(dt) if dt else 1
         word_count = max(word_count or 1, 1)
@@ -150,10 +160,13 @@ def apply_data_type_conversion(
         offset = (number - align_base) % word_count
         if offset:
             # Second/later word of a value whose first word failed or is missing
-            result.append(dataclasses.replace(
-                dp, data_type=dt.value,
-                display_value=f"(part of {prefix}{number - offset}, incomplete)",
-            ))
+            result.append(
+                dataclasses.replace(
+                    dp,
+                    data_type=dt.value,
+                    display_value=f"(part of {prefix}{number - offset}, incomplete)",
+                )
+            )
             i += 1
             continue
 
@@ -163,42 +176,48 @@ def apply_data_type_conversion(
             if i + j >= len(data_points):
                 break
             nxt = data_points[i + j]
-            if (nxt.value is None or nxt.status != StatusCode.OK
-                    or parsed[i + j] != (prefix, number + j)):
+            if nxt.value is None or nxt.status != StatusCode.OK or parsed[i + j] != (prefix, number + j):
                 break
             group.append(nxt)
 
         if len(group) < word_count:
             # Not all words of this value were read: keep the raw point
-            result.append(dataclasses.replace(
-                dp, data_type=dt.value,
-                display_value=f"(incomplete {dt.value}: {len(group)}/{word_count} words)",
-            ))
+            result.append(
+                dataclasses.replace(
+                    dp,
+                    data_type=dt.value,
+                    display_value=f"(incomplete {dt.value}: {len(group)}/{word_count} words)",
+                )
+            )
             i += 1
             continue
 
-        words = [g.value for g in group]
+        words = [g.value for g in group if g.value is not None]
         converted = DataTypeConverter.convert(words, dt, bo)
-        result.append(dataclasses.replace(
-            dp,
-            data_type=dt.value,
-            converted_value=converted,
-            display_value=DataTypeConverter.to_string(converted, dt),
-            raw_words=words if word_count > 1 else None,
-        ))
+        result.append(
+            dataclasses.replace(
+                dp,
+                data_type=dt.value,
+                converted_value=converted,
+                display_value=DataTypeConverter.to_string(converted, dt),
+                raw_words=words if word_count > 1 else None,
+            )
+        )
         # Keep the remaining words of a multi-word value as their own rows
         for part in group[1:]:
-            result.append(dataclasses.replace(
-                part,
-                data_type=dt.value,
-                display_value=f"(part of {dp.address})",
-            ))
+            result.append(
+                dataclasses.replace(
+                    part,
+                    data_type=dt.value,
+                    display_value=f"(part of {dp.address})",
+                )
+            )
         i += word_count
 
     return result
 
 
-def resolve_data_types(args, config_loader: Optional[ConfigLoader]) -> tuple:
+def resolve_data_types(args: argparse.Namespace, config_loader: Optional[ConfigLoader]) -> tuple:
     """
     Data type conversion settings: (data_type, byte_order, type_manager).
 

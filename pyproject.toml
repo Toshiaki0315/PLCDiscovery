@@ -124,8 +124,16 @@ module = [
     "rich.*",
     "weasyprint.*",
     "pdfkit.*",
+    "yaml.*",
+    "requests.*",
+    "aiohttp.*",
+    "openpyxl.*",
 ]
 ignore_missing_imports = true
+# Treat these optional libraries as untyped (Any) whether or not they are
+# installed, so local runs report the same as CI (which installs only the
+# lint tools)
+follow_imports = "skip"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

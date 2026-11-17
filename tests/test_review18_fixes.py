@@ -7,12 +7,16 @@ Regression tests for the eighteenth review.
 2: A user-specified address range is limited to MAX_RANGE_POINTS.
 """
 
-
 import pytest
 
 import plc_scanner
 from plc_discovery.config import (
-    MAX_RANGE_POINTS, DeviceRange, DeviceType, NetworkConfig, StatusCode, range_size_error,
+    MAX_RANGE_POINTS,
+    DeviceRange,
+    DeviceType,
+    NetworkConfig,
+    StatusCode,
+    range_size_error,
 )
 from plc_discovery.config_loader import ConfigLoader
 from plc_discovery.protocols.slmp import SLMPHandler
@@ -51,11 +55,14 @@ async def test_wholly_invalid_device_costs_few_requests():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("end,valid,max_requests", [
-    (8191, lambda a: a <= 7999, 60),                                        # past device end
-    (9999, lambda a: not (5000 <= a <= 5100 or 7000 <= a <= 7050), 160),   # gaps
-    (9999, lambda a: a != 4321, 60),                                        # one bad word
-])
+@pytest.mark.parametrize(
+    "end,valid,max_requests",
+    [
+        (8191, lambda a: a <= 7999, 60),  # past device end
+        (9999, lambda a: not (5000 <= a <= 5100 or 7000 <= a <= 7050), 160),  # gaps
+        (9999, lambda a: a != 4321, 60),  # one bad word
+    ],
+)
 async def test_mixed_ranges_still_exact(end, valid, max_requests):
     _, points, requests = await _scan(end, valid)
     assert _misreported(points, valid) == []
@@ -66,9 +73,7 @@ async def test_mixed_ranges_still_exact(end, valid, max_requests):
 async def test_small_ranges_are_split_without_probes():
     """Below EDGE_PROBE_MIN_COUNT the range is split as before"""
     _, points, requests = await _scan(2, lambda a: a == 1)
-    assert [p.status for p in points] == [
-        StatusCode.NG_ILLEGAL_ADDR, StatusCode.OK, StatusCode.NG_ILLEGAL_ADDR
-    ]
+    assert [p.status for p in points] == [StatusCode.NG_ILLEGAL_ADDR, StatusCode.OK, StatusCode.NG_ILLEGAL_ADDR]
     assert all(count != 1 or start in (0, 1, 2) for start, count in requests)
 
 
@@ -89,15 +94,14 @@ async def test_transient_probe_failure_falls_back_to_splitting():
         return None, StatusCode.NG_ILLEGAL_ADDR
 
     handler.read_device_raw = fake_read
-    points = await handler._binary_search_read(
-        DeviceType.D, 0, 7, known_failure=StatusCode.NG_ILLEGAL_ADDR
-    )
+    points = await handler._binary_search_read(DeviceType.D, 0, 7, known_failure=StatusCode.NG_ILLEGAL_ADDR)
     assert [p.status for p in points] == [StatusCode.OK] * 4 + [StatusCode.NG_ILLEGAL_ADDR] * 4
 
 
 # ---------------------------------------------------------------------------
 # 2: range size limit
 # ---------------------------------------------------------------------------
+
 
 def test_range_size_error():
     assert range_size_error(0, MAX_RANGE_POINTS - 1) is None
@@ -112,8 +116,7 @@ def test_cli_rejects_huge_range():
 
 def test_config_rejects_huge_range(tmp_path):
     path = tmp_path / "cfg.yaml"
-    path.write_text("scan:\n  device_ranges:\n    - {device: D, start: 0, end: 16000000}\n",
-                    encoding="utf-8")
+    path.write_text("scan:\n  device_ranges:\n    - {device: D, start: 0, end: 16000000}\n", encoding="utf-8")
     loader = ConfigLoader(str(path))
     loader.load()
     assert any("scan.device_ranges[0]" in e and "at most" in e for e in loader.validate())
@@ -137,21 +140,27 @@ from plc_discovery.protocols.base import BaseProtocolHandler
 # Public coroutines a handler may offer: every PLC read goes through
 # read_device_range / read_device_raw (rate limiting, address limits,
 # reconnect after a timeout, binary search)
-ALLOWED_PUBLIC_COROUTINES = {"connect", "disconnect", "read_device_raw", "read_device_range",
-                             # EtherNet/IP symbolic tags: packet interval, timeout with
-                             # reconnect, per-tag errors (see EtherNetIPHandler.read_tags)
-                             "read_tags",
-                             # FINS CPU model for discovery: one read-only request
-                             # (Controller Data Read) after the packet interval, no data
-                             "read_controller_data"}
+ALLOWED_PUBLIC_COROUTINES = {
+    "connect",
+    "disconnect",
+    "read_device_raw",
+    "read_device_range",
+    # EtherNet/IP symbolic tags: packet interval, timeout with
+    # reconnect, per-tag errors (see EtherNetIPHandler.read_tags)
+    "read_tags",
+    # FINS CPU model for discovery: one read-only request
+    # (Controller Data Read) after the packet interval, no data
+    "read_controller_data",
+}
 
 
-@pytest.mark.parametrize("handler_class", sorted(
-    {getattr(h, "func", h) for h in PROTOCOL_HANDLERS.values()}, key=lambda c: c.__name__
-))
+@pytest.mark.parametrize(
+    "handler_class", sorted({getattr(h, "func", h) for h in PROTOCOL_HANDLERS.values()}, key=lambda c: c.__name__)
+)
 def test_handlers_have_no_side_door_reads(handler_class):
     public = {
-        name for name, member in inspect.getmembers(handler_class, inspect.iscoroutinefunction)
+        name
+        for name, member in inspect.getmembers(handler_class, inspect.iscoroutinefunction)
         if not name.startswith("_")
     }
     assert public <= ALLOWED_PUBLIC_COROUTINES, public - ALLOWED_PUBLIC_COROUTINES
@@ -181,17 +190,21 @@ def _points(values):
 def test_shared_ip_targets_have_separate_history(tmp_path):
     db = DatabaseExporter(DatabaseConfig(enabled=True, path=str(tmp_path / "t.db")))
     try:
-        for _ in range(2):   # two cycles, values unchanged per target
+        for _ in range(2):  # two cycles, values unchanged per target
             db.export_plc_data(_points([0, 10]), "127.0.0.1", protocol="SLMP", port=5001)
             db.export_plc_data(_points([182, 197]), "127.0.0.1", protocol="FINS", port=9600)
-        assert db.get_changes(days=1) == []   # was a "change" per address and target
+        assert db.get_changes(days=1) == []  # was a "change" per address and target
         db.export_plc_data(_points([1, 10]), "127.0.0.1", protocol="SLMP", port=5001)
         changes = db.get_changes(days=1)
-        assert [(c["protocol"], c["port"], c["address"], c["old_value"], c["new_value"]) for c in changes] \
-            == [("SLMP", 5001, "D0", 0, 1)]
+        assert [(c["protocol"], c["port"], c["address"], c["old_value"], c["new_value"]) for c in changes] == [
+            ("SLMP", 5001, "D0", 0, 1)
+        ]
         latest = db.get_latest_data("127.0.0.1")
         assert {(r["protocol"], r["address"]): r["value"] for r in latest} == {
-            ("FINS", "D0"): 182, ("FINS", "D1"): 197, ("SLMP", "D0"): 1, ("SLMP", "D1"): 10,
+            ("FINS", "D0"): 182,
+            ("FINS", "D1"): 197,
+            ("SLMP", "D0"): 1,
+            ("SLMP", "D1"): 10,
         }
     finally:
         db.close()
@@ -228,7 +241,7 @@ def test_v2_database_gets_target_columns(tmp_path):
         assert db._connection.execute("SELECT COUNT(*) FROM data_points").fetchone()[0] == 2
     finally:
         db.close()
-    DatabaseExporter(DatabaseConfig(enabled=True, path=str(path))).close()   # reopen: no-op
+    DatabaseExporter(DatabaseConfig(enabled=True, path=str(path))).close()  # reopen: no-op
 
 
 def test_writer_names_shared_ip_outputs(tmp_path):
@@ -246,14 +259,16 @@ def test_writer_names_shared_ip_outputs(tmp_path):
             writer.export_new_denied({"D9"}, {"D9": StatusCode.NG_ILLEGAL_ADDR})
         assert paths["slmp"].name.startswith("plc_data_127_0_0_1_SLMP_5001_")
         assert paths["fins"].name.startswith("plc_data_127_0_0_1_FINS_9600_")
-        assert paths["alone"].name.startswith("plc_data_10_0_0_5_2")   # unchanged naming
+        assert paths["alone"].name.startswith("plc_data_10_0_0_5_2")  # unchanged naming
         log = (tmp_path / "access_denied_log.csv").read_text(encoding="utf-8")
         assert "127.0.0.1 (SLMP:5001)" in log and "127.0.0.1 (FINS:9600)" in log
         assert ",10.0.0.5\n" in log.replace("\r\n", "\n")
-        rows = db._connection.execute(
-            "SELECT plc_ip, protocol, port FROM denied_addresses ORDER BY id").fetchall()
+        rows = db._connection.execute("SELECT plc_ip, protocol, port FROM denied_addresses ORDER BY id").fetchall()
         assert [tuple(r) for r in rows] == [
-            ("127.0.0.1", "SLMP", 5001), ("127.0.0.1", "FINS", 9600), ("10.0.0.5", "SLMP", 5001)]
+            ("127.0.0.1", "SLMP", 5001),
+            ("127.0.0.1", "FINS", 9600),
+            ("10.0.0.5", "SLMP", 5001),
+        ]
     finally:
         db.close()
 

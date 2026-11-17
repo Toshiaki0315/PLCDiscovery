@@ -11,9 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from plc_discovery.config import (
-    DEFAULT_DEVICE_RANGES, DeviceRange, DeviceType, NetworkConfig, Protocol, StatusCode
-)
+from plc_discovery.config import DEFAULT_DEVICE_RANGES, DeviceRange, DeviceType, NetworkConfig, Protocol, StatusCode
 from plc_discovery.protocols.base import BaseProtocolHandler
 from plc_discovery.protocols.ethernet_ip import EtherNetIPHandler
 from plc_discovery.protocols.fins import FINSHandler
@@ -51,8 +49,7 @@ def make_handler(read_fn, config, **kwargs):
             calls.append((start_address, count))
             return read_fn(start_address, count)
 
-    handler = Handler("127.0.0.1", 5001, config, retry_config=FAST_RETRY,
-                      use_circuit_breaker=False, **kwargs)
+    handler = Handler("127.0.0.1", 5001, config, retry_config=FAST_RETRY, use_circuit_breaker=False, **kwargs)
     handler._connected = True
     return handler, calls
 
@@ -60,6 +57,7 @@ def make_handler(read_fn, config, **kwargs):
 # ---------------------------------------------------------------------------
 # C1: transient failures must not be learned as inaccessible
 # ---------------------------------------------------------------------------
+
 
 class TestC1TransientFailuresNotLearned:
 
@@ -107,6 +105,7 @@ class TestC1TransientFailuresNotLearned:
 # C2: binary search must stop when the link is down
 # ---------------------------------------------------------------------------
 
+
 class TestC2BinarySearchBounded:
 
     @pytest.mark.asyncio
@@ -141,6 +140,7 @@ class TestC2BinarySearchBounded:
     @pytest.mark.asyncio
     async def test_illegal_addresses_still_isolated(self, fast_config):
         """Address errors keep the per-address binary search"""
+
         def read(start, count):
             if start <= 10 <= start + count - 1:
                 return None, StatusCode.NG_ILLEGAL_ADDR
@@ -155,9 +155,7 @@ class TestC2BinarySearchBounded:
     @pytest.mark.asyncio
     async def test_short_response_not_mapped(self, fast_config):
         """A response with fewer values than requested must not be labelled OK"""
-        handler, _ = make_handler(
-            lambda s, c: ([1] * (c - 1) if c > 1 else [1], StatusCode.OK), fast_config
-        )
+        handler, _ = make_handler(lambda s, c: ([1] * (c - 1) if c > 1 else [1], StatusCode.OK), fast_config)
         results = await handler.read_device_range(DeviceRange(DeviceType.D, 0, 3))
         assert [dp.address for dp in results] == ["D0", "D1", "D2", "D3"]
         assert all(dp.status == StatusCode.OK for dp in results)
@@ -166,6 +164,7 @@ class TestC2BinarySearchBounded:
 # ---------------------------------------------------------------------------
 # C3: late responses must never be taken as the current response
 # ---------------------------------------------------------------------------
+
 
 def fins_response(sid: int, words, end_code: int = 0) -> bytes:
     header = bytes([0xC0, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, sid])
@@ -278,6 +277,7 @@ class TestC3StaleResponses:
 # C4: Modbus bit reads must be truncated to the requested count
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_c4_modbus_coils_truncated(fast_config):
     handler = ModbusHandler("127.0.0.1", 502, config=fast_config)
@@ -297,6 +297,7 @@ async def test_c4_modbus_coils_truncated(fast_config):
 # ---------------------------------------------------------------------------
 # C5: EtherNet/IP array read tag and no mislabelled data
 # ---------------------------------------------------------------------------
+
 
 class TestC5EtherNetIP:
 
@@ -345,6 +346,7 @@ class TestC5EtherNetIP:
 # C6: S7 addressing and port
 # ---------------------------------------------------------------------------
 
+
 class TestC6S7:
 
     @pytest.mark.asyncio
@@ -375,6 +377,7 @@ class TestC6S7:
     @pytest.mark.asyncio
     async def test_connect_passes_port(self, fast_config, monkeypatch):
         import snap7
+
         client = MagicMock()
         monkeypatch.setattr(snap7.client, "Client", lambda: client)
         handler = S7Handler("127.0.0.1", 1102, config=fast_config)
@@ -389,6 +392,7 @@ class TestC6S7:
 # ---------------------------------------------------------------------------
 # C7: FINS end code flags and CIO word access
 # ---------------------------------------------------------------------------
+
 
 class TestC7FINS:
 
@@ -413,18 +417,15 @@ class TestC7FINS:
 # C8 / C9: entry point and logging configuration
 # ---------------------------------------------------------------------------
 
+
 def test_c8_console_entry_point_is_sync():
     import plc_scanner
+
     assert not asyncio.iscoroutinefunction(plc_scanner.cli)
     assert 'plc-scanner = "plc_scanner:cli"' in (ROOT / "pyproject.toml").read_text()
 
 
 def test_c9_import_does_not_configure_root_logger():
-    code = (
-        "import logging, plc_discovery, plc_discovery.utils;"
-        "print(len(logging.getLogger().handlers))"
-    )
-    out = subprocess.run(
-        [sys.executable, "-c", code], cwd=ROOT, capture_output=True, text=True, check=True
-    )
+    code = "import logging, plc_discovery, plc_discovery.utils;" "print(len(logging.getLogger().handlers))"
+    out = subprocess.run([sys.executable, "-c", code], cwd=ROOT, capture_output=True, text=True, check=True)
     assert out.stdout.strip() == "0"

@@ -33,6 +33,7 @@ def fast_config():
 # 1: FINS device types
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("device", [d for d in DeviceType if d not in FINS_AREA_CODES])
 async def test_fins_unmapped_device_unsupported_without_request(fast_config, device):
@@ -48,6 +49,7 @@ async def test_fins_unmapped_device_unsupported_without_request(fast_config, dev
 # 2: address limits
 # ---------------------------------------------------------------------------
 
+
 def _connected(handler):
     handler._connected = True
     handler._client = MagicMock()
@@ -55,12 +57,15 @@ def _connected(handler):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("factory,device,start,count", [
-    (lambda c: FINSHandler("192.168.0.10", config=c), DeviceType.DM, 65541, 1),
-    (lambda c: FINSHandler("192.168.0.10", config=c), DeviceType.DM, 65530, 10),
-    (lambda c: ModbusHandler("192.168.0.10", config=c), DeviceType.HR, 70000, 1),
-    (lambda c: SLMPHandler("192.168.0.10", config=c), DeviceType.D, 0x1000000, 1),
-])
+@pytest.mark.parametrize(
+    "factory,device,start,count",
+    [
+        (lambda c: FINSHandler("192.168.0.10", config=c), DeviceType.DM, 65541, 1),
+        (lambda c: FINSHandler("192.168.0.10", config=c), DeviceType.DM, 65530, 10),
+        (lambda c: ModbusHandler("192.168.0.10", config=c), DeviceType.HR, 70000, 1),
+        (lambda c: SLMPHandler("192.168.0.10", config=c), DeviceType.D, 0x1000000, 1),
+    ],
+)
 async def test_beyond_address_limit_is_illegal_and_not_sent(fast_config, factory, device, start, count):
     handler = _connected(factory(fast_config))
     handler.read_device_raw = AsyncMock()
@@ -68,7 +73,7 @@ async def test_beyond_address_limit_is_illegal_and_not_sent(fast_config, factory
     data, status = await handler._tracked_read(device, start, count)
     assert (data, status) == (None, StatusCode.NG_ILLEGAL_ADDR)
     handler.read_device_raw.assert_not_called()
-    assert handler._comm_failure_streak == 2   # link state untouched
+    assert handler._comm_failure_streak == 2  # link state untouched
 
 
 @pytest.mark.asyncio
@@ -99,6 +104,7 @@ async def test_range_across_limit_reads_valid_part(fast_config):
 # 3: database time windows and the cleanup script
 # ---------------------------------------------------------------------------
 
+
 def test_cleanup_window_uses_local_time(tmp_path):
     db = DatabaseExporter(DatabaseConfig(enabled=True, path=str(tmp_path / "t.db")))
     try:
@@ -109,7 +115,8 @@ def test_cleanup_window_uses_local_time(tmp_path):
             stamp = (now + timedelta(minutes=minutes)).isoformat()
             conn.execute(
                 "INSERT INTO data_history (plc_ip, address, old_value, new_value, changed_at) "
-                "VALUES (?, ?, 0, 1, ?)", ("10.0.0.1", address, stamp)
+                "VALUES (?, ?, 0, 1, ?)",
+                ("10.0.0.1", address, stamp),
             )
         conn.commit()
         assert [r["address"] for r in db.get_changes(days=1)] == ["D1"]
@@ -127,15 +134,17 @@ def test_no_utc_comparison_left():
         assert "datetime('now', '-" not in text
 
 
-@pytest.mark.skipif(subprocess.run(["which", "sqlite3"], capture_output=True).returncode != 0,
-                    reason="sqlite3 command not available")
+@pytest.mark.skipif(
+    subprocess.run(["which", "sqlite3"], capture_output=True).returncode != 0, reason="sqlite3 command not available"
+)
 @pytest.mark.parametrize("days", ["abc", "1'); DELETE FROM plcs; --", "0", ""])
 def test_cleanup_script_rejects_bad_days(tmp_path, days):
     db_path = tmp_path / "t.db"
     DatabaseExporter(DatabaseConfig(enabled=True, path=str(db_path))).close()
     result = subprocess.run(
         ["bash", str(ROOT / "scripts" / "manage_database.sh"), "cleanup", str(db_path), days],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     if days == "":
         # Empty argument falls back to the default 30 days
@@ -155,11 +164,14 @@ from plc_discovery.utils import address_sort_key, sorted_addresses
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("start,count,expected", [
-    (0xFFFFF, 1, None),                      # last encodable word: sent
-    (1_048_581, 1, StatusCode.NG_ILLEGAL_ADDR),   # wrapped to DBW10 before
-    (0xFFFF0, 32, StatusCode.NG_ILLEGAL_ADDR),
-])
+@pytest.mark.parametrize(
+    "start,count,expected",
+    [
+        (0xFFFFF, 1, None),  # last encodable word: sent
+        (1_048_581, 1, StatusCode.NG_ILLEGAL_ADDR),  # wrapped to DBW10 before
+        (0xFFFF0, 32, StatusCode.NG_ILLEGAL_ADDR),
+    ],
+)
 async def test_s7_address_limit(fast_config, start, count, expected):
     handler = _connected(S7Handler("192.168.0.10", config=fast_config))
     handler.read_device_raw = AsyncMock(return_value=([0] * count, StatusCode.OK))
@@ -183,6 +195,7 @@ async def test_s7_wrapped_address_not_read_from_simulator(fast_config):
     device.read_db = lambda db, start, size: (seen.append(start), original(db, start, size))[1]
 
     import asyncio
+
     loop = asyncio.get_running_loop()
     server = await loop.create_server(lambda: COTPProtocol(device), "127.0.0.1", 0)
     port = server.sockets[0].getsockname()[1]
@@ -191,7 +204,7 @@ async def test_s7_wrapped_address_not_read_from_simulator(fast_config):
         assert await handler.connect()
         points = await handler.read_device_range(DeviceRange(DeviceType.DB, 1_048_581, 1_048_581))
         assert [p.status for p in points] == [StatusCode.NG_ILLEGAL_ADDR]
-        assert seen == []   # nothing reached the PLC
+        assert seen == []  # nothing reached the PLC
     finally:
         await handler.disconnect()
         server.close()
@@ -209,19 +222,26 @@ def test_docker_default_output_is_the_mounted_directory():
 
 def plc_scanner_default_output():
     from plc_discovery.output import DEFAULT_OUTPUT_DIR
+
     return DEFAULT_OUTPUT_DIR
 
 
 def test_addresses_sorted_by_device_and_number():
     assert sorted_addresses({"D5003", "D17", "M0", "D5000", "DM2", "x?"}) == [
-        "D17", "D5000", "D5003", "DM2", "M0", "x?"
+        "D17",
+        "D5000",
+        "D5003",
+        "DM2",
+        "M0",
+        "x?",
     ]
     assert address_sort_key("D9") < address_sort_key("D10")
 
 
 def test_report_lists_denied_addresses_in_order():
     generator, data = create_report(
-        plcs=[], data_points={},
+        plcs=[],
+        data_points={},
         denied_addresses={"10.0.0.1": ["D5003", "D17", "D5000"]},
     )
     html_text = generator._generate_denied_section(data)

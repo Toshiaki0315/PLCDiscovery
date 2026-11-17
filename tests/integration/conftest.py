@@ -10,6 +10,7 @@ import sys
 import time
 from multiprocessing import Process
 from typing import Generator, Optional
+
 import pytest
 
 # Add project root to path
@@ -128,6 +129,7 @@ class SimulatorProcess:
 def run_slmp_simulator(port: int):
     """Run SLMP simulator in separate process"""
     import asyncio
+
     from simulators.slmp_simulator import run_server
 
     asyncio.run(run_server("127.0.0.1", port, [(5000, 5100), (7000, 7050)]))
@@ -136,6 +138,7 @@ def run_slmp_simulator(port: int):
 def run_modbus_simulator(port: int):
     """Run Modbus simulator in separate process"""
     import asyncio
+
     from simulators.modbus_simulator import run_server
 
     asyncio.run(run_server("127.0.0.1", port, [(5000, 5100), (8000, 8050)]))
@@ -144,6 +147,7 @@ def run_modbus_simulator(port: int):
 def run_ethernet_ip_simulator(port: int):
     """Run EtherNet/IP simulator in separate process"""
     import asyncio
+
     from simulators.ethernet_ip_simulator import run_server
 
     asyncio.run(run_server("127.0.0.1", port, [(100, 150)]))
@@ -152,6 +156,7 @@ def run_ethernet_ip_simulator(port: int):
 def run_logix_simulator(port: int):
     """Run the EtherNet/IP simulator in Logix mode (symbolic tags)"""
     import asyncio
+
     from simulators.ethernet_ip_simulator import run_server
 
     asyncio.run(run_server("127.0.0.1", port, [], mode="logix"))
@@ -160,6 +165,7 @@ def run_logix_simulator(port: int):
 def run_omron_simulator(port: int):
     """Run the EtherNet/IP simulator in Omron NJ/NX mode (variables by name)"""
     import asyncio
+
     from simulators.ethernet_ip_simulator import run_server
 
     asyncio.run(run_server("127.0.0.1", port, [], mode="omron"))
@@ -168,6 +174,7 @@ def run_omron_simulator(port: int):
 def run_s7_simulator(port: int):
     """Run S7 simulator in separate process"""
     import asyncio
+
     from simulators.s7_simulator import run_server
 
     # Denied byte offsets 1000-1101 = word addresses 500-550 (byte = word * 2)
@@ -177,6 +184,7 @@ def run_s7_simulator(port: int):
 def run_fins_simulator(port: int):
     """Run FINS simulator in separate process"""
     import asyncio
+
     from simulators.fins_simulator import run_fins_simulator as run_sim
 
     asyncio.run(run_sim(host="127.0.0.1", port=port))
@@ -285,10 +293,7 @@ def fins_simulator() -> Generator[SimulatorProcess, None, None]:
 
 
 @pytest.fixture(scope="session")
-def all_simulators(
-    slmp_simulator,
-    modbus_simulator
-) -> dict:
+def all_simulators(slmp_simulator, modbus_simulator) -> dict:
     """
     Fixture that starts all simulators.
 
@@ -305,6 +310,7 @@ def all_simulators(
 def slmp_plc_info():
     """PLCInfo for SLMP simulator"""
     from plc_discovery.config import PLCInfo, Protocol
+
     return PLCInfo(
         ip_address="127.0.0.1",
         protocol=Protocol.SLMP,
@@ -317,6 +323,7 @@ def slmp_plc_info():
 def modbus_plc_info():
     """PLCInfo for Modbus simulator"""
     from plc_discovery.config import PLCInfo, Protocol
+
     return PLCInfo(
         ip_address="127.0.0.1",
         protocol=Protocol.MODBUS_TCP,
@@ -329,6 +336,7 @@ def modbus_plc_info():
 def fins_plc_info():
     """PLCInfo for FINS simulator"""
     from plc_discovery.config import PLCInfo, Protocol
+
     return PLCInfo(
         ip_address="127.0.0.1",
         protocol=Protocol.FINS,
@@ -341,6 +349,7 @@ def fins_plc_info():
 def fins_tcp_handler(network_config):
     """FINSHandler using FINS/TCP against the simulator (not yet connected)"""
     from plc_discovery.protocols.fins import FINSHandler
+
     return FINSHandler("127.0.0.1", SIMULATOR_PORTS["fins"], config=network_config, use_tcp=True)
 
 
@@ -359,6 +368,7 @@ def logix_simulator() -> Generator[SimulatorProcess, None, None]:
 def logix_plc_info():
     """PLCInfo for the Logix-mode EtherNet/IP simulator"""
     from plc_discovery.config import PLCInfo, Protocol
+
     return PLCInfo(ip_address="127.0.0.1", protocol=Protocol.ETHERNET_IP, port=SIMULATOR_PORTS["logix"])
 
 
@@ -377,6 +387,7 @@ def omron_simulator() -> Generator[SimulatorProcess, None, None]:
 def omron_plc_info():
     """PLCInfo for the Omron NJ/NX-mode EtherNet/IP simulator"""
     from plc_discovery.config import PLCInfo, Protocol
+
     return PLCInfo(ip_address="127.0.0.1", protocol=Protocol.ETHERNET_IP, port=SIMULATOR_PORTS["omron"])
 
 
@@ -384,6 +395,7 @@ def omron_plc_info():
 def ethernet_ip_plc_info():
     """PLCInfo for EtherNet/IP simulator"""
     from plc_discovery.config import PLCInfo, Protocol
+
     return PLCInfo(
         ip_address="127.0.0.1",
         protocol=Protocol.ETHERNET_IP,
@@ -396,6 +408,7 @@ def ethernet_ip_plc_info():
 def s7_plc_info():
     """PLCInfo for S7 simulator"""
     from plc_discovery.config import PLCInfo, Protocol
+
     return PLCInfo(
         ip_address="127.0.0.1",
         protocol=Protocol.S7,
@@ -408,6 +421,7 @@ def s7_plc_info():
 def network_config():
     """NetworkConfig for testing"""
     from plc_discovery.config import NetworkConfig
+
     return NetworkConfig(
         discovery_timeout_ms=2000,
         discovery_retry_count=2,

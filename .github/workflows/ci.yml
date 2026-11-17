@@ -130,26 +130,24 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install black isort flake8 mypy
+        # Pinned: a new release may add checks; bump together with a local run
+        pip install black==26.5.1 isort==6.0.1 flake8==7.3.0 mypy==1.18.1
     
     - name: Run linting with flake8
       run: |
-        flake8 plc_discovery tests simulators --max-line-length=120 --ignore=E501,W503,E402
+        flake8 plc_discovery tests simulators --max-line-length=120 --ignore=E501,W503,E402,E203
     
     - name: Check code formatting with Black
       run: |
         black --check --diff plc_discovery tests
-      continue-on-error: true
     
     - name: Check import sorting with isort
       run: |
         isort --check-only --diff plc_discovery tests
-      continue-on-error: true
     
     - name: Run type checking with mypy
       run: |
         mypy plc_discovery --ignore-missing-imports --no-error-summary
-      continue-on-error: true
 
   # Build package
   build:

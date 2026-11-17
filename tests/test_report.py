@@ -10,11 +10,11 @@ from unittest.mock import patch
 
 import pytest
 
-from plc_discovery.config import PLCInfo, DataPoint, Protocol, StatusCode
+from plc_discovery.config import DataPoint, PLCInfo, Protocol, StatusCode
 from plc_discovery.report import (
     ReportConfig,
-    ReportFormat,
     ReportData,
+    ReportFormat,
     ReportGenerator,
     ScanSummary,
     create_report,
@@ -41,7 +41,7 @@ class TestReportConfig:
             title="カスタムレポート",
             company_name="Test Company",
             include_charts=False,
-            theme="dark"
+            theme="dark",
         )
         assert config.format == ReportFormat.PDF
         assert config.title == "カスタムレポート"
@@ -55,32 +55,17 @@ class TestScanSummary:
 
     def test_success_rate_calculation(self):
         """成功率計算のテスト"""
-        summary = ScanSummary(
-            scan_mode="full",
-            started_at=datetime.now(),
-            successful_reads=80,
-            failed_reads=20
-        )
+        summary = ScanSummary(scan_mode="full", started_at=datetime.now(), successful_reads=80, failed_reads=20)
         assert summary.success_rate == 80.0
 
     def test_success_rate_zero_reads(self):
         """読み取りゼロ時の成功率"""
-        summary = ScanSummary(
-            scan_mode="full",
-            started_at=datetime.now(),
-            successful_reads=0,
-            failed_reads=0
-        )
+        summary = ScanSummary(scan_mode="full", started_at=datetime.now(), successful_reads=0, failed_reads=0)
         assert summary.success_rate == 0.0
 
     def test_success_rate_all_success(self):
         """全成功時の成功率"""
-        summary = ScanSummary(
-            scan_mode="full",
-            started_at=datetime.now(),
-            successful_reads=100,
-            failed_reads=0
-        )
+        summary = ScanSummary(scan_mode="full", started_at=datetime.now(), successful_reads=100, failed_reads=0)
         assert summary.success_rate == 100.0
 
 
@@ -92,19 +77,9 @@ class TestReportGenerator:
         """サンプルPLCデータ"""
         return [
             PLCInfo(
-                ip_address="192.168.1.10",
-                manufacturer="Mitsubishi",
-                model="iQ-R",
-                protocol=Protocol.SLMP,
-                port=5000
+                ip_address="192.168.1.10", manufacturer="Mitsubishi", model="iQ-R", protocol=Protocol.SLMP, port=5000
             ),
-            PLCInfo(
-                ip_address="192.168.1.20",
-                manufacturer="Siemens",
-                model="S7-1500",
-                protocol=Protocol.S7,
-                port=102
-            )
+            PLCInfo(ip_address="192.168.1.20", manufacturer="Siemens", model="S7-1500", protocol=Protocol.S7, port=102),
         ]
 
     @pytest.fixture
@@ -118,7 +93,7 @@ class TestReportGenerator:
             ],
             "192.168.1.20": [
                 DataPoint(address="DB1.DBW0", value=500, raw_hex="01F4", status=StatusCode.OK),
-            ]
+            ],
         }
 
     @pytest.fixture
@@ -136,13 +111,11 @@ class TestReportGenerator:
                 successful_reads=3,
                 failed_reads=1,
                 denied_addresses=2,
-                duration_seconds=300.0
+                duration_seconds=300.0,
             ),
             plcs=sample_plcs,
             data_points=sample_data_points,
-            denied_addresses={
-                "192.168.1.10": ["D100", "D101"]
-            }
+            denied_addresses={"192.168.1.10": ["D100", "D101"]},
         )
 
     def test_generate_html(self, sample_report_data):
@@ -205,7 +178,7 @@ class TestReportGenerator:
             saved_path = generator.save(sample_report_data, output_path)
 
             assert os.path.exists(saved_path)
-            with open(saved_path, 'r', encoding='utf-8') as f:
+            with open(saved_path, "r", encoding="utf-8") as f:
                 content = f.read()
             assert "<!DOCTYPE html>" in content
 
@@ -219,7 +192,7 @@ class TestReportGenerator:
             saved_path = generator.save(sample_report_data, output_path)
 
             assert os.path.exists(saved_path)
-            with open(saved_path, 'r', encoding='utf-8') as f:
+            with open(saved_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             assert "summary" in data
 
@@ -239,7 +212,7 @@ class TestReportGenerator:
         config = ReportConfig(format=ReportFormat.PDF)
         generator = ReportGenerator(config)
 
-        with patch.dict('sys.modules', {'weasyprint': None, 'pdfkit': None}):
+        with patch.dict("sys.modules", {"weasyprint": None, "pdfkit": None}):
             with pytest.raises(ImportError) as exc_info:
                 generator.generate(sample_report_data)
             assert "weasyprint" in str(exc_info.value) or "pdfkit" in str(exc_info.value)
@@ -250,21 +223,15 @@ class TestConvenienceFunctions:
 
     def test_create_report(self):
         """create_report関数のテスト"""
-        plcs = [
-            PLCInfo(ip_address="192.168.1.10", protocol=Protocol.SLMP)
-        ]
-        data_points = {
-            "192.168.1.10": [
-                DataPoint(address="D0", value=100, raw_hex="0064", status=StatusCode.OK)
-            ]
-        }
+        plcs = [PLCInfo(ip_address="192.168.1.10", protocol=Protocol.SLMP)]
+        data_points = {"192.168.1.10": [DataPoint(address="D0", value=100, raw_hex="0064", status=StatusCode.OK)]}
 
         generator, data = create_report(
             plcs=plcs,
             data_points=data_points,
             scan_mode="range",
             started_at=datetime.now() - timedelta(minutes=1),
-            completed_at=datetime.now()
+            completed_at=datetime.now(),
         )
 
         assert isinstance(generator, ReportGenerator)
@@ -275,23 +242,13 @@ class TestConvenienceFunctions:
 
     def test_generate_html_report(self):
         """generate_html_report関数のテスト"""
-        plcs = [
-            PLCInfo(ip_address="192.168.1.10", protocol=Protocol.SLMP)
-        ]
-        data_points = {
-            "192.168.1.10": [
-                DataPoint(address="D0", value=100, raw_hex="0064", status=StatusCode.OK)
-            ]
-        }
+        plcs = [PLCInfo(ip_address="192.168.1.10", protocol=Protocol.SLMP)]
+        data_points = {"192.168.1.10": [DataPoint(address="D0", value=100, raw_hex="0064", status=StatusCode.OK)]}
 
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = os.path.join(tmpdir, "report.html")
             saved_path = generate_html_report(
-                plcs=plcs,
-                data_points=data_points,
-                output_path=output_path,
-                title="テストレポート",
-                scan_mode="full"
+                plcs=plcs, data_points=data_points, output_path=output_path, title="テストレポート", scan_mode="full"
             )
 
             assert os.path.exists(saved_path)
@@ -303,12 +260,7 @@ class TestReportWithEdgeCases:
     def test_empty_report(self):
         """空のレポート生成"""
         data = ReportData(
-            summary=ScanSummary(
-                scan_mode="discovery",
-                started_at=datetime.now()
-            ),
-            plcs=[],
-            data_points={}
+            summary=ScanSummary(scan_mode="discovery", started_at=datetime.now()), plcs=[], data_points={}
         )
 
         generator = ReportGenerator()
@@ -320,17 +272,9 @@ class TestReportWithEdgeCases:
     def test_html_escape(self):
         """HTMLエスケープのテスト"""
         plcs = [
-            PLCInfo(
-                ip_address="192.168.1.10",
-                manufacturer="<script>alert('xss')</script>",
-                protocol=Protocol.SLMP
-            )
+            PLCInfo(ip_address="192.168.1.10", manufacturer="<script>alert('xss')</script>", protocol=Protocol.SLMP)
         ]
-        data = ReportData(
-            summary=ScanSummary(scan_mode="full", started_at=datetime.now()),
-            plcs=plcs,
-            data_points={}
-        )
+        data = ReportData(summary=ScanSummary(scan_mode="full", started_at=datetime.now()), plcs=plcs, data_points={})
 
         generator = ReportGenerator()
         html = generator.generate(data)
@@ -344,15 +288,14 @@ class TestReportWithEdgeCases:
         # 200件のデータポイントを生成
         data_points = {
             "192.168.1.10": [
-                DataPoint(address=f"D{i}", value=i, raw_hex=f"{i:04X}", status=StatusCode.OK)
-                for i in range(200)
+                DataPoint(address=f"D{i}", value=i, raw_hex=f"{i:04X}", status=StatusCode.OK) for i in range(200)
             ]
         }
 
         data = ReportData(
             summary=ScanSummary(scan_mode="full", started_at=datetime.now()),
             plcs=[PLCInfo(ip_address="192.168.1.10", protocol=Protocol.SLMP)],
-            data_points=data_points
+            data_points=data_points,
         )
 
         generator = ReportGenerator()
@@ -363,16 +306,12 @@ class TestReportWithEdgeCases:
 
     def test_special_characters_in_values(self):
         """特殊文字を含む値のテスト"""
-        data_points = {
-            "192.168.1.10": [
-                DataPoint(address="D0", value=0, raw_hex="アイウエオ", status=StatusCode.OK)
-            ]
-        }
+        data_points = {"192.168.1.10": [DataPoint(address="D0", value=0, raw_hex="アイウエオ", status=StatusCode.OK)]}
 
         data = ReportData(
             summary=ScanSummary(scan_mode="full", started_at=datetime.now()),
             plcs=[PLCInfo(ip_address="192.168.1.10", protocol=Protocol.SLMP)],
-            data_points=data_points
+            data_points=data_points,
         )
 
         generator = ReportGenerator()
@@ -395,10 +334,10 @@ class TestReportFormats:
                 completed_at=datetime.now(),
                 total_plcs=1,
                 successful_reads=10,
-                failed_reads=2
+                failed_reads=2,
             ),
             plcs=[PLCInfo(ip_address="192.168.1.10", protocol=Protocol.SLMP)],
-            data_points={}
+            data_points={},
         )
 
     def test_html_structure(self, minimal_data):

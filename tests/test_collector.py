@@ -2,14 +2,12 @@
 Tests for collector module
 """
 
-import pytest
-from unittest.mock import patch, MagicMock, AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
-from plc_discovery.config import Protocol, DeviceType, PLCInfo, StatusCode, ScanMode
-from plc_discovery.collector import (
-    PLCDataCollector, collect_plc_data, get_handler_for_protocol,
-    PROTOCOL_HANDLERS
-)
+import pytest
+
+from plc_discovery.collector import PROTOCOL_HANDLERS, PLCDataCollector, collect_plc_data, get_handler_for_protocol
+from plc_discovery.config import DeviceType, PLCInfo, Protocol, ScanMode, StatusCode
 
 
 class TestPLCDataCollector:
@@ -46,7 +44,9 @@ class TestPLCDataCollector:
         mock_handler.is_connected = True
 
         # Directly set the handler
-        with patch.dict('plc_discovery.collector.PROTOCOL_HANDLERS', {Protocol.SLMP: MagicMock(return_value=mock_handler)}):
+        with patch.dict(
+            "plc_discovery.collector.PROTOCOL_HANDLERS", {Protocol.SLMP: MagicMock(return_value=mock_handler)}
+        ):
             result = await collector.connect()
 
         assert result is True
@@ -57,7 +57,7 @@ class TestPLCDataCollector:
         """Test connection failure"""
         collector = PLCDataCollector(sample_plc_info, network_config)
 
-        with patch('plc_discovery.collector.SLMPHandler') as mock_handler_class:
+        with patch("plc_discovery.collector.SLMPHandler") as mock_handler_class:
             mock_handler = AsyncMock()
             mock_handler.connect = AsyncMock(return_value=False)
             mock_handler_class.return_value = mock_handler
@@ -84,9 +84,7 @@ class TestPLCDataCollector:
         mock_handler = AsyncMock()
         mock_handler.disconnect = AsyncMock()
         mock_handler.get_denied_addresses = MagicMock(return_value={"D100"})
-        mock_handler.get_denied_statuses = MagicMock(
-            return_value={"D100": StatusCode.NG_ILLEGAL_ADDR}
-        )
+        mock_handler.get_denied_statuses = MagicMock(return_value={"D100": StatusCode.NG_ILLEGAL_ADDR})
         collector._handler = mock_handler
 
         await collector.disconnect()
@@ -158,7 +156,9 @@ class TestPLCDataCollector:
         mock_handler.get_denied_statuses = MagicMock(return_value={})
         mock_handler.is_connected = True
 
-        with patch.dict('plc_discovery.collector.PROTOCOL_HANDLERS', {Protocol.SLMP: MagicMock(return_value=mock_handler)}):
+        with patch.dict(
+            "plc_discovery.collector.PROTOCOL_HANDLERS", {Protocol.SLMP: MagicMock(return_value=mock_handler)}
+        ):
             async with PLCDataCollector(sample_plc_info, network_config) as collector:
                 assert collector._handler is not None
 
@@ -171,18 +171,14 @@ class TestCollectPLCDataConvenience:
     @pytest.mark.asyncio
     async def test_collect_full_mode(self, sample_plc_info, network_config, sample_data_points):
         """Test full scan mode"""
-        with patch('plc_discovery.collector.PLCDataCollector') as mock_collector_class:
+        with patch("plc_discovery.collector.PLCDataCollector") as mock_collector_class:
             mock_collector = AsyncMock()
             mock_collector.__aenter__ = AsyncMock(return_value=mock_collector)
             mock_collector.__aexit__ = AsyncMock(return_value=False)
             mock_collector.collect_full_scan = AsyncMock(return_value=sample_data_points)
             mock_collector_class.return_value = mock_collector
 
-            result = await collect_plc_data(
-                sample_plc_info,
-                mode=ScanMode.FULL,
-                config=network_config
-            )
+            result = await collect_plc_data(sample_plc_info, mode=ScanMode.FULL, config=network_config)
 
         assert len(result) == 4
         mock_collector.collect_full_scan.assert_called_once()
@@ -190,7 +186,7 @@ class TestCollectPLCDataConvenience:
     @pytest.mark.asyncio
     async def test_collect_range_mode(self, sample_plc_info, network_config, sample_data_points):
         """Test range scan mode"""
-        with patch('plc_discovery.collector.PLCDataCollector') as mock_collector_class:
+        with patch("plc_discovery.collector.PLCDataCollector") as mock_collector_class:
             mock_collector = AsyncMock()
             mock_collector.__aenter__ = AsyncMock(return_value=mock_collector)
             mock_collector.__aexit__ = AsyncMock(return_value=False)
@@ -203,7 +199,7 @@ class TestCollectPLCDataConvenience:
                 device_type=DeviceType.D,
                 start_address=0,
                 end_address=99,
-                config=network_config
+                config=network_config,
             )
 
         assert len(result) == 4
@@ -216,35 +212,34 @@ class TestProtocolHandlerMapping:
     def test_get_handler_for_protocol_slmp(self):
         """Test getting SLMP handler"""
         from plc_discovery.protocols.slmp import SLMPHandler
+
         handler_class = get_handler_for_protocol(Protocol.SLMP)
         assert handler_class == SLMPHandler
 
     def test_get_handler_for_protocol_modbus(self):
         """Test getting Modbus handler"""
         from plc_discovery.protocols.modbus import ModbusHandler
+
         handler_class = get_handler_for_protocol(Protocol.MODBUS_TCP)
         assert handler_class == ModbusHandler
 
     def test_get_handler_for_protocol_eip(self):
         """Test getting EtherNet/IP handler"""
         from plc_discovery.protocols.ethernet_ip import EtherNetIPHandler
+
         handler_class = get_handler_for_protocol(Protocol.ETHERNET_IP)
         assert handler_class == EtherNetIPHandler
 
     def test_get_handler_for_protocol_s7(self):
         """Test getting S7 handler"""
         from plc_discovery.protocols.s7 import S7Handler
+
         handler_class = get_handler_for_protocol(Protocol.S7)
         assert handler_class == S7Handler
 
     def test_all_protocols_have_handlers(self):
         """Test that all main protocols have handlers"""
-        main_protocols = [
-            Protocol.SLMP,
-            Protocol.ETHERNET_IP,
-            Protocol.MODBUS_TCP,
-            Protocol.S7
-        ]
+        main_protocols = [Protocol.SLMP, Protocol.ETHERNET_IP, Protocol.MODBUS_TCP, Protocol.S7]
 
         for protocol in main_protocols:
             assert protocol in PROTOCOL_HANDLERS

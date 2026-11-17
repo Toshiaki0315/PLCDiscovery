@@ -19,8 +19,12 @@ import pytest
 from plc_discovery.config import NetworkConfig, PLCInfo, Protocol
 from plc_discovery.discovery import PLCDiscovery
 from plc_discovery.notifications import (
-    NotificationConfig, NotificationEvent, NotificationPriority, NotificationType,
-    SlackHandler, TeamsHandler,
+    NotificationConfig,
+    NotificationEvent,
+    NotificationPriority,
+    NotificationType,
+    SlackHandler,
+    TeamsHandler,
 )
 
 
@@ -49,7 +53,9 @@ def webhook_server():
 
 def _event():
     return NotificationEvent(
-        type=NotificationType.SCAN_COMPLETE, title="Scan complete", message="ok",
+        type=NotificationType.SCAN_COMPLETE,
+        title="Scan complete",
+        message="ok",
         priority=NotificationPriority.NORMAL,
     )
 
@@ -58,17 +64,15 @@ def _event():
 @pytest.mark.parametrize("status", [200, 202, 204])
 def test_2xx_is_delivered_once(webhook_server, handler_class, status):
     webhook_server["status"] = status
-    config = NotificationConfig(name="n", type="teams", url=webhook_server["url"],
-                                retry_count=3, timeout_seconds=2)
+    config = NotificationConfig(name="n", type="teams", url=webhook_server["url"], retry_count=3, timeout_seconds=2)
     assert asyncio.run(handler_class(config).send(_event())) is True
-    assert webhook_server["posts"] == 1   # was 3 posts and "failed" for 202
+    assert webhook_server["posts"] == 1  # was 3 posts and "failed" for 202
 
 
 @pytest.mark.parametrize("handler_class", [TeamsHandler, SlackHandler])
 def test_error_status_is_retried_and_fails(webhook_server, handler_class):
     webhook_server["status"] = 500
-    config = NotificationConfig(name="n", type="teams", url=webhook_server["url"],
-                                retry_count=2, timeout_seconds=2)
+    config = NotificationConfig(name="n", type="teams", url=webhook_server["url"], retry_count=2, timeout_seconds=2)
     real_sleep = asyncio.sleep
 
     async def no_wait(*_):
@@ -119,7 +123,7 @@ def test_s7_identity_query_is_bounded():
     pytest.importorskip("snap7")
     discovery = PLCDiscovery(NetworkConfig(discovery_timeout_ms=100))
     client = MagicMock()
-    client.connect.side_effect = lambda *a: time.sleep(2)   # host that never answers
+    client.connect.side_effect = lambda *a: time.sleep(2)  # host that never answers
 
     async def run():
         # Timed inside the loop: asyncio.run() itself waits for the worker

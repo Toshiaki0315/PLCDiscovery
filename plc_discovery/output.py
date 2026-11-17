@@ -8,11 +8,11 @@ Provides CSV file generation for:
 """
 
 import csv
-from pathlib import Path
-from typing import Dict, List, Mapping, Optional, Set
 import logging
+from pathlib import Path
+from typing import IO, Dict, List, Mapping, Optional, Set
 
-from .config import PLCInfo, DataPoint, StatusCode
+from .config import DataPoint, PLCInfo, StatusCode
 from .utils import get_file_timestamp, get_timestamp, melsec_address
 
 logger = logging.getLogger(__name__)
@@ -31,16 +31,10 @@ DISCOVERY_HEADERS = [
     "cpu_type",
     "firmware_version",
     "read_method",
-    "discovered_at"
+    "discovered_at",
 ]
 
-DATA_HEADERS = [
-    "address",
-    "value",
-    "raw_hex",
-    "status",
-    "timestamp"
-]
+DATA_HEADERS = ["address", "value", "raw_hex", "status", "timestamp"]
 
 # Extended headers for data with type conversion
 DATA_HEADERS_EXTENDED = [
@@ -51,15 +45,10 @@ DATA_HEADERS_EXTENDED = [
     "converted_value",
     "display_value",
     "status",
-    "timestamp"
+    "timestamp",
 ]
 
-DENIED_HEADERS = [
-    "address",
-    "status",
-    "last_attempt",
-    "plc_ip"
-]
+DENIED_HEADERS = ["address", "status", "last_attempt", "plc_ip"]
 
 
 # Leading characters that make spreadsheet applications treat a cell as a
@@ -98,10 +87,17 @@ class _SafeDictWriter(csv.DictWriter):
 # (what Excel and Japanese Windows actually use; Python's "shift_jis" lacks
 # characters such as ① ㈱ ～).
 _ENCODING_ALIASES = {
-    "shift-jis": "cp932", "shift_jis": "cp932", "sjis": "cp932", "cp932": "cp932",
-    "ms932": "cp932", "windows-31j": "cp932",
-    "utf-8-sig": "utf-8-sig", "utf8-sig": "utf-8-sig", "utf-8-bom": "utf-8-sig",
-    "utf-8": "utf-8", "utf8": "utf-8",
+    "shift-jis": "cp932",
+    "shift_jis": "cp932",
+    "sjis": "cp932",
+    "cp932": "cp932",
+    "ms932": "cp932",
+    "windows-31j": "cp932",
+    "utf-8-sig": "utf-8-sig",
+    "utf8-sig": "utf-8-sig",
+    "utf-8-bom": "utf-8-sig",
+    "utf-8": "utf-8",
+    "utf8": "utf-8",
 }
 
 
@@ -131,12 +127,7 @@ class CSVExporter:
     and error handling.
     """
 
-    def __init__(
-        self,
-        output_dir: str = DEFAULT_OUTPUT_DIR,
-        encoding: str = "utf-8",
-        hex_addresses: bool = False
-    ):
+    def __init__(self, output_dir: str = DEFAULT_OUTPUT_DIR, encoding: str = "utf-8", hex_addresses: bool = False):
         self.output_dir = Path(output_dir)
         self.encoding = normalize_csv_encoding(encoding)
         # Add MELSEC hex addresses to data files of SLMP targets (callers
@@ -147,7 +138,7 @@ class CSVExporter:
         self.periodic_csv = "per_cycle"
         self._ensure_output_dir()
 
-    def _open_csv(self, filepath: Path, mode: str = "w"):
+    def _open_csv(self, filepath: Path, mode: str = "w") -> IO[str]:
         """
         Open a CSV file for writing.
 
@@ -170,11 +161,7 @@ class CSVExporter:
             logger.error(f"Failed to create output directory: {e}")
             raise
 
-    def export_discovery_results(
-        self,
-        plc_list: List[PLCInfo],
-        filename: Optional[str] = None
-    ) -> str:
+    def export_discovery_results(self, plc_list: List[PLCInfo], filename: Optional[str] = None) -> str:
         """
         Export PLC discovery results to CSV.
 
@@ -193,7 +180,7 @@ class CSVExporter:
             filepath = self.output_dir / filename
 
         try:
-            with self._open_csv(filepath, 'w') as f:
+            with self._open_csv(filepath, "w") as f:
                 writer = _SafeDictWriter(f, fieldnames=DISCOVERY_HEADERS)
                 writer.writeheader()
 
@@ -218,7 +205,7 @@ class CSVExporter:
         filename: Optional[str] = None,
         include_type_info: bool = True,
         target_tag: Optional[str] = None,
-        hex_addresses: bool = False
+        hex_addresses: bool = False,
     ) -> str:
         """
         Export PLC device data to CSV.
@@ -248,10 +235,7 @@ class CSVExporter:
             filepath = self.output_dir / filename
 
         # Check if any data point has type conversion info
-        has_type_info = any(
-            dp.data_type is not None or dp.converted_value is not None
-            for dp in data_points
-        )
+        has_type_info = any(dp.data_type is not None or dp.converted_value is not None for dp in data_points)
 
         # Use extended headers if type info is present
         use_extended = include_type_info and has_type_info
@@ -260,8 +244,8 @@ class CSVExporter:
             headers.insert(1, "address_hex")
 
         try:
-            with self._open_csv(filepath, 'w') as f:
-                writer = _SafeDictWriter(f, fieldnames=headers, extrasaction='ignore')
+            with self._open_csv(filepath, "w") as f:
+                writer = _SafeDictWriter(f, fieldnames=headers, extrasaction="ignore")
                 writer.writeheader()
 
                 for dp in data_points:
@@ -306,8 +290,8 @@ class CSVExporter:
             if first:
                 headers = next(csv.reader([first]))
         try:
-            with self._open_csv(filepath, 'a') as f:
-                writer = _SafeDictWriter(f, fieldnames=headers, extrasaction='ignore')
+            with self._open_csv(filepath, "a") as f:
+                writer = _SafeDictWriter(f, fieldnames=headers, extrasaction="ignore")
                 if new_file:
                     writer.writeheader()
                 for dp in data_points:
@@ -327,7 +311,7 @@ class CSVExporter:
         plc_ip: str,
         status: StatusCode = StatusCode.NG_ILLEGAL_ADDR,
         filename: Optional[str] = None,
-        statuses: Optional[Mapping[str, StatusCode]] = None
+        statuses: Optional[Mapping[str, StatusCode]] = None,
     ) -> str:
         """
         Export inaccessible addresses log to CSV.
@@ -351,7 +335,7 @@ class CSVExporter:
         file_exists = filepath.exists()
 
         try:
-            mode = 'a' if file_exists else 'w'
+            mode = "a" if file_exists else "w"
             with self._open_csv(filepath, mode) as f:
                 writer = _SafeDictWriter(f, fieldnames=DENIED_HEADERS)
 
@@ -362,12 +346,14 @@ class CSVExporter:
 
                 for address in sorted(denied_addresses):
                     address_status = (statuses or {}).get(address) or status
-                    writer.writerow({
-                        "address": address,
-                        "status": address_status.value,
-                        "last_attempt": timestamp,
-                        "plc_ip": plc_ip
-                    })
+                    writer.writerow(
+                        {
+                            "address": address,
+                            "status": address_status.value,
+                            "last_attempt": timestamp,
+                            "plc_ip": plc_ip,
+                        }
+                    )
 
             logger.info(f"Denied addresses exported to: {filepath}")
             return str(filepath)
@@ -377,10 +363,7 @@ class CSVExporter:
             raise
 
     def export_summary_report(
-        self,
-        plc_list: List[PLCInfo],
-        collection_stats: Dict[str, Dict],
-        filename: Optional[str] = None
+        self, plc_list: List[PLCInfo], collection_stats: Dict[str, Dict], filename: Optional[str] = None
     ) -> str:
         """
         Export summary report with collection statistics.
@@ -409,27 +392,29 @@ class CSVExporter:
             "success_count",
             "error_count",
             "success_rate",
-            "denied_addresses"
+            "denied_addresses",
         ]
 
         try:
-            with self._open_csv(filepath, 'w') as f:
+            with self._open_csv(filepath, "w") as f:
                 writer = _SafeDictWriter(f, fieldnames=summary_headers)
                 writer.writeheader()
 
                 for plc in plc_list:
                     stats = collection_stats.get(plc.ip_address, {})
-                    writer.writerow({
-                        "ip_address": plc.ip_address,
-                        "manufacturer": plc.manufacturer or "",
-                        "model": plc.model or "",
-                        "protocol": plc.protocol.name if plc.protocol else "",
-                        "total_points": stats.get("total_points", 0),
-                        "success_count": stats.get("success_count", 0),
-                        "error_count": stats.get("error_count", 0),
-                        "success_rate": stats.get("success_rate", "N/A"),
-                        "denied_addresses": stats.get("denied_addresses", 0),
-                    })
+                    writer.writerow(
+                        {
+                            "ip_address": plc.ip_address,
+                            "manufacturer": plc.manufacturer or "",
+                            "model": plc.model or "",
+                            "protocol": plc.protocol.name if plc.protocol else "",
+                            "total_points": stats.get("total_points", 0),
+                            "success_count": stats.get("success_count", 0),
+                            "error_count": stats.get("error_count", 0),
+                            "success_rate": stats.get("success_rate", "N/A"),
+                            "denied_addresses": stats.get("denied_addresses", 0),
+                        }
+                    )
 
             logger.info(f"Summary report exported to: {filepath}")
             return str(filepath)
@@ -439,10 +424,7 @@ class CSVExporter:
             raise
 
 
-def load_denied_addresses(
-    filepath: str,
-    plc_ip: Optional[str] = None
-) -> Set[str]:
+def load_denied_addresses(filepath: str, plc_ip: Optional[str] = None) -> Set[str]:
     """
     Load previously recorded denied addresses from CSV.
 
@@ -456,7 +438,7 @@ def load_denied_addresses(
     denied = set()
 
     try:
-        with open(filepath, 'r', encoding='utf-8-sig') as f:   # also strips a BOM
+        with open(filepath, "r", encoding="utf-8-sig") as f:  # also strips a BOM
             reader = csv.DictReader(f)
             for row in reader:
                 if plc_ip is None or row.get("plc_ip") == plc_ip:

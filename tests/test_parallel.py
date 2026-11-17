@@ -4,15 +4,20 @@ Tests for parallel module
 
 from datetime import datetime
 from unittest.mock import patch
+
 import pytest
 
-from plc_discovery.parallel import (
-    ParallelPLCScanner, PLCScanResult, scan_plcs_parallel
-)
 from plc_discovery.config import (
-    Protocol, DeviceType, ScanMode, PLCInfo, DataPoint,
-    NetworkConfig, DeviceRange, StatusCode
+    DataPoint,
+    DeviceRange,
+    DeviceType,
+    NetworkConfig,
+    PLCInfo,
+    Protocol,
+    ScanMode,
+    StatusCode,
 )
+from plc_discovery.parallel import ParallelPLCScanner, PLCScanResult, scan_plcs_parallel
 
 
 def make_data_point(address: str, value: int, status: StatusCode = StatusCode.OK) -> DataPoint:
@@ -133,17 +138,11 @@ class TestParallelPLCScanner:
     async def test_scan_single_plc(self):
         """Test scanning single PLC"""
         config = NetworkConfig(max_concurrent=1)
-        plc = PLCInfo(
-            ip_address="192.168.1.10",
-            protocol=Protocol.SLMP,
-            port=5001
-        )
+        plc = PLCInfo(ip_address="192.168.1.10", protocol=Protocol.SLMP, port=5001)
 
-        mock_data_points = [
-            make_data_point("D0", 100, STATUS_OK)
-        ]
+        mock_data_points = [make_data_point("D0", 100, STATUS_OK)]
 
-        with patch('plc_discovery.parallel.PLCDataCollector') as mock_collector_class:
+        with patch("plc_discovery.parallel.PLCDataCollector") as mock_collector_class:
             mock_collector_class.return_value = MockCollector(mock_data_points)
 
             scanner = ParallelPLCScanner(config)
@@ -159,7 +158,7 @@ class TestParallelPLCScanner:
         config = NetworkConfig(max_concurrent=1)
         plc = PLCInfo(ip_address="192.168.1.10", protocol=Protocol.SLMP, port=5001)
 
-        with patch('plc_discovery.parallel.PLCDataCollector') as mock_collector_class:
+        with patch("plc_discovery.parallel.PLCDataCollector") as mock_collector_class:
             mock_collector_class.return_value = MockCollector([], connected=False)
 
             scanner = ParallelPLCScanner(config)
@@ -173,16 +172,11 @@ class TestParallelPLCScanner:
     async def test_scan_multiple_plcs_parallel(self):
         """Test scanning multiple PLCs in parallel"""
         config = NetworkConfig(max_concurrent=3)
-        plcs = [
-            PLCInfo(ip_address=f"192.168.1.{i}", protocol=Protocol.SLMP, port=5001)
-            for i in range(10, 13)
-        ]
+        plcs = [PLCInfo(ip_address=f"192.168.1.{i}", protocol=Protocol.SLMP, port=5001) for i in range(10, 13)]
 
-        mock_data_points = [
-            make_data_point("D0", 100, STATUS_OK)
-        ]
+        mock_data_points = [make_data_point("D0", 100, STATUS_OK)]
 
-        with patch('plc_discovery.parallel.PLCDataCollector') as mock_collector_class:
+        with patch("plc_discovery.parallel.PLCDataCollector") as mock_collector_class:
             mock_collector_class.return_value = MockCollector(mock_data_points)
 
             scanner = ParallelPLCScanner(config)
@@ -197,25 +191,16 @@ class TestParallelPLCScanner:
     async def test_scan_with_range_mode(self):
         """Test scanning with range mode"""
         config = NetworkConfig(max_concurrent=1)
-        plc = PLCInfo(
-            ip_address="192.168.1.10",
-            protocol=Protocol.SLMP,
-            port=5001
-        )
+        plc = PLCInfo(ip_address="192.168.1.10", protocol=Protocol.SLMP, port=5001)
         device_ranges = [DeviceRange(DeviceType.D, 0, 100)]
 
-        mock_data_points = [
-            make_data_point(f"D{i}", i, STATUS_OK)
-            for i in range(101)
-        ]
+        mock_data_points = [make_data_point(f"D{i}", i, STATUS_OK) for i in range(101)]
 
-        with patch('plc_discovery.parallel.PLCDataCollector') as mock_collector_class:
+        with patch("plc_discovery.parallel.PLCDataCollector") as mock_collector_class:
             mock_collector_class.return_value = MockCollector(mock_data_points)
 
             scanner = ParallelPLCScanner(config)
-            results = await scanner.scan_multiple_plcs(
-                [plc], ScanMode.RANGE, device_ranges
-            )
+            results = await scanner.scan_multiple_plcs([plc], ScanMode.RANGE, device_ranges)
 
         assert "192.168.1.10" in results
         assert len(results["192.168.1.10"].data_points) == 101
@@ -250,7 +235,7 @@ class TestParallelPLCScanner:
             def get_denied_addresses(self):
                 return set()
 
-        with patch('plc_discovery.parallel.PLCDataCollector') as mock_collector_class:
+        with patch("plc_discovery.parallel.PLCDataCollector") as mock_collector_class:
             mock_collector_class.return_value = FailingMockCollector()
 
             scanner = ParallelPLCScanner(config)
@@ -275,7 +260,7 @@ class TestParallelPLCScanner:
             make_data_point("D1", 200, STATUS_OK),
         ]
 
-        with patch('plc_discovery.parallel.PLCDataCollector') as mock_collector_class:
+        with patch("plc_discovery.parallel.PLCDataCollector") as mock_collector_class:
             mock_collector_class.return_value = MockCollector(mock_data_points)
 
             scanner = ParallelPLCScanner(config)
@@ -293,11 +278,9 @@ class TestScanPLCsParallel:
     @pytest.mark.asyncio
     async def test_convenience_function(self):
         """Test the convenience function"""
-        plcs = [
-            PLCInfo(ip_address="192.168.1.10", protocol=Protocol.SLMP, port=5001)
-        ]
+        plcs = [PLCInfo(ip_address="192.168.1.10", protocol=Protocol.SLMP, port=5001)]
 
-        with patch('plc_discovery.parallel.PLCDataCollector') as mock_collector_class:
+        with patch("plc_discovery.parallel.PLCDataCollector") as mock_collector_class:
             mock_collector_class.return_value = MockCollector([])
 
             results = await scan_plcs_parallel(plcs)

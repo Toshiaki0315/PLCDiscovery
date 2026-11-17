@@ -30,9 +30,10 @@ ROOT = Path(__file__).resolve().parent.parent
 # Fake SLMP 3E server
 # ---------------------------------------------------------------------------
 
+
 def slmp_response(words):
     body = b"\x00\x00" + b"".join(struct.pack("<H", w & 0xFFFF) for w in words)
-    return b"\xD0\x00\x00\xFF\xFF\x03\x00" + struct.pack("<H", len(body)) + body
+    return b"\xd0\x00\x00\xff\xff\x03\x00" + struct.pack("<H", len(body)) + body
 
 
 class FakeSLMP:
@@ -86,7 +87,7 @@ class FakeSLMP:
                     elif self.mode == "close_after_first" and self.requests == 1:
                         conn.sendall(resp)
                         self.mode = "normal"
-                        break          # drop the connection after the first reply
+                        break  # drop the connection after the first reply
                     else:
                         conn.sendall(resp)
 
@@ -110,6 +111,7 @@ async def connected_handler(server, timeout_ms=1000):
 # U1: split TCP responses are read completely
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_u1_split_response_read_completely():
     with FakeSLMP("split") as server:
@@ -128,6 +130,7 @@ async def test_u1_split_response_read_completely():
 # U2: closed connection never yields data; handler reconnects
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_u2_slmp_closed_connection_no_fake_data_and_recovers():
     with FakeSLMP("close_after_first") as server:
@@ -136,7 +139,7 @@ async def test_u2_slmp_closed_connection_no_fake_data_and_recovers():
             assert await handler.read_device_raw(DeviceType.D, 10, 3) == ([10, 11, 12], StatusCode.OK)
             await asyncio.sleep(0.2)
             data, status = await handler.read_device_raw(DeviceType.D, 10, 3)
-            assert data is None and status == StatusCode.NG_COMM_ERROR   # previously [0, 0, 0] / OK
+            assert data is None and status == StatusCode.NG_COMM_ERROR  # previously [0, 0, 0] / OK
             assert handler._needs_reconnect
             assert await handler.read_device_raw(DeviceType.D, 10, 3) == ([10, 11, 12], StatusCode.OK)
             assert server.connections == 2
@@ -160,13 +163,18 @@ async def test_u2_plc_error_does_not_reconnect():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("make_handler, method, device", [
-    (lambda: S7Handler("127.0.0.1", config=NetworkConfig()), "db_read", DeviceType.DB),
-])
+@pytest.mark.parametrize(
+    "make_handler, method, device",
+    [
+        (lambda: S7Handler("127.0.0.1", config=NetworkConfig()), "db_read", DeviceType.DB),
+    ],
+)
 async def test_u2_s7_transport_error_triggers_reconnect(make_handler, method, device):
     handler = make_handler()
     client = MagicMock()
-    getattr(client, method).side_effect = RuntimeError("ISO : An error occurred during recv TCP : Connection reset by peer")
+    getattr(client, method).side_effect = RuntimeError(
+        "ISO : An error occurred during recv TCP : Connection reset by peer"
+    )
     handler._client, handler._connected = client, True
     assert (await handler.read_device_raw(device, 0, 2))[1] == StatusCode.NG_COMM_ERROR
     assert handler._needs_reconnect
@@ -196,6 +204,7 @@ async def test_u2_eip_comm_error_triggers_reconnect():
 # U3: SLMP word values are unsigned like the other protocols
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_u3_slmp_values_unsigned():
     with FakeSLMP(base=0x8000) as server:
@@ -210,6 +219,7 @@ async def test_u3_slmp_values_unsigned():
 # U5: a late reply after a socket timeout is never used as the next answer
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_u5_late_reply_not_reused():
     with FakeSLMP("slow_first") as server:
@@ -217,7 +227,7 @@ async def test_u5_late_reply_not_reused():
         try:
             assert (await handler.read_device_raw(DeviceType.D, 100, 2))[1] == StatusCode.NG_TIMEOUT
             assert handler._needs_reconnect
-            await asyncio.sleep(1.2)   # the late reply to D100 arrives on the old socket
+            await asyncio.sleep(1.2)  # the late reply to D100 arrives on the old socket
             assert await handler.read_device_raw(DeviceType.D, 500, 2) == ([500, 501], StatusCode.OK)
         finally:
             await handler.disconnect()
@@ -234,6 +244,7 @@ def test_u5_socket_timeout_handled_explicitly():
 # U4: STRING / RAW values span the whole field
 # ---------------------------------------------------------------------------
 
+
 def string_words(text, n_words):
     padded = text.ljust(n_words * 2, "\0")
     return [ord(padded[i]) | (ord(padded[i + 1]) << 8) for i in range(0, n_words * 2, 2)]
@@ -246,25 +257,32 @@ def points(start, words, prefix="D"):
 class TestStrings:
 
     def test_mapping_with_length(self):
-        manager = DataTypeManager.from_config({"mappings": [
-            {"device": "D", "start": 1000, "end": 1019, "type": "STRING", "length": 10},
-        ]})
+        manager = DataTypeManager.from_config(
+            {
+                "mappings": [
+                    {"device": "D", "start": 1000, "end": 1019, "type": "STRING", "length": 10},
+                ]
+            }
+        )
         words = string_words("PRODUCT-A1", 10) + string_words("ITEM-B2", 10)
         result = plc_scanner.apply_data_type_conversion(points(1000, words), None, ByteOrder.LITTLE_ENDIAN, manager)
         assert [(d.address, d.converted_value) for d in result if d.converted_value] == [
-            ("D1000", "PRODUCT-A1"), ("D1010", "ITEM-B2"),
+            ("D1000", "PRODUCT-A1"),
+            ("D1010", "ITEM-B2"),
         ]
         assert len(result) == 20 and result[1].display_value == "(part of D1000)"
 
     def test_mapping_without_length_is_one_value(self):
         manager = DataTypeManager.from_config({"mappings": [{"start": 0, "end": 3, "type": "STRING"}]})
-        result = plc_scanner.apply_data_type_conversion(points(0, string_words("ABCDEF", 4)), None,
-                                                        ByteOrder.LITTLE_ENDIAN, manager)
+        result = plc_scanner.apply_data_type_conversion(
+            points(0, string_words("ABCDEF", 4)), None, ByteOrder.LITTLE_ENDIAN, manager
+        )
         assert result[0].converted_value == "ABCDEF"
 
     def test_cli_data_type_string_uses_whole_range(self):
-        result = plc_scanner.apply_data_type_conversion(points(0, string_words("HELLO", 4)), DataType.STRING,
-                                                        ByteOrder.LITTLE_ENDIAN)
+        result = plc_scanner.apply_data_type_conversion(
+            points(0, string_words("HELLO", 4)), DataType.STRING, ByteOrder.LITTLE_ENDIAN
+        )
         assert result[0].converted_value == "HELLO"
 
     def test_failed_word_makes_string_incomplete(self):
@@ -275,8 +293,7 @@ class TestStrings:
         assert result[0].display_value.startswith("(incomplete STRING")
 
     def test_raw_hex(self):
-        result = plc_scanner.apply_data_type_conversion(points(0, [0x1234, 0xABCD]), DataType.RAW,
-                                                        ByteOrder.BIG_ENDIAN)
+        result = plc_scanner.apply_data_type_conversion(points(0, [0x1234, 0xABCD]), DataType.RAW, ByteOrder.BIG_ENDIAN)
         assert result[0].converted_value == "1234ABCD"
 
     def test_example_mapping_file(self):

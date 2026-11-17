@@ -14,10 +14,17 @@ from unittest.mock import MagicMock
 import pytest
 
 from plc_discovery.config import (
-    DEFAULT_DEVICE_RANGES, DeviceRange, DeviceType, NetworkConfig, Protocol, StatusCode,
+    DEFAULT_DEVICE_RANGES,
+    DeviceRange,
+    DeviceType,
+    NetworkConfig,
+    Protocol,
+    StatusCode,
 )
 from plc_discovery.protocols.ethernet_ip import (
-    EIP_DEVICE_MAP, SLC_MAX_READ_WORDS, EtherNetIPHandler,
+    EIP_DEVICE_MAP,
+    SLC_MAX_READ_WORDS,
+    EtherNetIPHandler,
 )
 from plc_discovery.protocols.slmp import SLMPHandler, slmp_head_device
 
@@ -30,6 +37,7 @@ def fast_config():
 # ---------------------------------------------------------------------------
 # 1: SLMP hexadecimal devices
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.parametrize("address", [0, 9, 10, 100, 160, 900, 2047])
 @pytest.mark.parametrize("device", [DeviceType.X, DeviceType.Y, DeviceType.B, DeviceType.W])
@@ -70,12 +78,11 @@ async def test_w_register_read_from_simulator(fast_config):
 # 2: SLC read limits
 # ---------------------------------------------------------------------------
 
+
 def _slc_handler(config, values=None):
     handler = EtherNetIPHandler("127.0.0.1", config=config)
     client = MagicMock()
-    client.read.side_effect = lambda tag: MagicMock(
-        error=None, value=values if values is not None else [0] * 100
-    )
+    client.read.side_effect = lambda tag: MagicMock(error=None, value=values if values is not None else [0] * 100)
     handler._client = client
     handler._connected = True
     handler._plc_type = "slc"
@@ -122,6 +129,7 @@ async def test_slc_range_past_file_end(fast_config):
 # 3: EtherNet/IP full scan ranges
 # ---------------------------------------------------------------------------
 
+
 def test_eip_full_scan_uses_supported_data_files():
     ranges = DEFAULT_DEVICE_RANGES[Protocol.ETHERNET_IP]
     assert ranges
@@ -159,14 +167,17 @@ MINIMAL = "scan:\n  mode: discover\n"
 WITH_OUTPUT = "output:\n  directory: ./from_config\n  encoding: shift-jis\n"
 
 
-@pytest.mark.parametrize("config_text,argv,expected", [
-    (None, [], ("./plc_scan_results", "utf-8-sig")),
-    (MINIMAL, [], ("./plc_scan_results", "utf-8-sig")),
-    (MINIMAL, ["-o", "out", "--encoding", "utf-8"], ("out", "utf-8")),
-    (WITH_OUTPUT, [], ("./from_config", "shift-jis")),
-    (WITH_OUTPUT, ["-o", "out"], ("out", "shift-jis")),
-    (WITH_OUTPUT, ["--encoding", "utf-8"], ("./from_config", "utf-8")),
-])
+@pytest.mark.parametrize(
+    "config_text,argv,expected",
+    [
+        (None, [], ("./plc_scan_results", "utf-8-sig")),
+        (MINIMAL, [], ("./plc_scan_results", "utf-8-sig")),
+        (MINIMAL, ["-o", "out", "--encoding", "utf-8"], ("out", "utf-8")),
+        (WITH_OUTPUT, [], ("./from_config", "shift-jis")),
+        (WITH_OUTPUT, ["-o", "out"], ("out", "shift-jis")),
+        (WITH_OUTPUT, ["--encoding", "utf-8"], ("./from_config", "utf-8")),
+    ],
+)
 def test_output_settings_precedence(monkeypatch, tmp_path, config_text, argv, expected):
     loader = _loader(tmp_path, config_text) if config_text else None
     assert plc_scanner.resolve_output_settings(_args(monkeypatch, *argv), loader) == expected
@@ -185,17 +196,14 @@ def test_cli_data_type_applies_to_unmapped_addresses(monkeypatch, tmp_path):
     assert manager.default_type == DataType.FLOAT
     assert manager.default_byte_order == ByteOrder.LITTLE_ENDIAN
 
-    points = [DataPoint(address=f"D{i}", value=v, status=StatusCode.OK)
-              for i, v in enumerate([0x0000, 0x4120])]
+    points = [DataPoint(address=f"D{i}", value=v, status=StatusCode.OK) for i, v in enumerate([0x0000, 0x4120])]
     converted = plc_scanner.apply_data_type_conversion(points, data_type, byte_order, manager)
     assert converted[0].data_type == "FLOAT"
     assert converted[0].converted_value == pytest.approx(10.0)
 
 
 def test_config_data_types_used_without_cli_options(monkeypatch, tmp_path):
-    data_type, byte_order, manager = plc_scanner.resolve_data_types(
-        _args(monkeypatch), _loader(tmp_path, MAPPED)
-    )
+    data_type, byte_order, manager = plc_scanner.resolve_data_types(_args(monkeypatch), _loader(tmp_path, MAPPED))
     assert (data_type, byte_order) == (DataType.WORD, ByteOrder.BIG_ENDIAN)
     assert manager.default_type == DataType.WORD
 
@@ -203,7 +211,9 @@ def test_config_data_types_used_without_cli_options(monkeypatch, tmp_path):
 def test_config_without_data_types_adds_no_conversion(monkeypatch, tmp_path):
     """Defaults filled in by the loader are not an explicit conversion request"""
     assert plc_scanner.resolve_data_types(_args(monkeypatch), _loader(tmp_path, MINIMAL)) == (
-        None, ByteOrder.LITTLE_ENDIAN, None
+        None,
+        ByteOrder.LITTLE_ENDIAN,
+        None,
     )
 
 
@@ -211,18 +221,26 @@ def test_config_without_data_types_adds_no_conversion(monkeypatch, tmp_path):
 # Third pass: numeric settings are validated; --byte-order reaches mappings
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("text,fragment", [
-    ('network:\n  max_concurrent: "3"\n', "network.max_concurrent must be an integer"),
-    ("network:\n  request_timeout_ms: 0\n", "network.request_timeout_ms must be >= 1"),
-    ("network:\n  retry_interval_ms: -1\n", "network.retry_interval_ms must be >= 0"),
-    ("network:\n  packet_interval_ms: 1.5\n", "network.packet_interval_ms must be an integer"),
-    ('scan:\n  interval_seconds: "60"\n', "scan.interval_seconds must be a number"),
-    ("scan:\n  interval_seconds: -5\n", "scan.interval_seconds must be 0"),
-    ('scan:\n  device_ranges:\n    - {device: D, start: "0", end: 9}\n',
-     "scan.device_ranges[0].start must be an integer"),
-    ("scan:\n  device_ranges:\n    - {device: D, start: 10, end: 9}\n",
-     "scan.device_ranges[0]: start must be <= end"),
-])
+
+@pytest.mark.parametrize(
+    "text,fragment",
+    [
+        ('network:\n  max_concurrent: "3"\n', "network.max_concurrent must be an integer"),
+        ("network:\n  request_timeout_ms: 0\n", "network.request_timeout_ms must be >= 1"),
+        ("network:\n  retry_interval_ms: -1\n", "network.retry_interval_ms must be >= 0"),
+        ("network:\n  packet_interval_ms: 1.5\n", "network.packet_interval_ms must be an integer"),
+        ('scan:\n  interval_seconds: "60"\n', "scan.interval_seconds must be a number"),
+        ("scan:\n  interval_seconds: -5\n", "scan.interval_seconds must be 0"),
+        (
+            'scan:\n  device_ranges:\n    - {device: D, start: "0", end: 9}\n',
+            "scan.device_ranges[0].start must be an integer",
+        ),
+        (
+            "scan:\n  device_ranges:\n    - {device: D, start: 10, end: 9}\n",
+            "scan.device_ranges[0]: start must be <= end",
+        ),
+    ],
+)
 def test_invalid_numbers_are_reported_not_raised(tmp_path, text, fragment):
     errors = _loader(tmp_path, text).validate()
     assert any(fragment in e for e in errors), errors
@@ -236,12 +254,15 @@ def test_valid_numbers_pass(tmp_path):
     assert _loader(tmp_path, text).validate() == []
 
 
-@pytest.mark.parametrize("argv,fragment", [
-    (["--request-timeout", "0"], "--request-timeout must be >= 1"),
-    (["--max-concurrent", "0"], "--max-concurrent must be >= 1"),
-    (["--packet-interval", "-1"], "--packet-interval must be >= 0"),
-    (["--retry-interval", "-200"], "--retry-interval must be >= 0"),
-])
+@pytest.mark.parametrize(
+    "argv,fragment",
+    [
+        (["--request-timeout", "0"], "--request-timeout must be >= 1"),
+        (["--max-concurrent", "0"], "--max-concurrent must be >= 1"),
+        (["--packet-interval", "-1"], "--packet-interval must be >= 0"),
+        (["--retry-interval", "-200"], "--retry-interval must be >= 0"),
+    ],
+)
 def test_cli_network_options_checked(monkeypatch, argv, fragment):
     errors = plc_scanner.network_option_errors(_args(monkeypatch, *argv))
     assert len(errors) == 1 and errors[0].startswith(fragment)
@@ -278,9 +299,7 @@ def test_cli_byte_order_applies_to_mappings_without_own_order(monkeypatch, tmp_p
 
 
 def test_config_byte_order_kept_without_cli_option(monkeypatch, tmp_path):
-    _, byte_order, manager = plc_scanner.resolve_data_types(
-        _args(monkeypatch), _loader(tmp_path, BYTE_ORDER_MAPPINGS)
-    )
+    _, byte_order, manager = plc_scanner.resolve_data_types(_args(monkeypatch), _loader(tmp_path, BYTE_ORDER_MAPPINGS))
     assert byte_order == ByteOrder.BIG_ENDIAN
     assert manager.get_mapping_for_address(0, "D").byte_order == ByteOrder.BIG_ENDIAN
 

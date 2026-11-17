@@ -6,38 +6,39 @@ Supports WORD, DWORD, FLOAT, DOUBLE, STRING, BCD, and signed variants.
 """
 
 import struct
-from enum import Enum
-from typing import Any, List, Optional, Tuple
 from dataclasses import dataclass
+from enum import Enum
+from typing import Any, List, Optional, Tuple, Type, TypeVar
 
 
 class DataType(Enum):
     """Supported data types for PLC values"""
+
     # Unsigned integers
-    WORD = "WORD"           # 16-bit unsigned integer (1 word)
-    DWORD = "DWORD"         # 32-bit unsigned integer (2 words)
-    QWORD = "QWORD"         # 64-bit unsigned integer (4 words)
+    WORD = "WORD"  # 16-bit unsigned integer (1 word)
+    DWORD = "DWORD"  # 32-bit unsigned integer (2 words)
+    QWORD = "QWORD"  # 64-bit unsigned integer (4 words)
 
     # Signed integers
-    INT16 = "INT16"         # 16-bit signed integer (1 word)
-    INT32 = "INT32"         # 32-bit signed integer (2 words)
-    INT64 = "INT64"         # 64-bit signed integer (4 words)
+    INT16 = "INT16"  # 16-bit signed integer (1 word)
+    INT32 = "INT32"  # 32-bit signed integer (2 words)
+    INT64 = "INT64"  # 64-bit signed integer (4 words)
 
     # Floating point
-    FLOAT = "FLOAT"         # 32-bit IEEE 754 float (2 words)
-    DOUBLE = "DOUBLE"       # 64-bit IEEE 754 double (4 words)
+    FLOAT = "FLOAT"  # 32-bit IEEE 754 float (2 words)
+    DOUBLE = "DOUBLE"  # 64-bit IEEE 754 double (4 words)
 
     # Special formats
-    BCD16 = "BCD16"         # 16-bit BCD (4 digits)
-    BCD32 = "BCD32"         # 32-bit BCD (8 digits)
+    BCD16 = "BCD16"  # 16-bit BCD (4 digits)
+    BCD32 = "BCD32"  # 32-bit BCD (8 digits)
 
     # String/raw
-    STRING = "STRING"       # ASCII string (variable length)
-    RAW = "RAW"             # Raw bytes (no conversion)
+    STRING = "STRING"  # ASCII string (variable length)
+    RAW = "RAW"  # Raw bytes (no conversion)
 
     # Boolean (bit)
-    BIT = "BIT"             # Single bit value
-    BOOL = "BOOL"           # Boolean (same as BIT)
+    BIT = "BIT"  # Single bit value
+    BOOL = "BOOL"  # Boolean (same as BIT)
 
 
 class ByteOrder(Enum):
@@ -55,6 +56,7 @@ class ByteOrder(Enum):
     The "_swap" names are kept for configuration compatibility; they swap
     the two bytes inside every word.
     """
+
     LITTLE_ENDIAN = "little"
     BIG_ENDIAN = "big"
     LITTLE_ENDIAN_WORD_SWAP = "little_swap"
@@ -64,20 +66,17 @@ class ByteOrder(Enum):
 @dataclass
 class TypedValue:
     """Value with type information"""
-    raw_words: List[int]        # Raw 16-bit words from PLC
-    data_type: DataType         # Target data type
-    byte_order: ByteOrder       # Byte order
+
+    raw_words: List[int]  # Raw 16-bit words from PLC
+    data_type: DataType  # Target data type
+    byte_order: ByteOrder  # Byte order
     converted_value: Any = None  # Converted value
-    display_string: str = ""    # Human-readable string
+    display_string: str = ""  # Human-readable string
 
     def __post_init__(self):
         if self.converted_value is None:
-            self.converted_value = DataTypeConverter.convert(
-                self.raw_words, self.data_type, self.byte_order
-            )
-            self.display_string = DataTypeConverter.to_string(
-                self.converted_value, self.data_type
-            )
+            self.converted_value = DataTypeConverter.convert(self.raw_words, self.data_type, self.byte_order)
+            self.display_string = DataTypeConverter.to_string(self.converted_value, self.data_type)
 
 
 class DataTypeConverter:
@@ -103,7 +102,7 @@ class DataTypeConverter:
         DataType.INT64: 4,
         DataType.DOUBLE: 4,
         DataType.STRING: None,  # Variable
-        DataType.RAW: None,     # Variable
+        DataType.RAW: None,  # Variable
     }
 
     @classmethod
@@ -116,12 +115,7 @@ class DataTypeConverter:
         return count if count is not None else 1
 
     @classmethod
-    def convert(
-        cls,
-        words: List[int],
-        data_type: DataType,
-        byte_order: ByteOrder = ByteOrder.LITTLE_ENDIAN
-    ) -> Any:
+    def convert(cls, words: List[int], data_type: DataType, byte_order: ByteOrder = ByteOrder.LITTLE_ENDIAN) -> Any:
         """
         Convert raw words to the specified data type.
 
@@ -200,11 +194,7 @@ class DataTypeConverter:
         return ((word & 0xFF) << 8) | ((word >> 8) & 0xFF)
 
     @classmethod
-    def _words_to_bytes(
-        cls,
-        words: List[int],
-        byte_order: ByteOrder
-    ) -> bytes:
+    def _words_to_bytes(cls, words: List[int], byte_order: ByteOrder) -> bytes:
         """
         Convert word list to bytes in the struct format matching byte_order.
 
@@ -219,7 +209,7 @@ class DataTypeConverter:
             word &= 0xFFFF
             if swapped:
                 word = cls._swap_word_bytes(word)
-            result.extend(struct.pack('<H' if little else '>H', word))
+            result.extend(struct.pack("<H" if little else ">H", word))
 
         return bytes(result)
 
@@ -234,76 +224,70 @@ class DataTypeConverter:
     def _bytes_to_uint32(cls, data: bytes, byte_order: ByteOrder) -> int:
         """Convert 4 bytes to unsigned 32-bit integer"""
         if len(data) < 4:
-            data = data + b'\x00' * (4 - len(data))
+            data = data + b"\x00" * (4 - len(data))
 
-        if byte_order in (ByteOrder.LITTLE_ENDIAN,
-                          ByteOrder.LITTLE_ENDIAN_WORD_SWAP):
-            return struct.unpack('<I', data[:4])[0]
+        if byte_order in (ByteOrder.LITTLE_ENDIAN, ByteOrder.LITTLE_ENDIAN_WORD_SWAP):
+            return int(struct.unpack("<I", data[:4])[0])
         else:
-            return struct.unpack('>I', data[:4])[0]
+            return int(struct.unpack(">I", data[:4])[0])
 
     @classmethod
     def _bytes_to_int32(cls, data: bytes, byte_order: ByteOrder) -> int:
         """Convert 4 bytes to signed 32-bit integer"""
         if len(data) < 4:
-            data = data + b'\x00' * (4 - len(data))
+            data = data + b"\x00" * (4 - len(data))
 
-        if byte_order in (ByteOrder.LITTLE_ENDIAN,
-                          ByteOrder.LITTLE_ENDIAN_WORD_SWAP):
-            return struct.unpack('<i', data[:4])[0]
+        if byte_order in (ByteOrder.LITTLE_ENDIAN, ByteOrder.LITTLE_ENDIAN_WORD_SWAP):
+            return int(struct.unpack("<i", data[:4])[0])
         else:
-            return struct.unpack('>i', data[:4])[0]
+            return int(struct.unpack(">i", data[:4])[0])
 
     @classmethod
     def _bytes_to_uint64(cls, data: bytes, byte_order: ByteOrder) -> int:
         """Convert 8 bytes to unsigned 64-bit integer"""
         if len(data) < 8:
-            data = data + b'\x00' * (8 - len(data))
+            data = data + b"\x00" * (8 - len(data))
 
-        if byte_order in (ByteOrder.LITTLE_ENDIAN,
-                          ByteOrder.LITTLE_ENDIAN_WORD_SWAP):
-            return struct.unpack('<Q', data[:8])[0]
+        if byte_order in (ByteOrder.LITTLE_ENDIAN, ByteOrder.LITTLE_ENDIAN_WORD_SWAP):
+            return int(struct.unpack("<Q", data[:8])[0])
         else:
-            return struct.unpack('>Q', data[:8])[0]
+            return int(struct.unpack(">Q", data[:8])[0])
 
     @classmethod
     def _bytes_to_int64(cls, data: bytes, byte_order: ByteOrder) -> int:
         """Convert 8 bytes to signed 64-bit integer"""
         if len(data) < 8:
-            data = data + b'\x00' * (8 - len(data))
+            data = data + b"\x00" * (8 - len(data))
 
-        if byte_order in (ByteOrder.LITTLE_ENDIAN,
-                          ByteOrder.LITTLE_ENDIAN_WORD_SWAP):
-            return struct.unpack('<q', data[:8])[0]
+        if byte_order in (ByteOrder.LITTLE_ENDIAN, ByteOrder.LITTLE_ENDIAN_WORD_SWAP):
+            return int(struct.unpack("<q", data[:8])[0])
         else:
-            return struct.unpack('>q', data[:8])[0]
+            return int(struct.unpack(">q", data[:8])[0])
 
     @classmethod
     def _bytes_to_float(cls, data: bytes, byte_order: ByteOrder) -> float:
         """Convert 4 bytes to 32-bit float"""
         if len(data) < 4:
-            data = data + b'\x00' * (4 - len(data))
+            data = data + b"\x00" * (4 - len(data))
 
-        if byte_order in (ByteOrder.LITTLE_ENDIAN,
-                          ByteOrder.LITTLE_ENDIAN_WORD_SWAP):
-            return struct.unpack('<f', data[:4])[0]
+        if byte_order in (ByteOrder.LITTLE_ENDIAN, ByteOrder.LITTLE_ENDIAN_WORD_SWAP):
+            return float(struct.unpack("<f", data[:4])[0])
         else:
-            return struct.unpack('>f', data[:4])[0]
+            return float(struct.unpack(">f", data[:4])[0])
 
     @classmethod
     def _bytes_to_double(cls, data: bytes, byte_order: ByteOrder) -> float:
         """Convert 8 bytes to 64-bit double"""
         if len(data) < 8:
-            data = data + b'\x00' * (8 - len(data))
+            data = data + b"\x00" * (8 - len(data))
 
-        if byte_order in (ByteOrder.LITTLE_ENDIAN,
-                          ByteOrder.LITTLE_ENDIAN_WORD_SWAP):
-            return struct.unpack('<d', data[:8])[0]
+        if byte_order in (ByteOrder.LITTLE_ENDIAN, ByteOrder.LITTLE_ENDIAN_WORD_SWAP):
+            return float(struct.unpack("<d", data[:8])[0])
         else:
-            return struct.unpack('>d', data[:8])[0]
+            return float(struct.unpack(">d", data[:8])[0])
 
     @classmethod
-    def _bcd16_to_int(cls, value: int) -> int:
+    def _bcd16_to_int(cls, value: int) -> Optional[int]:
         """Convert 16-bit BCD to integer"""
         result = 0
         multiplier = 1
@@ -319,7 +303,7 @@ class DataTypeConverter:
         return result
 
     @classmethod
-    def _bcd32_to_int(cls, words: List[int], byte_order: ByteOrder) -> int:
+    def _bcd32_to_int(cls, words: List[int], byte_order: ByteOrder) -> Optional[int]:
         """Convert 32-bit BCD to integer"""
         if len(words) < 2:
             return None
@@ -364,7 +348,7 @@ class DataTypeConverter:
                 break
             if 32 <= byte < 127:
                 chars.append(chr(byte))
-        return ''.join(chars)
+        return "".join(chars)
 
     @classmethod
     def _words_to_string(cls, words: List[int], byte_order: ByteOrder = ByteOrder.LITTLE_ENDIAN) -> str:
@@ -398,7 +382,7 @@ class DataTypeConverter:
         words: List[int],
         data_type: DataType,
         byte_order: ByteOrder = ByteOrder.LITTLE_ENDIAN,
-        count: Optional[int] = None
+        count: Optional[int] = None,
     ) -> List[Any]:
         """
         Convert a batch of consecutive values.
@@ -458,6 +442,7 @@ class DataTypeMapping:
         if self.data_type in VARIABLE_LENGTH_TYPES:
             return self.length or (self.end_address - self.start_address + 1)
         return DataTypeConverter.get_word_count(self.data_type)
+
     start_address: int
     end_address: int
     data_type: DataType
@@ -500,18 +485,14 @@ class DataTypeManager:
         # Sort by start address
         self.mappings.sort(key=lambda m: m.start_address)
 
-    def get_mapping_for_address(
-        self, address: int, device: Optional[str] = None
-    ) -> Optional[DataTypeMapping]:
+    def get_mapping_for_address(self, address: int, device: Optional[str] = None) -> Optional[DataTypeMapping]:
         """Get the mapping covering an address (None if only the default applies)"""
         for mapping in self.mappings:
             if mapping.contains(address, device):
                 return mapping
         return None
 
-    def get_type_for_address(
-        self, address: int, device: Optional[str] = None
-    ) -> Tuple[DataType, ByteOrder]:
+    def get_type_for_address(self, address: int, device: Optional[str] = None) -> Tuple[DataType, ByteOrder]:
         """Get data type for a specific address"""
         mapping = self.get_mapping_for_address(address, device)
         if mapping:
@@ -529,7 +510,7 @@ class DataTypeManager:
         self.mappings.clear()
 
     @classmethod
-    def from_config(cls, config: dict, prefix: str = "data_types") -> 'DataTypeManager':
+    def from_config(cls, config: Optional[dict], prefix: str = "data_types") -> "DataTypeManager":
         """
         Create manager from configuration dictionary.
 
@@ -549,7 +530,8 @@ class DataTypeManager:
             manager.default_type = _parse_enum(DataType, config["default_type"], f"{prefix}.default_type")
         if config.get("default_byte_order") is not None:
             manager.default_byte_order = _parse_enum(
-                ByteOrder, config["default_byte_order"], f"{prefix}.default_byte_order")
+                ByteOrder, config["default_byte_order"], f"{prefix}.default_byte_order"
+            )
 
         mappings = config.get("mappings") or []
         if not isinstance(mappings, list):
@@ -576,8 +558,11 @@ class DataTypeManager:
                 start_address=start,
                 end_address=end,
                 data_type=_parse_enum(DataType, mapping_config["type"], f"{where}.type"),
-                byte_order=(_parse_enum(ByteOrder, byte_order, f"{where}.byte_order")
-                            if byte_order is not None else manager.default_byte_order),
+                byte_order=(
+                    _parse_enum(ByteOrder, byte_order, f"{where}.byte_order")
+                    if byte_order is not None
+                    else manager.default_byte_order
+                ),
                 description=mapping_config.get("description", ""),
                 device=str(device).upper() if device else None,
                 length=length,
@@ -587,7 +572,10 @@ class DataTypeManager:
         return manager
 
 
-def _parse_enum(enum_cls, value, where: str):
+_E = TypeVar("_E", bound=Enum)
+
+
+def _parse_enum(enum_cls: Type[_E], value: Any, where: str) -> _E:
     """Case-insensitive enum lookup by value with a readable error"""
     text = str(value).strip()
     for member in enum_cls:

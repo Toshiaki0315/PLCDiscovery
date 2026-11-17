@@ -6,9 +6,8 @@ Tests actual communication with FINS simulator.
 
 import pytest
 
-from plc_discovery.config import Protocol, DeviceType, PLCInfo, DeviceRange, StatusCode
 from plc_discovery.collector import PLCDataCollector
-
+from plc_discovery.config import DeviceRange, DeviceType, PLCInfo, Protocol, StatusCode
 
 # Mark all tests to require FINS simulator
 pytestmark = [
@@ -108,16 +107,11 @@ class TestFINSDeniedAddresses:
 
         assert len(data_points) == 51
 
-        illegal_count = sum(
-            1 for dp in data_points
-            if dp.status == StatusCode.NG_ILLEGAL_ADDR
-        )
+        illegal_count = sum(1 for dp in data_points if dp.status == StatusCode.NG_ILLEGAL_ADDR)
         assert illegal_count == 51
         assert len(denied) > 0
 
-    async def test_binary_search_isolates_denied(
-        self, fins_simulator, fins_plc_info, network_config
-    ):
+    async def test_binary_search_isolates_denied(self, fins_simulator, fins_plc_info, network_config):
         """Test binary search correctly isolates denied addresses"""
         async with PLCDataCollector(fins_plc_info, network_config) as collector:
             # DM4990-DM5010 includes denied range DM5000-DM5010
@@ -127,10 +121,7 @@ class TestFINSDeniedAddresses:
         assert len(data_points) == 21
 
         ok_count = sum(1 for dp in data_points if dp.status == StatusCode.OK)
-        denied_count = sum(
-            1 for dp in data_points
-            if dp.status == StatusCode.NG_ILLEGAL_ADDR
-        )
+        denied_count = sum(1 for dp in data_points if dp.status == StatusCode.NG_ILLEGAL_ADDR)
 
         # DM4990-DM4999 should be OK (10 addresses)
         # DM5000-DM5010 should be denied (11 addresses)
@@ -150,6 +141,7 @@ class TestFINSFullScan:
         ]
 
         from plc_discovery import config
+
         original_ranges = config.DEFAULT_DEVICE_RANGES.get(Protocol.FINS)
         config.DEFAULT_DEVICE_RANGES[Protocol.FINS] = custom_ranges
 

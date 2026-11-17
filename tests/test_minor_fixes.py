@@ -27,6 +27,7 @@ def parse(monkeypatch, *argv):
 # CLI options
 # ---------------------------------------------------------------------------
 
+
 class TestCLIOptions:
 
     def test_fins_protocol_option(self, monkeypatch):
@@ -82,19 +83,26 @@ class TestConfigValidation:
 # IP range parsing
 # ---------------------------------------------------------------------------
 
+
 class TestParseIPRange:
 
     def test_full_range(self):
         assert parse_ip_range("192.168.1.254-192.168.2.1") == [
-            "192.168.1.254", "192.168.1.255", "192.168.2.0", "192.168.2.1"
+            "192.168.1.254",
+            "192.168.1.255",
+            "192.168.2.0",
+            "192.168.2.1",
         ]
 
-    @pytest.mark.parametrize("text", [
-        "192.168.1.1-999",          # octet out of range
-        "192.168.1.10-5",           # reversed
-        "192.168.1.300-310",        # invalid base
-        "192.168.1.1-192.168.1.x",  # invalid end
-    ])
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "192.168.1.1-999",  # octet out of range
+            "192.168.1.10-5",  # reversed
+            "192.168.1.300-310",  # invalid base
+            "192.168.1.1-192.168.1.x",  # invalid end
+        ],
+    )
     def test_invalid_returns_empty(self, text):
         assert parse_ip_range(text) == []
 
@@ -102,6 +110,7 @@ class TestParseIPRange:
 # ---------------------------------------------------------------------------
 # SLMP broadcast request
 # ---------------------------------------------------------------------------
+
 
 def test_slmp_discovery_request_length_field():
     request = BroadcastDiscovery()._build_slmp_discovery_request()
@@ -113,6 +122,7 @@ def test_slmp_discovery_request_length_field():
 # ---------------------------------------------------------------------------
 # Rate limiter uses a monotonic clock
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_rate_limiter_ignores_wall_clock(monkeypatch):
@@ -128,6 +138,7 @@ async def test_rate_limiter_ignores_wall_clock(monkeypatch):
 # ---------------------------------------------------------------------------
 # Large-range discovery is batched lazily
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_probe_hosts_batched(monkeypatch):
@@ -159,18 +170,21 @@ async def test_probe_hosts_batched(monkeypatch):
 # GUI worker waits for cleanup on shutdown
 # ---------------------------------------------------------------------------
 
+
 def _import_async_worker(monkeypatch):
     """Import plc_gui.AsyncWorker, stubbing tkinter when Tk is not installed"""
     try:
         import tkinter  # noqa: F401
     except ImportError:
         from unittest.mock import MagicMock
+
         tk = MagicMock()
         monkeypatch.setitem(sys.modules, "tkinter", tk)
         for name in ("filedialog", "messagebox", "ttk"):
             monkeypatch.setitem(sys.modules, f"tkinter.{name}", getattr(tk, name))
         monkeypatch.delitem(sys.modules, "plc_gui", raising=False)
     from plc_gui import AsyncWorker
+
     return AsyncWorker
 
 

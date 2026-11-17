@@ -30,6 +30,7 @@ def load(tmp_path, data):
 # 1: config validation
 # ---------------------------------------------------------------------------
 
+
 class TestConfigValidation:
 
     def test_unknown_target_protocol(self, tmp_path):
@@ -41,10 +42,15 @@ class TestConfigValidation:
         assert any("modbuss" in e for e in loader.validate())
 
     def test_target_options(self, tmp_path):
-        good = load(tmp_path, {"targets": [
-            {"ip": "10.0.0.1", "protocol": "fins", "options": {"dest_node": 5}},
-            {"ip": "10.0.0.2", "protocol": "s7", "options": {"rack": 0, "slot": 1, "db_number": 10}},
-        ]})
+        good = load(
+            tmp_path,
+            {
+                "targets": [
+                    {"ip": "10.0.0.1", "protocol": "fins", "options": {"dest_node": 5}},
+                    {"ip": "10.0.0.2", "protocol": "s7", "options": {"rack": 0, "slot": 1, "db_number": 10}},
+                ]
+            },
+        )
         assert good.validate() == []
         assert good.get_targets()[1].options == {"rack": 0, "slot": 1, "db_number": 10}
         bad = load(tmp_path, {"targets": [{"ip": "10.0.0.1", "protocol": "modbus", "options": {"slot": 1}}]})
@@ -55,6 +61,7 @@ class TestConfigValidation:
         collector = PLCDataCollector(plc)
         with patch("plc_discovery.protocols.s7.S7Handler.connect", AsyncMock(return_value=True)):
             import asyncio
+
             assert asyncio.run(collector.connect())
         assert collector._handler._db_number == 7 and collector._handler._slot == 1
 
@@ -63,10 +70,21 @@ class TestConfigValidation:
 # 2: periodic interval minimum and unique file names
 # ---------------------------------------------------------------------------
 
+
 def test_cli_rejects_sub_second_interval(monkeypatch, capsys):
-    monkeypatch.setattr(sys, "argv", [
-        "plc_scanner.py", "--mode", "range", "--target", "127.0.0.1", "--interval", "0.5",
-    ])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "plc_scanner.py",
+            "--mode",
+            "range",
+            "--target",
+            "127.0.0.1",
+            "--interval",
+            "0.5",
+        ],
+    )
     with pytest.raises(SystemExit) as exc:
         plc_scanner.cli()
     assert exc.value.code == 1
@@ -91,6 +109,7 @@ def test_same_second_exports_do_not_overwrite(tmp_path):
 # 3: FINS node addresses
 # ---------------------------------------------------------------------------
 
+
 class TestFINSNodes:
 
     def test_dest_node_defaults_to_last_octet(self):
@@ -112,33 +131,36 @@ class TestFINSNodes:
 
         async def fake_send(frame, sid):
             frames.append(frame)
-            return None   # no PLC: connect fails after building the frame
+            return None  # no PLC: connect fails after building the frame
 
         handler._send_udp = fake_send
         assert await handler.connect() is False
-        assert handler.source_node == 1                      # 127.0.0.1 -> node 1
-        assert frames[0][4] == 1 and frames[0][7] == 1       # DA1, SA1 in the frame
+        assert handler.source_node == 1  # 127.0.0.1 -> node 1
+        assert frames[0][4] == 1 and frames[0][7] == 1  # DA1, SA1 in the frame
 
 
 # ---------------------------------------------------------------------------
 # 4-6: discovery details
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_discovery_protocol_filter():
     discovery = PLCDiscovery(NetworkConfig(discovery_timeout_ms=100), protocols=[Protocol.MODBUS_TCP])
     probed = []
-    with patch("plc_discovery.discovery.is_port_open", side_effect=lambda ip, p, t: probed.append(p) or False), \
-            patch("plc_discovery.discovery.verify_protocol", side_effect=AssertionError("not expected")):
+    with (
+        patch("plc_discovery.discovery.is_port_open", side_effect=lambda ip, p, t: probed.append(p) or False),
+        patch("plc_discovery.discovery.verify_protocol", side_effect=AssertionError("not expected")),
+    ):
         assert await discovery._probe_host("192.0.2.1") is None
-    assert probed == [502]   # no SLMP/S7/EIP checks and no FINS/UDP probe
+    assert probed == [502]  # no SLMP/S7/EIP checks and no FINS/UDP probe
 
 
 def test_discovery_protocols_from_cli_and_config(tmp_path, monkeypatch):
     args = MagicMock(discover_protocols="eip, fins-tcp")
     assert plc_scanner.resolve_discovery_protocols(args, None) == [Protocol.ETHERNET_IP, Protocol.FINS_TCP]
     args = MagicMock(discover_protocols=None)
-    assert plc_scanner.resolve_discovery_protocols(args, load(tmp_path, {})) is None   # default: all
+    assert plc_scanner.resolve_discovery_protocols(args, load(tmp_path, {})) is None  # default: all
     loader = load(tmp_path, {"discovery": {"protocols": ["slmp", "fins_tcp"]}})
     assert plc_scanner.resolve_discovery_protocols(args, loader) == [Protocol.SLMP, Protocol.FINS_TCP]
     with pytest.raises(ValueError):
@@ -165,6 +187,7 @@ async def test_modbus_identity_keeps_existing_manufacturer():
 # 7: periodic report labelled as last cycle
 # ---------------------------------------------------------------------------
 
+
 def test_report_escapes_and_shows_mode(tmp_path):
     config = ReportConfig(format=ReportFormat.HTML, output_path=str(tmp_path))
     generator, data = create_report([], {}, {}, "range (periodic every 60s, last cycle) <b>", None, None, config)
@@ -177,8 +200,10 @@ def test_report_escapes_and_shows_mode(tmp_path):
 # Example config (empty YAML sections load as None)
 # ---------------------------------------------------------------------------
 
+
 def test_shipped_example_config_is_valid():
     from pathlib import Path
+
     loader = ConfigLoader(str(Path(__file__).resolve().parent.parent / "plc_config.example.yaml"))
     loader.load()
     assert loader.validate() == []

@@ -44,7 +44,7 @@ class TestParse:
     def test_macos(self):
         assert parse_arp_table(MACOS) == {
             "192.168.1.1": "54:9B:49:3E:DE:B0",
-            "192.168.1.3": "00:24:A5:47:E3:DA",   # leading zeros restored
+            "192.168.1.3": "00:24:A5:47:E3:DA",  # leading zeros restored
         }
 
     def test_linux_arp_command(self):
@@ -57,13 +57,16 @@ class TestParse:
         text = WINDOWS.encode("cp932").decode("ascii", errors="ignore")
         assert parse_arp_table(text) == {"192.168.10.1": "00:00:1C:01:02:03"}
 
-    @pytest.mark.parametrize("mac, expected", [
-        ("0:1c:42:a:b:c", "00:1C:42:0A:0B:0C"),
-        ("00-1C-42-0A-0B-0C", "00:1C:42:0A:0B:0C"),
-        ("ff:ff:ff:ff:ff:ff", None),
-        ("00:00:00:00:00:00", None),
-        ("00:1c:42:0a:0b", None),
-    ])
+    @pytest.mark.parametrize(
+        "mac, expected",
+        [
+            ("0:1c:42:a:b:c", "00:1C:42:0A:0B:0C"),
+            ("00-1C-42-0A-0B-0C", "00:1C:42:0A:0B:0C"),
+            ("ff:ff:ff:ff:ff:ff", None),
+            ("00:00:00:00:00:00", None),
+            ("00:1c:42:0a:0b", None),
+        ],
+    )
     def test_normalize(self, mac, expected):
         assert normalize_mac(mac) == expected
 
@@ -73,9 +76,10 @@ async def test_discovery_fills_mac_and_manufacturer_from_cache():
     discovery = PLCDiscovery(NetworkConfig())
     discovery.discovered_plcs = {
         "10.0.0.1": PLCInfo("10.0.0.1", protocol=Protocol.SLMP, port=5001),
-        "10.0.0.2": PLCInfo("10.0.0.2", protocol=Protocol.FINS, port=9600,
-                            mac_address="AA:BB:CC:DD:EE:FF", manufacturer="オムロン"),
-        "172.16.0.9": PLCInfo("172.16.0.9", protocol=Protocol.S7, port=102),   # routed: not in cache
+        "10.0.0.2": PLCInfo(
+            "10.0.0.2", protocol=Protocol.FINS, port=9600, mac_address="AA:BB:CC:DD:EE:FF", manufacturer="オムロン"
+        ),
+        "172.16.0.9": PLCInfo("172.16.0.9", protocol=Protocol.S7, port=102),  # routed: not in cache
     }
     cache = {"10.0.0.1": "00:26:92:12:34:56", "10.0.0.2": "11:22:33:44:55:66"}
     with patch.object(discovery_module, "read_arp_cache", return_value=cache):
@@ -83,8 +87,8 @@ async def test_discovery_fills_mac_and_manufacturer_from_cache():
 
     plcs = discovery.discovered_plcs
     assert plcs["10.0.0.1"].mac_address == "00:26:92:12:34:56"
-    assert plcs["10.0.0.1"].manufacturer == "三菱電機"            # from OUI
-    assert plcs["10.0.0.2"].mac_address == "AA:BB:CC:DD:EE:FF"   # existing value kept
+    assert plcs["10.0.0.1"].manufacturer == "三菱電機"  # from OUI
+    assert plcs["10.0.0.2"].mac_address == "AA:BB:CC:DD:EE:FF"  # existing value kept
     assert plcs["172.16.0.9"].mac_address is None
 
 
@@ -93,7 +97,9 @@ async def test_permission_error_is_info_not_warning(caplog):
     if not discovery_module.SCAPY_AVAILABLE:
         pytest.skip("scapy not installed")
     discovery = PLCDiscovery(NetworkConfig(discovery_timeout_ms=100))
-    error = PermissionError("Permission denied: could not open /dev/bpf0. Make sure to be running Scapy as root ! (sudo)")
+    error = PermissionError(
+        "Permission denied: could not open /dev/bpf0. Make sure to be running Scapy as root ! (sudo)"
+    )
     with patch.object(discovery_module, "srp", side_effect=error), caplog.at_level(logging.INFO):
         assert await discovery._arp_scan("192.168.1.10", "255.255.255.0") == {}
     messages = [(r.levelno, r.getMessage()) for r in caplog.records if r.name == discovery_module.logger.name]

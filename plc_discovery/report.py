@@ -4,17 +4,17 @@ PLC Discovery - レポート生成モジュール
 HTML/PDFレポートを生成するための機能を提供します。
 """
 
+import html
 import json
+import math
 import os
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
-from enum import Enum
-import html
-import math
 
-from .config import PLCInfo, DataPoint, StatusCode
+from .config import DataPoint, PLCInfo, StatusCode
 from .utils import sorted_addresses
 
 
@@ -31,6 +31,7 @@ def json_safe(value):
 
 class ReportFormat(Enum):
     """レポート出力形式"""
+
     HTML = "html"
     PDF = "pdf"
     JSON = "json"
@@ -39,6 +40,7 @@ class ReportFormat(Enum):
 @dataclass
 class ReportConfig:
     """レポート設定"""
+
     format: ReportFormat = ReportFormat.HTML
     output_path: Optional[str] = None
     title: str = "PLC Discovery レポート"
@@ -54,6 +56,7 @@ class ReportConfig:
 @dataclass
 class ScanSummary:
     """スキャン結果サマリー"""
+
     scan_mode: str
     started_at: datetime
     completed_at: Optional[datetime] = None
@@ -75,6 +78,7 @@ class ScanSummary:
 @dataclass
 class ReportData:
     """レポートデータ"""
+
     summary: ScanSummary
     plcs: List[PLCInfo] = field(default_factory=list)
     data_points: Dict[str, List[DataPoint]] = field(default_factory=dict)
@@ -141,12 +145,12 @@ class ReportGenerator:
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
 
         # ファイル保存
-        mode = 'w' if self.config.format != ReportFormat.PDF else 'wb'
-        encoding = 'utf-8' if self.config.format != ReportFormat.PDF else None
+        mode = "w" if self.config.format != ReportFormat.PDF else "wb"
+        encoding = "utf-8" if self.config.format != ReportFormat.PDF else None
 
         with open(output_path, mode, encoding=encoding) as f:
             if self.config.format == ReportFormat.PDF:
-                f.write(content.encode('utf-8') if isinstance(content, str) else content)
+                f.write(content.encode("utf-8") if isinstance(content, str) else content)
             else:
                 f.write(content)
 
@@ -188,14 +192,16 @@ class ReportGenerator:
         try:
             # weasyprint を試す
             from weasyprint import HTML
+
             pdf_bytes = HTML(string=html_content).write_pdf()
-            return pdf_bytes
+            return bytes(pdf_bytes)
         except ImportError:
             try:
                 # pdfkit を試す
                 import pdfkit
+
                 pdf_bytes = pdfkit.from_string(html_content, False)
-                return pdf_bytes
+                return bytes(pdf_bytes)
             except ImportError:
                 # PDFライブラリがない場合はHTMLを返す
                 raise ImportError(
@@ -217,7 +223,7 @@ class ReportGenerator:
                 "failed_reads": data.summary.failed_reads,
                 "denied_addresses": data.summary.denied_addresses,
                 "duration_seconds": data.summary.duration_seconds,
-                "success_rate": data.summary.success_rate
+                "success_rate": data.summary.success_rate,
             },
             "plcs": [
                 {
@@ -225,7 +231,7 @@ class ReportGenerator:
                     "manufacturer": plc.manufacturer,
                     "model": plc.model,
                     "protocol": plc.protocol.name if plc.protocol else None,
-                    "port": plc.port
+                    "port": plc.port,
                 }
                 for plc in data.plcs
             ],
@@ -236,8 +242,8 @@ class ReportGenerator:
                         "value": dp.value,
                         "raw_hex": dp.raw_hex,
                         "status": dp.status.value if dp.status else None,
-                        "data_type": getattr(dp, 'data_type', None),
-                        "converted_value": getattr(dp, 'converted_value', None)
+                        "data_type": getattr(dp, "data_type", None),
+                        "converted_value": getattr(dp, "converted_value", None),
                     }
                     for dp in points
                 ]
@@ -245,7 +251,7 @@ class ReportGenerator:
             },
             "denied_addresses": data.denied_addresses,
             "errors": data.errors,
-            "metadata": data.metadata
+            "metadata": data.metadata,
         }
         # NaN / Infinity (e.g. a FLOAT decoded from 0xFFFF 0xFFFF) are not valid
         # JSON; write them as null so strict parsers (JSON.parse, jq) accept the file
@@ -590,9 +596,11 @@ class ReportGenerator:
             rows = ""
             for point in points[:100]:  # 最大100件表示
                 status_class = "success" if point.status == StatusCode.OK else "danger"
-                status_text = "OK" if point.status == StatusCode.OK else str(point.status.value) if point.status else "不明"
+                status_text = (
+                    "OK" if point.status == StatusCode.OK else str(point.status.value) if point.status else "不明"
+                )
 
-                converted = getattr(point, 'converted_value', None)
+                converted = getattr(point, "converted_value", None)
                 converted_html = f"<td>{html.escape(str(converted))}</td>" if converted is not None else "<td>-</td>"
 
                 rows += f"""
@@ -742,16 +750,8 @@ def create_report(
     generator = ReportGenerator(config)
 
     # サマリー計算
-    total_success = sum(
-        1 for points in data_points.values()
-        for p in points
-        if p.status == StatusCode.OK
-    )
-    total_failed = sum(
-        1 for points in data_points.values()
-        for p in points
-        if p.status != StatusCode.OK
-    )
+    total_success = sum(1 for points in data_points.values() for p in points if p.status == StatusCode.OK)
+    total_failed = sum(1 for points in data_points.values() for p in points if p.status != StatusCode.OK)
     total_denied = sum(len(addrs) for addrs in (denied_addresses or {}).values())
 
     duration = 0.0
@@ -766,7 +766,7 @@ def create_report(
         successful_reads=total_success,
         failed_reads=total_failed,
         denied_addresses=total_denied,
-        duration_seconds=duration
+        duration_seconds=duration,
     )
 
     report_data = ReportData(
@@ -822,10 +822,7 @@ def generate_html_report(
         include_charts=include_charts,
         include_raw_data=include_raw_data,
     )
-    generator, data = create_report(
-        plcs, data_points, denied_addresses,
-        scan_mode, started_at, completed_at, config
-    )
+    generator, data = create_report(plcs, data_points, denied_addresses, scan_mode, started_at, completed_at, config)
     return generator.save(data, output_path)
 
 
@@ -871,8 +868,5 @@ def generate_pdf_report(
         include_charts=include_charts,
         include_raw_data=include_raw_data,
     )
-    generator, data = create_report(
-        plcs, data_points, denied_addresses,
-        scan_mode, started_at, completed_at, config
-    )
+    generator, data = create_report(plcs, data_points, denied_addresses, scan_mode, started_at, completed_at, config)
     return generator.save(data, output_path)

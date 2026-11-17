@@ -2,13 +2,23 @@
 Tests for utils module
 """
 
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
+
 from plc_discovery.utils import (
-    get_local_ip, parse_ip_range, get_manufacturer_from_mac,
-    format_mac_address, value_to_hex, hex_to_value,
-    get_timestamp, get_file_timestamp, split_range,
-    is_port_open, RateLimiter, SessionCache
+    RateLimiter,
+    SessionCache,
+    format_mac_address,
+    get_file_timestamp,
+    get_local_ip,
+    get_manufacturer_from_mac,
+    get_timestamp,
+    hex_to_value,
+    is_port_open,
+    parse_ip_range,
+    split_range,
+    value_to_hex,
 )
 
 
@@ -168,7 +178,7 @@ class TestSplitRange:
 class TestIsPortOpen:
     """Tests for is_port_open function"""
 
-    @patch('socket.socket')
+    @patch("socket.socket")
     def test_port_open(self, mock_socket_class):
         """Test detecting open port"""
         mock_socket = MagicMock()
@@ -179,7 +189,7 @@ class TestIsPortOpen:
         assert result is True
         mock_socket.close.assert_called_once()
 
-    @patch('socket.socket')
+    @patch("socket.socket")
     def test_port_closed(self, mock_socket_class):
         """Test detecting closed port"""
         mock_socket = MagicMock()

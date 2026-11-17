@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 class RetryStrategy(Enum):
     """Retry strategy types"""
+
     FIXED = "fixed"
     EXPONENTIAL = "exponential"
     EXPONENTIAL_JITTER = "exponential_jitter"
@@ -29,8 +30,9 @@ class RetryStrategy(Enum):
 
 class CircuitState(Enum):
     """Circuit breaker states"""
-    CLOSED = "closed"      # Normal operation
-    OPEN = "open"          # Failing, reject requests
+
+    CLOSED = "closed"  # Normal operation
+    OPEN = "open"  # Failing, reject requests
     HALF_OPEN = "half_open"  # Testing if recovered
 
 
@@ -48,17 +50,20 @@ class RetryConfig:
         jitter_factor: Random jitter factor (0.0 - 1.0)
         retryable_exceptions: Exception types that should trigger retry
     """
+
     strategy: RetryStrategy = RetryStrategy.EXPONENTIAL_JITTER
     max_retries: int = 3
     initial_delay_ms: int = 100
     max_delay_ms: int = 5000
     multiplier: float = 2.0
     jitter_factor: float = 0.25
-    retryable_exceptions: tuple = field(default_factory=lambda: (
-        ConnectionError,
-        TimeoutError,
-        OSError,
-    ))
+    retryable_exceptions: tuple = field(
+        default_factory=lambda: (
+            ConnectionError,
+            TimeoutError,
+            OSError,
+        )
+    )
 
     def calculate_delay(self, attempt: int) -> float:
         """
@@ -70,14 +75,15 @@ class RetryConfig:
         Returns:
             Delay in seconds
         """
+        delay_ms: float
         if self.strategy == RetryStrategy.FIXED:
             delay_ms = self.initial_delay_ms
 
         elif self.strategy == RetryStrategy.EXPONENTIAL:
-            delay_ms = self.initial_delay_ms * (self.multiplier ** attempt)
+            delay_ms = self.initial_delay_ms * (self.multiplier**attempt)
 
         elif self.strategy == RetryStrategy.EXPONENTIAL_JITTER:
-            base_delay = self.initial_delay_ms * (self.multiplier ** attempt)
+            base_delay = self.initial_delay_ms * (self.multiplier**attempt)
             jitter = base_delay * self.jitter_factor * random.random()
             delay_ms = base_delay + jitter
 
@@ -104,6 +110,7 @@ class CircuitBreakerConfig:
         success_threshold: Number of successes in half-open to close
         timeout_seconds: Time to wait before trying half-open
     """
+
     failure_threshold: int = 5
     success_threshold: int = 2
     timeout_seconds: float = 30.0
@@ -117,7 +124,7 @@ class CircuitBreaker:
     when a service is failing.
     """
 
-    def __init__(self, config: CircuitBreakerConfig = None):
+    def __init__(self, config: Optional[CircuitBreakerConfig] = None):
         self.config = config or CircuitBreakerConfig()
         self._state = CircuitState.CLOSED
         self._failure_count = 0
@@ -163,9 +170,7 @@ class CircuitBreaker:
 
         elif self._failure_count >= self.config.failure_threshold:
             self._state = CircuitState.OPEN
-            logger.warning(
-                f"Circuit breaker opened after {self._failure_count} failures"
-            )
+            logger.warning(f"Circuit breaker opened after {self._failure_count} failures")
 
     def reset(self):
         """Reset circuit breaker to initial state"""
@@ -178,7 +183,7 @@ class CircuitBreaker:
 class RetryError(Exception):
     """Raised when all retry attempts are exhausted"""
 
-    def __init__(self, message: str, last_exception: Exception = None):
+    def __init__(self, message: str, last_exception: Optional[Exception] = None):
         super().__init__(message)
         self.last_exception = last_exception
 
@@ -188,11 +193,7 @@ class RetryHandler:
     Handles retry logic with configurable strategies.
     """
 
-    def __init__(
-        self,
-        config: RetryConfig = None,
-        circuit_breaker: CircuitBreaker = None
-    ):
+    def __init__(self, config: Optional[RetryConfig] = None, circuit_breaker: Optional[CircuitBreaker] = None):
         self.config = config or RetryConfig()
         self.circuit_breaker = circuit_breaker
         self._stats = {
@@ -207,12 +208,7 @@ class RetryHandler:
         """Get retry statistics"""
         return self._stats.copy()
 
-    async def execute(
-        self,
-        func: Callable,
-        *args,
-        **kwargs
-    ) -> Any:
+    async def execute(self, func: Callable, *args: Any, **kwargs: Any) -> Any:
         """
         Execute function with retry logic.
 
@@ -234,10 +230,7 @@ class RetryHandler:
 
             # Check circuit breaker
             if self.circuit_breaker and not self.circuit_breaker.is_available():
-                raise RetryError(
-                    "Circuit breaker is open",
-                    last_exception
-                )
+                raise RetryError("Circuit breaker is open", last_exception)
 
             try:
                 result = await func(*args, **kwargs)
@@ -265,34 +258,21 @@ class RetryHandler:
 
                 # Check if we have retries left
                 if attempt >= self.config.max_retries:
-                    logger.warning(
-                        f"All {self.config.max_retries} retries exhausted"
-                    )
-                    raise RetryError(
-                        f"Failed after {attempt + 1} attempts: {str(e)}",
-                        last_exception
-                    )
+                    logger.warning(f"All {self.config.max_retries} retries exhausted")
+                    raise RetryError(f"Failed after {attempt + 1} attempts: {str(e)}", last_exception)
 
                 # Calculate delay
                 delay = self.config.calculate_delay(attempt)
                 self._stats["retries"] += 1
 
-                logger.debug(
-                    f"Attempt {attempt + 1} failed: {e}. "
-                    f"Retrying in {delay:.2f}s..."
-                )
+                logger.debug(f"Attempt {attempt + 1} failed: {e}. " f"Retrying in {delay:.2f}s...")
 
                 await asyncio.sleep(delay)
 
         # Should not reach here
         raise RetryError("Unexpected retry loop exit", last_exception)
 
-    def execute_sync(
-        self,
-        func: Callable,
-        *args,
-        **kwargs
-    ) -> Any:
+    def execute_sync(self, func: Callable, *args: Any, **kwargs: Any) -> Any:
         """
         Execute synchronous function with retry logic.
 
@@ -332,10 +312,7 @@ class RetryHandler:
                     raise
 
                 if attempt >= self.config.max_retries:
-                    raise RetryError(
-                        f"Failed after {attempt + 1} attempts: {str(e)}",
-                        last_exception
-                    )
+                    raise RetryError(f"Failed after {attempt + 1} attempts: {str(e)}", last_exception)
 
                 delay = self.config.calculate_delay(attempt)
                 self._stats["retries"] += 1
@@ -355,9 +332,8 @@ class RetryHandler:
 
 
 def with_retry(
-    config: RetryConfig = None,
-    circuit_breaker: CircuitBreaker = None
-):
+    config: Optional[RetryConfig] = None, circuit_breaker: Optional[CircuitBreaker] = None
+) -> Callable[[Callable], Callable]:
     """
     Decorator for adding retry logic to async functions.
 
@@ -366,24 +342,24 @@ def with_retry(
         async def my_function():
             ...
     """
-    def decorator(func: Callable):
+
+    def decorator(func: Callable) -> Callable:
         handler = RetryHandler(config, circuit_breaker)
 
         @wraps(func)
-        async def wrapper(*args, **kwargs):
+        async def wrapper(*args: Any, **kwargs: Any) -> Any:
             return await handler.execute(func, *args, **kwargs)
 
         # Attach handler for stats access
-        wrapper.retry_handler = handler
+        setattr(wrapper, "retry_handler", handler)
         return wrapper
 
     return decorator
 
 
 def with_retry_sync(
-    config: RetryConfig = None,
-    circuit_breaker: CircuitBreaker = None
-):
+    config: Optional[RetryConfig] = None, circuit_breaker: Optional[CircuitBreaker] = None
+) -> Callable[[Callable], Callable]:
     """
     Decorator for adding retry logic to sync functions.
 
@@ -392,14 +368,15 @@ def with_retry_sync(
         def my_function():
             ...
     """
-    def decorator(func: Callable):
+
+    def decorator(func: Callable) -> Callable:
         handler = RetryHandler(config, circuit_breaker)
 
         @wraps(func)
-        def wrapper(*args, **kwargs):
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
             return handler.execute_sync(func, *args, **kwargs)
 
-        wrapper.retry_handler = handler
+        setattr(wrapper, "retry_handler", handler)
         return wrapper
 
     return decorator

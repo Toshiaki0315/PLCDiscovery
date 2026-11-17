@@ -2,21 +2,22 @@
 Unit tests for retry module
 """
 
-import pytest
 import time
 
+import pytest
+
 from plc_discovery.retry import (
-    RetryStrategy,
-    RetryConfig,
-    RetryHandler,
-    RetryError,
+    DEFAULT_RETRY_CONFIG,
+    PLC_RETRY_CONFIG,
     CircuitBreaker,
     CircuitBreakerConfig,
     CircuitState,
+    RetryConfig,
+    RetryError,
+    RetryHandler,
+    RetryStrategy,
     with_retry,
     with_retry_sync,
-    DEFAULT_RETRY_CONFIG,
-    PLC_RETRY_CONFIG,
 )
 
 
@@ -34,10 +35,7 @@ class TestRetryConfig:
 
     def test_fixed_strategy_delay(self):
         """Test fixed strategy delay calculation"""
-        config = RetryConfig(
-            strategy=RetryStrategy.FIXED,
-            initial_delay_ms=200
-        )
+        config = RetryConfig(strategy=RetryStrategy.FIXED, initial_delay_ms=200)
 
         # Delay should be constant for all attempts
         assert config.calculate_delay(0) == 0.2
@@ -47,25 +45,19 @@ class TestRetryConfig:
     def test_exponential_strategy_delay(self):
         """Test exponential strategy delay calculation"""
         config = RetryConfig(
-            strategy=RetryStrategy.EXPONENTIAL,
-            initial_delay_ms=100,
-            multiplier=2.0,
-            max_delay_ms=10000
+            strategy=RetryStrategy.EXPONENTIAL, initial_delay_ms=100, multiplier=2.0, max_delay_ms=10000
         )
 
         # Delays should double each attempt
-        assert config.calculate_delay(0) == 0.1    # 100ms
-        assert config.calculate_delay(1) == 0.2    # 200ms
-        assert config.calculate_delay(2) == 0.4    # 400ms
-        assert config.calculate_delay(3) == 0.8    # 800ms
+        assert config.calculate_delay(0) == 0.1  # 100ms
+        assert config.calculate_delay(1) == 0.2  # 200ms
+        assert config.calculate_delay(2) == 0.4  # 400ms
+        assert config.calculate_delay(3) == 0.8  # 800ms
 
     def test_max_delay_cap(self):
         """Test that delay is capped at max_delay_ms"""
         config = RetryConfig(
-            strategy=RetryStrategy.EXPONENTIAL,
-            initial_delay_ms=1000,
-            multiplier=3.0,
-            max_delay_ms=2000
+            strategy=RetryStrategy.EXPONENTIAL, initial_delay_ms=1000, multiplier=3.0, max_delay_ms=2000
         )
 
         # Should be capped at 2 seconds
@@ -75,18 +67,14 @@ class TestRetryConfig:
 
     def test_should_retry_matching_exception(self):
         """Test should_retry returns True for matching exceptions"""
-        config = RetryConfig(
-            retryable_exceptions=(ConnectionError, TimeoutError)
-        )
+        config = RetryConfig(retryable_exceptions=(ConnectionError, TimeoutError))
 
         assert config.should_retry(ConnectionError())
         assert config.should_retry(TimeoutError())
 
     def test_should_retry_non_matching_exception(self):
         """Test should_retry returns False for non-matching exceptions"""
-        config = RetryConfig(
-            retryable_exceptions=(ConnectionError,)
-        )
+        config = RetryConfig(retryable_exceptions=(ConnectionError,))
 
         assert not config.should_retry(ValueError())
         assert not config.should_retry(KeyError())
@@ -132,10 +120,7 @@ class TestCircuitBreaker:
 
     def test_half_open_after_timeout(self):
         """Test circuit breaker goes half-open after timeout"""
-        config = CircuitBreakerConfig(
-            failure_threshold=2,
-            timeout_seconds=0.1
-        )
+        config = CircuitBreakerConfig(failure_threshold=2, timeout_seconds=0.1)
         cb = CircuitBreaker(config)
 
         cb.record_failure()
@@ -148,11 +133,7 @@ class TestCircuitBreaker:
 
     def test_half_open_closes_on_success(self):
         """Test half-open circuit closes after success threshold"""
-        config = CircuitBreakerConfig(
-            failure_threshold=2,
-            success_threshold=2,
-            timeout_seconds=0.1
-        )
+        config = CircuitBreakerConfig(failure_threshold=2, success_threshold=2, timeout_seconds=0.1)
         cb = CircuitBreaker(config)
 
         # Open the circuit
@@ -170,10 +151,7 @@ class TestCircuitBreaker:
 
     def test_half_open_reopens_on_failure(self):
         """Test half-open circuit reopens on failure"""
-        config = CircuitBreakerConfig(
-            failure_threshold=2,
-            timeout_seconds=0.1
-        )
+        config = CircuitBreakerConfig(failure_threshold=2, timeout_seconds=0.1)
         cb = CircuitBreaker(config)
 
         # Open the circuit
@@ -224,11 +202,7 @@ class TestRetryHandler:
     @pytest.mark.asyncio
     async def test_success_after_retries(self):
         """Test success after some retries"""
-        config = RetryConfig(
-            max_retries=3,
-            initial_delay_ms=10,  # Fast for testing
-            strategy=RetryStrategy.FIXED
-        )
+        config = RetryConfig(max_retries=3, initial_delay_ms=10, strategy=RetryStrategy.FIXED)  # Fast for testing
         handler = RetryHandler(config)
 
         call_count = 0
@@ -248,11 +222,7 @@ class TestRetryHandler:
     @pytest.mark.asyncio
     async def test_exhaust_retries(self):
         """Test RetryError when retries exhausted"""
-        config = RetryConfig(
-            max_retries=2,
-            initial_delay_ms=10,
-            strategy=RetryStrategy.FIXED
-        )
+        config = RetryConfig(max_retries=2, initial_delay_ms=10, strategy=RetryStrategy.FIXED)
         handler = RetryHandler(config)
 
         async def always_fail():
@@ -267,10 +237,7 @@ class TestRetryHandler:
     @pytest.mark.asyncio
     async def test_non_retryable_exception(self):
         """Test non-retryable exception is not retried"""
-        config = RetryConfig(
-            max_retries=3,
-            retryable_exceptions=(ConnectionError,)
-        )
+        config = RetryConfig(max_retries=3, retryable_exceptions=(ConnectionError,))
         handler = RetryHandler(config)
 
         async def raise_value_error():
@@ -309,11 +276,7 @@ class TestRetryHandler:
 
     def test_sync_retry_success(self):
         """Test synchronous retry success"""
-        config = RetryConfig(
-            max_retries=2,
-            initial_delay_ms=10,
-            strategy=RetryStrategy.FIXED
-        )
+        config = RetryConfig(max_retries=2, initial_delay_ms=10, strategy=RetryStrategy.FIXED)
         handler = RetryHandler(config)
 
         call_count = 0

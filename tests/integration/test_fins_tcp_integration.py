@@ -26,8 +26,8 @@ class TestFINSTCPConnection:
         assert await fins_tcp_handler.connect() is True
         try:
             assert fins_tcp_handler.is_connected
-            assert 0 < fins_tcp_handler.source_node < 255   # allocated client node
-            assert fins_tcp_handler.dest_node == 1          # simulator PLC node
+            assert 0 < fins_tcp_handler.source_node < 255  # allocated client node
+            assert fins_tcp_handler.dest_node == 1  # simulator PLC node
         finally:
             await fins_tcp_handler.disconnect()
         assert not fins_tcp_handler.is_connected
@@ -55,11 +55,11 @@ class TestFINSTCPRead:
         try:
             data, status = await fins_tcp_handler.read_device_raw(DeviceType.DM, 100, 5)
             assert status == StatusCode.OK
-            assert data == [1000, 1010, 1020, 1030, 1040]   # DM[n] = n * 10 for 100-199
+            assert data == [1000, 1010, 1020, 1030, 1040]  # DM[n] = n * 10 for 100-199
 
             data, status = await fins_tcp_handler.read_device_raw(DeviceType.HR, 10, 3)
             assert status == StatusCode.OK
-            assert data == [20, 22, 24]                    # HR[n] = n * 2
+            assert data == [20, 22, 24]  # HR[n] = n * 2
         finally:
             await fins_tcp_handler.disconnect()
 
@@ -82,7 +82,7 @@ class TestFINSTCPRead:
             points = await fins_tcp_handler.read_device_range(DeviceRange(DeviceType.DM, 300, 999))
             assert len(points) == 700
             assert all(dp.status == StatusCode.OK for dp in points)
-            assert points[0].value == 300 and points[-1].value == 999   # DM[n] = n
+            assert points[0].value == 300 and points[-1].value == 999  # DM[n] = n
         finally:
             await fins_tcp_handler.disconnect()
 
@@ -109,7 +109,7 @@ class TestFINSTCPRead:
         """A broken connection is re-established before the next request"""
         await fins_tcp_handler.connect()
         try:
-            fins_tcp_handler._writer.transport.abort()   # simulate a dropped link
+            fins_tcp_handler._writer.transport.abort()  # simulate a dropped link
             await asyncio.sleep(0.05)
 
             _, status = await fins_tcp_handler.read_device_raw(DeviceType.DM, 300, 1)
@@ -150,7 +150,7 @@ class TestFINSTCPFraming:
             sock.sendall(handshake[5:])
             header, body = self._recv_frame(sock)
         assert header[:4] == b"FINS"
-        assert struct.unpack(">I", header[8:12])[0] == 1   # node address response
+        assert struct.unpack(">I", header[8:12])[0] == 1  # node address response
         assert len(body) == 8
 
     def test_fins_frame_before_handshake_rejected(self, fins_simulator):
@@ -160,14 +160,14 @@ class TestFINSTCPFraming:
             sock.sendall(frame)
             header, _ = self._recv_frame(sock)
         command, error = struct.unpack(">II", header[8:16])
-        assert command == 3 and error == 3   # error notification: unsupported
+        assert command == 3 and error == 3  # error notification: unsupported
 
     def test_bad_magic_closes_connection(self, fins_simulator):
         with self._connect(fins_simulator.port) as sock:
             sock.sendall(b"XXXX" + b"\x00" * 12)
             header, _ = self._recv_frame(sock)
             assert struct.unpack(">II", header[8:16]) == (3, 1)
-            assert sock.recv(16) == b""      # server closed
+            assert sock.recv(16) == b""  # server closed
 
 
 FINS_VARIANTS = (Protocol.FINS, Protocol.FINS_TCP)
@@ -197,24 +197,40 @@ class TestFINSTCPSelection:
         plc = PLCInfo("127.0.0.1", protocol=Protocol.FINS_TCP, port=fins_simulator.port)
         async with PLCDataCollector(plc, network_config) as collector:
             assert collector._handler.use_tcp is True
-            assert collector._handler._writer is not None   # TCP stream, not UDP
+            assert collector._handler._writer is not None  # TCP stream, not UDP
             points = await collector.collect_range(DeviceType.HR, 0, 9)
         assert [dp.value for dp in points] == [i * 2 for i in range(10)]
 
     def test_cli_range_scan_over_fins_tcp(self, fins_simulator, tmp_path, monkeypatch):
         import csv
         import sys
+
         import plc_scanner
 
-        monkeypatch.setattr(sys, "argv", [
-            "plc_scanner.py", "--mode", "range", "--target", "127.0.0.1",
-            "--protocol", "fins-tcp", "--device", "DM", "--range", "300-304",
-            "-q", "--output-dir", str(tmp_path),
-        ])
-        plc_scanner.cli()   # returns normally on success (no SystemExit)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "plc_scanner.py",
+                "--mode",
+                "range",
+                "--target",
+                "127.0.0.1",
+                "--protocol",
+                "fins-tcp",
+                "--device",
+                "DM",
+                "--range",
+                "300-304",
+                "-q",
+                "--output-dir",
+                str(tmp_path),
+            ],
+        )
+        plc_scanner.cli()  # returns normally on success (no SystemExit)
 
         (data_file,) = tmp_path.glob("plc_data_127_0_0_1_*.csv")
-        rows = list(csv.DictReader(open(data_file, encoding="utf-8-sig")))   # CLI default: UTF-8 with BOM
+        rows = list(csv.DictReader(open(data_file, encoding="utf-8-sig")))  # CLI default: UTF-8 with BOM
         assert [(r["address"], r["value"], r["status"]) for r in rows] == [
             (f"DM{i}", str(i), "OK") for i in range(300, 305)
         ]

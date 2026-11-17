@@ -57,7 +57,7 @@ async def test_struct_tag_flattened(logix_simulator, logix_plc_info, network_con
         points = await collector.collect_tags(["Motor", "Motor.Current"])
     values = {p.address: p.converted_value if p.data_type == "REAL" else p.value for p in points}
     assert values == {"Motor.Speed": 1200, "Motor.Current": pytest.approx(3.5), "Motor.Count": 7}
-    assert len(points) == 4                      # Motor.Current twice
+    assert len(points) == 4  # Motor.Current twice
 
 
 async def test_program_scope_tags(logix_simulator, logix_plc_info, network_config):

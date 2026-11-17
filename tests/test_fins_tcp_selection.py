@@ -13,9 +13,7 @@ import pytest
 
 import plc_scanner
 from plc_discovery.collector import PROTOCOL_HANDLERS
-from plc_discovery.config import (
-    DEFAULT_DEVICE_RANGES, PROTOCOL_PORTS, SAFE_READ_WORDS, NetworkConfig, Protocol
-)
+from plc_discovery.config import DEFAULT_DEVICE_RANGES, PROTOCOL_PORTS, SAFE_READ_WORDS, NetworkConfig, Protocol
 from plc_discovery.config_loader import ConfigLoader
 from plc_discovery.discovery import PLCDiscovery
 from plc_discovery.probes import UDP_PROTOCOLS, probe_fins_udp
@@ -44,12 +42,15 @@ def test_cli_protocol_option(monkeypatch):
     assert plc_scanner.get_protocol_from_string("fins") == Protocol.FINS
 
 
-@pytest.mark.parametrize("name, expected", [
-    ("fins", Protocol.FINS),
-    ("fins_udp", Protocol.FINS),
-    ("fins_tcp", Protocol.FINS_TCP),
-    ("FINS-TCP", Protocol.FINS_TCP),
-])
+@pytest.mark.parametrize(
+    "name, expected",
+    [
+        ("fins", Protocol.FINS),
+        ("fins_udp", Protocol.FINS),
+        ("fins_tcp", Protocol.FINS_TCP),
+        ("FINS-TCP", Protocol.FINS_TCP),
+    ],
+)
 def test_config_protocol_names(tmp_path, name, expected):
     path = tmp_path / "c.json"
     path.write_text(json.dumps({"targets": [{"ip": "10.0.0.1", "protocol": name}]}))
@@ -61,6 +62,7 @@ def test_config_protocol_names(tmp_path, name, expected):
 # ---------------------------------------------------------------------------
 # Discovery: FINS/UDP is probed over UDP, FINS/TCP over TCP
 # ---------------------------------------------------------------------------
+
 
 def fins_reply(req: bytes) -> bytes:
     header = bytes([0xC0, 0x00, 0x02, req[6], req[7], req[8], req[3], req[4], req[5], req[9]])
@@ -108,6 +110,7 @@ class TestFINSUDPProbe:
             reply = bytearray(fins_reply(req))
             reply[9] = (reply[9] + 1) & 0xFF
             return bytes(reply)
+
         with UDPResponder(wrong_sid) as srv:
             assert not probe_fins_udp("127.0.0.1", srv.port, 0.5)
 
@@ -127,10 +130,12 @@ async def test_discovery_probes_fins_udp_without_tcp_port():
         checked.append(protocol)
         return protocol == Protocol.FINS
 
-    with patch("plc_discovery.discovery.is_port_open", return_value=False), \
-            patch("plc_discovery.discovery.verify_protocol", side_effect=verify), \
-            patch.object(discovery, "_get_detailed_info", side_effect=lambda plc: plc):
+    with (
+        patch("plc_discovery.discovery.is_port_open", return_value=False),
+        patch("plc_discovery.discovery.verify_protocol", side_effect=verify),
+        patch.object(discovery, "_get_detailed_info", side_effect=lambda plc: plc),
+    ):
         result = await discovery._probe_host("192.0.2.40")
 
-    assert checked == [Protocol.FINS]    # TCP protocols skipped (ports closed)
+    assert checked == [Protocol.FINS]  # TCP protocols skipped (ports closed)
     assert result.protocol == Protocol.FINS and result.port == 9600

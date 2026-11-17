@@ -6,9 +6,8 @@ Tests actual communication with SLMP simulator.
 
 import pytest
 
-from plc_discovery.config import Protocol, DeviceType, PLCInfo, DeviceRange, StatusCode
 from plc_discovery.collector import PLCDataCollector
-
+from plc_discovery.config import DeviceRange, DeviceType, PLCInfo, Protocol, StatusCode
 
 # Mark all tests to require SLMP simulator
 pytestmark = [
@@ -94,18 +93,13 @@ class TestSLMPDeniedAddresses:
         assert len(data_points) == 101
 
         # All should be marked as illegal address
-        illegal_count = sum(
-            1 for dp in data_points
-            if dp.status == StatusCode.NG_ILLEGAL_ADDR
-        )
+        illegal_count = sum(1 for dp in data_points if dp.status == StatusCode.NG_ILLEGAL_ADDR)
         assert illegal_count == 101
 
         # Denied addresses should be recorded
         assert len(denied) > 0
 
-    async def test_binary_search_isolates_denied(
-        self, slmp_simulator, slmp_plc_info, network_config
-    ):
+    async def test_binary_search_isolates_denied(self, slmp_simulator, slmp_plc_info, network_config):
         """Test binary search correctly isolates denied addresses"""
         async with PLCDataCollector(slmp_plc_info, network_config) as collector:
             # Read range that spans valid and invalid addresses
@@ -117,10 +111,7 @@ class TestSLMPDeniedAddresses:
 
         # Count successful vs denied
         ok_count = sum(1 for dp in data_points if dp.status == StatusCode.OK)
-        denied_count = sum(
-            1 for dp in data_points
-            if dp.status == StatusCode.NG_ILLEGAL_ADDR
-        )
+        denied_count = sum(1 for dp in data_points if dp.status == StatusCode.NG_ILLEGAL_ADDR)
 
         # D4900-D4999 and D5101-D5200 should be OK (200 addresses)
         # D5000-D5100 should be denied (101 addresses)
@@ -155,6 +146,7 @@ class TestSLMPFullScan:
 
         # Modify default ranges temporarily
         from plc_discovery import config
+
         original_ranges = config.DEFAULT_DEVICE_RANGES.get(Protocol.SLMP)
         config.DEFAULT_DEVICE_RANGES[Protocol.SLMP] = custom_ranges
 
@@ -216,6 +208,6 @@ class TestSLMPDataValues:
         if dp.status == StatusCode.OK:
             # raw_hex is formatted as '0xNNNN' (6 chars with 0x prefix)
             assert dp.raw_hex is not None
-            assert dp.raw_hex.startswith('0x')
+            assert dp.raw_hex.startswith("0x")
             # Should be valid hex (strip 0x prefix)
             int(dp.raw_hex, 16)

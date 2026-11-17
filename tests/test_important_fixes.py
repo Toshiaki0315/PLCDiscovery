@@ -14,7 +14,14 @@ import pytest
 import plc_scanner
 from plc_discovery.collector import PLCDataCollector
 from plc_discovery.config import (
-    DataPoint, DeviceRange, DeviceType, NetworkConfig, PLCInfo, Protocol, ScanMode, StatusCode
+    DataPoint,
+    DeviceRange,
+    DeviceType,
+    NetworkConfig,
+    PLCInfo,
+    Protocol,
+    ScanMode,
+    StatusCode,
 )
 from plc_discovery.config_loader import ConfigLoader
 from plc_discovery.data_types import ByteOrder, DataType, DataTypeManager, DataTypeMapping
@@ -54,6 +61,7 @@ class SilentDisplay:
 # ---------------------------------------------------------------------------
 # 1: connection failures must not be reported as success
 # ---------------------------------------------------------------------------
+
 
 class FakeCollector:
     def __init__(self, connected=True, denied=None, points=None):
@@ -98,8 +106,7 @@ class TestConnectionFailure:
         plc = PLCInfo("127.0.0.1", protocol=Protocol.MODBUS_TCP, port=502)
         with patch.object(plc_scanner, "PLCDataCollector", lambda *a: FakeCollector(connected=False)):
             outcome = await plc_scanner.run_single_scan(
-                plc, NetworkConfig(), exporter, SilentDisplay(), ScanMode.RANGE,
-                [DeviceRange(DeviceType.D, 0, 9)]
+                plc, NetworkConfig(), exporter, SilentDisplay(), ScanMode.RANGE, [DeviceRange(DeviceType.D, 0, 9)]
             )
         assert outcome.success is False
         assert "Failed to connect" in outcome.error
@@ -107,12 +114,28 @@ class TestConnectionFailure:
 
     def test_cli_exit_code_on_unreachable_plc(self, tmp_path, monkeypatch):
         """Connection refused -> exit code 1, other targets still attempted"""
-        monkeypatch.setattr(sys, "argv", [
-            "plc_scanner.py", "--mode", "range", "--protocol", "modbus",
-            "--target", "127.0.0.1,127.0.0.2", "--port", "59997",
-            "--range", "0-3", "--request-timeout", "300", "-q",
-            "--output-dir", str(tmp_path),
-        ])
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "plc_scanner.py",
+                "--mode",
+                "range",
+                "--protocol",
+                "modbus",
+                "--target",
+                "127.0.0.1,127.0.0.2",
+                "--port",
+                "59997",
+                "--range",
+                "0-3",
+                "--request-timeout",
+                "300",
+                "-q",
+                "--output-dir",
+                str(tmp_path),
+            ],
+        )
         attempted = []
         real = plc_scanner.run_single_scan
 
@@ -131,6 +154,7 @@ class TestConnectionFailure:
 # 2: config file scan settings are used
 # ---------------------------------------------------------------------------
 
+
 class TestConfigScanSettings:
 
     def test_mode_and_interval_from_config(self, tmp_path):
@@ -148,13 +172,21 @@ class TestConfigScanSettings:
         assert plc_scanner.resolve_mode_and_interval(make_args(), loader) == ("discover", 0.0)
 
     def test_device_ranges_from_config(self, tmp_path):
-        loader = write_config(tmp_path, {"scan": {"device_ranges": [
-            {"device": "D", "start": 0, "end": 9},
-            {"device": "M", "start": 100, "end": 115},
-        ]}})
+        loader = write_config(
+            tmp_path,
+            {
+                "scan": {
+                    "device_ranges": [
+                        {"device": "D", "start": 0, "end": 9},
+                        {"device": "M", "start": 100, "end": 115},
+                    ]
+                }
+            },
+        )
         ranges = plc_scanner.resolve_device_ranges(make_args(), loader)
         assert [(r.device_type, r.start_address, r.end_address) for r in ranges] == [
-            (DeviceType.D, 0, 9), (DeviceType.M, 100, 115)
+            (DeviceType.D, 0, 9),
+            (DeviceType.M, 100, 115),
         ]
 
     def test_cli_range_overrides_config(self, tmp_path):
@@ -166,6 +198,7 @@ class TestConfigScanSettings:
 # ---------------------------------------------------------------------------
 # 3: type mapping multi-word conversion
 # ---------------------------------------------------------------------------
+
 
 class TestTypeMappingConversion:
 
@@ -206,6 +239,7 @@ class TestTypeMappingConversion:
 # 5-7: retry interval, pymodbus API, OUI
 # ---------------------------------------------------------------------------
 
+
 def test_retry_interval_applied():
     handler = SLMPHandler("127.0.0.1", config=NetworkConfig(retry_interval_ms=750))
     assert handler._retry_config.initial_delay_ms == 750
@@ -216,11 +250,13 @@ class TestModbusUnitKwargs:
     def test_new_api(self):
         def read(address, *, count=1, device_id=1):
             pass
+
         assert modbus_unit_kwargs(read, 3) == {"device_id": 3}
 
     def test_old_api(self):
         def read(address, count=1, slave=0, **kwargs):
             pass
+
         assert modbus_unit_kwargs(read, 3) == {"slave": 3}
 
 
@@ -232,6 +268,7 @@ def test_vmware_oui_not_mitsubishi():
 # 8-9: Ctrl+C handling and periodic-mode duplicates
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_interrupt_finalizes_and_denied_logged_once():
     collector = FakeCollector(denied={"D5"})
@@ -241,10 +278,11 @@ async def test_interrupt_finalizes_and_denied_logged_once():
     plc = PLCInfo("127.0.0.1", protocol=Protocol.SLMP, port=5001)
 
     with patch.object(plc_scanner, "PLCDataCollector", lambda *a: collector):
-        task = asyncio.ensure_future(plc_scanner.run_periodic_scan(
-            [plc], NetworkConfig(), exporter, SilentDisplay(),
-            [DeviceRange(DeviceType.D, 0, 9)], interval=0.01
-        ))
+        task = asyncio.ensure_future(
+            plc_scanner.run_periodic_scan(
+                [plc], NetworkConfig(), exporter, SilentDisplay(), [DeviceRange(DeviceType.D, 0, 9)], interval=0.01
+            )
+        )
         while collector.collect_calls < 3:
             await asyncio.sleep(0.005)
         task.cancel()  # what asyncio.run does on Ctrl+C
@@ -264,6 +302,7 @@ async def test_interrupt_finalizes_and_denied_logged_once():
 # ---------------------------------------------------------------------------
 # 10: no sleep after the last iteration
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_collect_with_interval_no_trailing_sleep():

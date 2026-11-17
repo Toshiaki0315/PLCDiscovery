@@ -2,19 +2,20 @@
 Unit tests for notifications module
 """
 
-import pytest
 from unittest.mock import AsyncMock, patch
 
+import pytest
+
 from plc_discovery.notifications import (
-    NotificationType,
-    NotificationPriority,
-    NotificationEvent,
-    NotificationConfig,
-    NotificationManager,
-    WebhookHandler,
     CustomHandler,
-    init_notifications,
+    NotificationConfig,
+    NotificationEvent,
+    NotificationManager,
+    NotificationPriority,
+    NotificationType,
+    WebhookHandler,
     get_notification_manager,
+    init_notifications,
 )
 
 
@@ -23,11 +24,7 @@ class TestNotificationEvent:
 
     def test_event_creation(self):
         """Test creating a notification event"""
-        event = NotificationEvent(
-            type=NotificationType.SCAN_COMPLETE,
-            title="Test Title",
-            message="Test message"
-        )
+        event = NotificationEvent(type=NotificationType.SCAN_COMPLETE, title="Test Title", message="Test message")
 
         assert event.type == NotificationType.SCAN_COMPLETE
         assert event.title == "Test Title"
@@ -42,7 +39,7 @@ class TestNotificationEvent:
             title="Error",
             message="Something went wrong",
             priority=NotificationPriority.HIGH,
-            data={"plc_ip": "192.168.1.10"}
+            data={"plc_ip": "192.168.1.10"},
         )
 
         result = event.to_dict()
@@ -55,11 +52,7 @@ class TestNotificationEvent:
 
     def test_event_to_json(self):
         """Test converting event to JSON"""
-        event = NotificationEvent(
-            type=NotificationType.DISCOVERY_COMPLETE,
-            title="Discovery",
-            message="Found 5 PLCs"
-        )
+        event = NotificationEvent(type=NotificationType.DISCOVERY_COMPLETE, title="Discovery", message="Found 5 PLCs")
 
         json_str = event.to_json()
 
@@ -72,11 +65,7 @@ class TestNotificationConfig:
 
     def test_default_config(self):
         """Test default configuration values"""
-        config = NotificationConfig(
-            name="test",
-            type="webhook",
-            url="https://example.com/webhook"
-        )
+        config = NotificationConfig(name="test", type="webhook", url="https://example.com/webhook")
 
         assert config.name == "test"
         assert config.type == "webhook"
@@ -90,7 +79,7 @@ class TestNotificationConfig:
             name="test",
             type="slack",
             url="https://hooks.slack.com/...",
-            events=[NotificationType.SCAN_COMPLETE, NotificationType.SCAN_ERROR]
+            events=[NotificationType.SCAN_COMPLETE, NotificationType.SCAN_ERROR],
         )
 
         assert len(config.events) == 2
@@ -103,11 +92,7 @@ class TestWebhookHandler:
     @pytest.mark.asyncio
     async def test_should_handle_all_events(self):
         """Test handler with no specific events handles all"""
-        config = NotificationConfig(
-            name="test",
-            type="webhook",
-            url="https://example.com"
-        )
+        config = NotificationConfig(name="test", type="webhook", url="https://example.com")
         handler = WebhookHandler(config)
 
         assert handler.should_handle(NotificationType.SCAN_COMPLETE)
@@ -117,10 +102,7 @@ class TestWebhookHandler:
     async def test_should_handle_specific_events(self):
         """Test handler with specific events"""
         config = NotificationConfig(
-            name="test",
-            type="webhook",
-            url="https://example.com",
-            events=[NotificationType.SCAN_COMPLETE]
+            name="test", type="webhook", url="https://example.com", events=[NotificationType.SCAN_COMPLETE]
         )
         handler = WebhookHandler(config)
 
@@ -130,12 +112,7 @@ class TestWebhookHandler:
     @pytest.mark.asyncio
     async def test_disabled_handler(self):
         """Test disabled handler"""
-        config = NotificationConfig(
-            name="test",
-            type="webhook",
-            url="https://example.com",
-            enabled=False
-        )
+        config = NotificationConfig(name="test", type="webhook", url="https://example.com", enabled=False)
         handler = WebhookHandler(config)
 
         assert not handler.should_handle(NotificationType.SCAN_COMPLETE)
@@ -143,17 +120,10 @@ class TestWebhookHandler:
     @pytest.mark.asyncio
     async def test_send_without_url(self):
         """Test send fails without URL"""
-        config = NotificationConfig(
-            name="test",
-            type="webhook"
-        )
+        config = NotificationConfig(name="test", type="webhook")
         handler = WebhookHandler(config)
 
-        event = NotificationEvent(
-            type=NotificationType.SCAN_COMPLETE,
-            title="Test",
-            message="Test"
-        )
+        event = NotificationEvent(type=NotificationType.SCAN_COMPLETE, title="Test", message="Test")
 
         result = await handler.send(event)
         assert result is False
@@ -211,11 +181,7 @@ class TestNotificationManager:
         """Test notify with no handlers"""
         manager = NotificationManager()
 
-        event = NotificationEvent(
-            type=NotificationType.SCAN_COMPLETE,
-            title="Test",
-            message="Test"
-        )
+        event = NotificationEvent(type=NotificationType.SCAN_COMPLETE, title="Test", message="Test")
 
         results = await manager.notify(event)
         assert results == {}
@@ -225,15 +191,10 @@ class TestNotificationManager:
         """Test notify_scan_complete convenience method"""
         manager = NotificationManager()
 
-        with patch.object(manager, 'notify', new_callable=AsyncMock) as mock_notify:
+        with patch.object(manager, "notify", new_callable=AsyncMock) as mock_notify:
             mock_notify.return_value = {"test": True}
 
-            await manager.notify_scan_complete(
-                plc_count=5,
-                success_count=4,
-                error_count=1,
-                duration_seconds=30.5
-            )
+            await manager.notify_scan_complete(plc_count=5, success_count=4, error_count=1, duration_seconds=30.5)
 
             mock_notify.assert_called_once()
             call_args = mock_notify.call_args[0][0]
@@ -245,13 +206,10 @@ class TestNotificationManager:
         """Test notify_error convenience method"""
         manager = NotificationManager()
 
-        with patch.object(manager, 'notify', new_callable=AsyncMock) as mock_notify:
+        with patch.object(manager, "notify", new_callable=AsyncMock) as mock_notify:
             mock_notify.return_value = {"test": True}
 
-            await manager.notify_error(
-                error_message="Connection failed",
-                plc_ip="192.168.1.10"
-            )
+            await manager.notify_error(error_message="Connection failed", plc_ip="192.168.1.10")
 
             mock_notify.assert_called_once()
             call_args = mock_notify.call_args[0][0]
@@ -266,14 +224,9 @@ class TestNotificationManager:
                     "name": "webhook1",
                     "type": "webhook",
                     "url": "https://example.com/webhook",
-                    "events": ["scan_complete"]
+                    "events": ["scan_complete"],
                 },
-                {
-                    "name": "slack1",
-                    "type": "slack",
-                    "url": "https://hooks.slack.com/...",
-                    "enabled": False
-                }
+                {"name": "slack1", "type": "slack", "url": "https://hooks.slack.com/...", "enabled": False},
             ]
         }
 
@@ -289,21 +242,14 @@ class TestCustomHandler:
     @pytest.mark.asyncio
     async def test_sync_handler(self):
         """Test custom sync handler"""
+
         def handler(event):
             return True
 
-        config = NotificationConfig(
-            name="test",
-            type="custom",
-            handler=handler
-        )
+        config = NotificationConfig(name="test", type="custom", handler=handler)
         custom = CustomHandler(config)
 
-        event = NotificationEvent(
-            type=NotificationType.SCAN_COMPLETE,
-            title="Test",
-            message="Test"
-        )
+        event = NotificationEvent(type=NotificationType.SCAN_COMPLETE, title="Test", message="Test")
 
         result = await custom.send(event)
         assert result is True
@@ -311,21 +257,14 @@ class TestCustomHandler:
     @pytest.mark.asyncio
     async def test_async_handler(self):
         """Test custom async handler"""
+
         async def handler(event):
             return True
 
-        config = NotificationConfig(
-            name="test",
-            type="custom",
-            handler=handler
-        )
+        config = NotificationConfig(name="test", type="custom", handler=handler)
         custom = CustomHandler(config)
 
-        event = NotificationEvent(
-            type=NotificationType.SCAN_COMPLETE,
-            title="Test",
-            message="Test"
-        )
+        event = NotificationEvent(type=NotificationType.SCAN_COMPLETE, title="Test", message="Test")
 
         result = await custom.send(event)
         assert result is True
@@ -333,21 +272,14 @@ class TestCustomHandler:
     @pytest.mark.asyncio
     async def test_handler_error(self):
         """Test custom handler error handling"""
+
         def handler(event):
             raise ValueError("Test error")
 
-        config = NotificationConfig(
-            name="test",
-            type="custom",
-            handler=handler
-        )
+        config = NotificationConfig(name="test", type="custom", handler=handler)
         custom = CustomHandler(config)
 
-        event = NotificationEvent(
-            type=NotificationType.SCAN_COMPLETE,
-            title="Test",
-            message="Test"
-        )
+        event = NotificationEvent(type=NotificationType.SCAN_COMPLETE, title="Test", message="Test")
 
         result = await custom.send(event)
         assert result is False
@@ -358,15 +290,7 @@ class TestGlobalFunctions:
 
     def test_init_notifications(self):
         """Test init_notifications function"""
-        config = {
-            "notifications": [
-                {
-                    "name": "test",
-                    "type": "webhook",
-                    "url": "https://example.com"
-                }
-            ]
-        }
+        config = {"notifications": [{"name": "test", "type": "webhook", "url": "https://example.com"}]}
 
         manager = init_notifications(config)
 

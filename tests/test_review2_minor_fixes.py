@@ -17,9 +17,7 @@ import pytest
 import plc_scanner
 from plc_discovery import audit_log, notifications
 from plc_discovery.collector import PLCDataCollector
-from plc_discovery.config import (
-    DataPoint, DeviceRange, DeviceType, NetworkConfig, PLCInfo, Protocol, StatusCode
-)
+from plc_discovery.config import DataPoint, DeviceRange, DeviceType, NetworkConfig, PLCInfo, Protocol, StatusCode
 from plc_discovery.config_loader import ConfigLoader
 from plc_discovery.database import DatabaseConfig, DatabaseExporter
 from plc_discovery.output import CSVExporter
@@ -29,10 +27,10 @@ from plc_discovery.protocols.modbus import ModbusHandler
 from plc_discovery.report import ReportConfig, ReportFormat, create_report
 from plc_discovery.retry import RetryConfig, RetryStrategy
 
-
 # ---------------------------------------------------------------------------
 # 1: audit logger can be re-initialized with another file
 # ---------------------------------------------------------------------------
+
 
 def test_audit_logger_reinit_uses_new_file(tmp_path):
     audit_log.get_audit_logger().log_error("before init")
@@ -49,10 +47,12 @@ def test_audit_logger_reinit_uses_new_file(tmp_path):
 # 2-3: FINS connection handling
 # ---------------------------------------------------------------------------
 
+
 def fins_reply(request: bytes) -> bytes:
-    header = bytes([0xC0, 0x00, 0x02, request[6], request[7], request[8],
-                    request[3], request[4], request[5], request[9]])
-    return header + request[10:12] + b"\x00\x00" + b"\x00\x2A"
+    header = bytes(
+        [0xC0, 0x00, 0x02, request[6], request[7], request[8], request[3], request[4], request[5], request[9]]
+    )
+    return header + request[10:12] + b"\x00\x00" + b"\x00\x2a"
 
 
 class UDPServer:
@@ -130,6 +130,7 @@ class TestFINSConnection:
 # 4: read sizes follow SAFE_READ_WORDS
 # ---------------------------------------------------------------------------
 
+
 def test_read_sizes_use_safe_values():
     assert ModbusHandler("127.0.0.1").max_read_size == 100
     assert FINSHandler("127.0.0.1").max_read_size == 400
@@ -138,6 +139,7 @@ def test_read_sizes_use_safe_values():
 # ---------------------------------------------------------------------------
 # 5-6: database performance and sessions
 # ---------------------------------------------------------------------------
+
 
 def points(value):
     return [DataPoint("D0", value, f"0x{value:04X}", StatusCode.OK, "2026-01-01 00:00:00.000")]
@@ -152,9 +154,7 @@ class TestDatabase:
             db.export_plc_data(points(2), "10.0.0.1")
             db.export_plc_data(points(3), "10.0.0.1")
         assert spy.call_count == 1
-        rows = db._connection.execute(
-            "SELECT old_value, new_value FROM data_history ORDER BY id"
-        ).fetchall()
+        rows = db._connection.execute("SELECT old_value, new_value FROM data_history ORDER BY id").fetchall()
         assert [tuple(r) for r in rows] == [(1, 2), (2, 3)]
         db.close()
 
@@ -166,11 +166,30 @@ class TestDatabase:
 
     def test_cli_records_scan_session(self, tmp_path, monkeypatch):
         db_path = tmp_path / "scan.db"
-        monkeypatch.setattr(sys, "argv", [
-            "plc_scanner.py", "--mode", "range", "--protocol", "modbus", "--target", "127.0.0.1",
-            "--port", "59997", "--range", "0-1", "--request-timeout", "300", "-q",
-            "--database", str(db_path), "--output-dir", str(tmp_path),
-        ])
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "plc_scanner.py",
+                "--mode",
+                "range",
+                "--protocol",
+                "modbus",
+                "--target",
+                "127.0.0.1",
+                "--port",
+                "59997",
+                "--range",
+                "0-1",
+                "--request-timeout",
+                "300",
+                "-q",
+                "--database",
+                str(db_path),
+                "--output-dir",
+                str(tmp_path),
+            ],
+        )
         with pytest.raises(SystemExit):
             plc_scanner.cli()
         rows = sqlite3.connect(db_path).execute("SELECT mode, status FROM scan_sessions").fetchall()
@@ -180,6 +199,7 @@ class TestDatabase:
 # ---------------------------------------------------------------------------
 # 7: notifications are wired in and do not block the event loop
 # ---------------------------------------------------------------------------
+
 
 class TestNotifications:
 
@@ -198,28 +218,40 @@ class TestNotifications:
                 await asyncio.sleep(0.01)
                 ticks += 1
 
-        results, _ = await asyncio.gather(
-            manager.notify_error("x"), ticker()
-        )
+        results, _ = await asyncio.gather(manager.notify_error("x"), ticker())
         assert results == {"hook": True}
         assert ticks == 20  # loop kept running while the POST was in flight
 
     def test_cli_sends_scan_notifications(self, tmp_path, monkeypatch):
         config = tmp_path / "config.json"
-        config.write_text(json.dumps({
-            "targets": [{"ip": "127.0.0.1", "protocol": "modbus", "port": 59997}],
-            "scan": {"mode": "range", "device_ranges": [{"device": "D", "start": 0, "end": 1}]},
-            "network": {"request_timeout_ms": 300},
-            "notifications": [{"name": "hook", "type": "webhook", "url": "http://127.0.0.1:9/"}],
-        }), encoding="utf-8")
+        config.write_text(
+            json.dumps(
+                {
+                    "targets": [{"ip": "127.0.0.1", "protocol": "modbus", "port": 59997}],
+                    "scan": {"mode": "range", "device_ranges": [{"device": "D", "start": 0, "end": 1}]},
+                    "network": {"request_timeout_ms": 300},
+                    "notifications": [{"name": "hook", "type": "webhook", "url": "http://127.0.0.1:9/"}],
+                }
+            ),
+            encoding="utf-8",
+        )
         manager = MagicMock()
         manager._handlers = {"hook": object()}
         manager.notify_error = AsyncMock()
         manager.notify_scan_complete = AsyncMock()
         monkeypatch.setattr(plc_scanner.NotificationManager, "from_config", lambda cfg: manager)
-        monkeypatch.setattr(sys, "argv", [
-            "plc_scanner.py", "--config", str(config), "-q", "--output-dir", str(tmp_path),
-        ])
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "plc_scanner.py",
+                "--config",
+                str(config),
+                "-q",
+                "--output-dir",
+                str(tmp_path),
+            ],
+        )
         with pytest.raises(SystemExit) as exc:
             plc_scanner.cli()
         assert exc.value.code == 1
@@ -234,6 +266,7 @@ class TestNotifications:
 # 8-9: config file handling
 # ---------------------------------------------------------------------------
 
+
 def make_args(**kw):
     base = dict(packet_interval=None, retry_interval=None, request_timeout=None, max_concurrent=None)
     base.update(kw)
@@ -246,8 +279,8 @@ def test_cli_timing_overrides_config(tmp_path):
     loader = ConfigLoader(str(path))
     loader.load()
     config = plc_scanner.create_network_config(make_args(packet_interval=80), loader)
-    assert config.packet_interval_ms == 80       # CLI wins
-    assert config.request_timeout_ms == 9000     # from config file
+    assert config.packet_interval_ms == 80  # CLI wins
+    assert config.request_timeout_ms == 9000  # from config file
     assert plc_scanner.create_network_config(make_args(), None) == NetworkConfig()
 
 
@@ -262,6 +295,7 @@ def test_missing_config_file_is_error(tmp_path, monkeypatch, capsys):
 # ---------------------------------------------------------------------------
 # 10-11: denied status and statistics
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_unsupported_status_kept_in_cache_and_csv(tmp_path):
@@ -278,9 +312,13 @@ async def test_unsupported_status_kept_in_cache_and_csv(tmp_path):
         async def read_device_raw(self, device_type, start, count):
             return None, StatusCode.NG_UNSUPPORTED
 
-    handler = Handler("127.0.0.1", 1, NetworkConfig(packet_interval_ms=0, retry_interval_ms=0),
-                      retry_config=RetryConfig(strategy=RetryStrategy.FIXED, max_retries=0, initial_delay_ms=0),
-                      use_circuit_breaker=False)
+    handler = Handler(
+        "127.0.0.1",
+        1,
+        NetworkConfig(packet_interval_ms=0, retry_interval_ms=0),
+        retry_config=RetryConfig(strategy=RetryStrategy.FIXED, max_retries=0, initial_delay_ms=0),
+        use_circuit_breaker=False,
+    )
     handler._connected = True
     rng = DeviceRange(DeviceType.SM, 0, 2)
     await handler.read_device_range(rng)
@@ -308,6 +346,7 @@ def test_statistics_count_unsupported():
 # ---------------------------------------------------------------------------
 # 12: explicit report path is used as given
 # ---------------------------------------------------------------------------
+
 
 def test_report_output_path_used_as_given(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)

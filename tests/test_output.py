@@ -2,12 +2,10 @@
 Tests for output module
 """
 
-import os
 import csv
+import os
 
-from plc_discovery.output import (
-    CSVExporter, load_denied_addresses
-)
+from plc_discovery.output import CSVExporter, load_denied_addresses
 
 
 class TestCSVExporter:
@@ -29,7 +27,7 @@ class TestCSVExporter:
         assert filepath.endswith(".csv")
 
         # Verify content
-        with open(filepath, 'r', encoding='utf-8') as f:
+        with open(filepath, "r", encoding="utf-8") as f:
             reader = csv.DictReader(f)
             rows = list(reader)
 
@@ -42,10 +40,7 @@ class TestCSVExporter:
     def test_export_discovery_results_custom_filename(self, temp_output_dir, sample_plc_list):
         """Test exporting with custom filename"""
         exporter = CSVExporter(temp_output_dir)
-        filepath = exporter.export_discovery_results(
-            sample_plc_list,
-            filename="custom_discovery.csv"
-        )
+        filepath = exporter.export_discovery_results(sample_plc_list, filename="custom_discovery.csv")
 
         assert filepath.endswith("custom_discovery.csv")
         assert os.path.exists(filepath)
@@ -53,16 +48,13 @@ class TestCSVExporter:
     def test_export_plc_data(self, temp_output_dir, sample_data_points):
         """Test exporting PLC data"""
         exporter = CSVExporter(temp_output_dir)
-        filepath = exporter.export_plc_data(
-            sample_data_points,
-            plc_ip="192.168.1.10"
-        )
+        filepath = exporter.export_plc_data(sample_data_points, plc_ip="192.168.1.10")
 
         assert os.path.exists(filepath)
         assert "plc_data_192_168_1_10" in filepath
 
         # Verify content
-        with open(filepath, 'r', encoding='utf-8') as f:
+        with open(filepath, "r", encoding="utf-8") as f:
             reader = csv.DictReader(f)
             rows = list(reader)
 
@@ -77,15 +69,12 @@ class TestCSVExporter:
         exporter = CSVExporter(temp_output_dir)
         denied = {"D100", "D101", "D102"}
 
-        filepath = exporter.export_denied_addresses(
-            denied,
-            plc_ip="192.168.1.10"
-        )
+        filepath = exporter.export_denied_addresses(denied, plc_ip="192.168.1.10")
 
         assert os.path.exists(filepath)
 
         # Verify content
-        with open(filepath, 'r', encoding='utf-8') as f:
+        with open(filepath, "r", encoding="utf-8") as f:
             reader = csv.DictReader(f)
             rows = list(reader)
 
@@ -98,21 +87,13 @@ class TestCSVExporter:
         exporter = CSVExporter(temp_output_dir)
 
         # First export
-        exporter.export_denied_addresses(
-            {"D100"},
-            plc_ip="192.168.1.10",
-            filename="denied.csv"
-        )
+        exporter.export_denied_addresses({"D100"}, plc_ip="192.168.1.10", filename="denied.csv")
 
         # Second export (append)
-        filepath = exporter.export_denied_addresses(
-            {"D200"},
-            plc_ip="192.168.1.20",
-            filename="denied.csv"
-        )
+        filepath = exporter.export_denied_addresses({"D200"}, plc_ip="192.168.1.20", filename="denied.csv")
 
         # Verify both entries
-        with open(filepath, 'r', encoding='utf-8') as f:
+        with open(filepath, "r", encoding="utf-8") as f:
             reader = csv.DictReader(f)
             rows = list(reader)
 
@@ -148,7 +129,7 @@ class TestCSVExporter:
         assert "scan_summary_" in filepath
 
         # Verify content
-        with open(filepath, 'r', encoding='utf-8') as f:
+        with open(filepath, "r", encoding="utf-8") as f:
             reader = csv.DictReader(f)
             rows = list(reader)
 
@@ -164,21 +145,25 @@ class TestLoadDeniedAddresses:
         """Test loading denied addresses from file"""
         # Create a test file
         filepath = os.path.join(temp_output_dir, "denied.csv")
-        with open(filepath, 'w', newline='', encoding='utf-8') as f:
+        with open(filepath, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=["address", "status", "last_attempt", "plc_ip"])
             writer.writeheader()
-            writer.writerow({
-                "address": "D100",
-                "status": "NG_ILLEGAL_ADDR",
-                "last_attempt": "2024-01-01 10:00:00",
-                "plc_ip": "192.168.1.10"
-            })
-            writer.writerow({
-                "address": "D101",
-                "status": "NG_ILLEGAL_ADDR",
-                "last_attempt": "2024-01-01 10:00:00",
-                "plc_ip": "192.168.1.10"
-            })
+            writer.writerow(
+                {
+                    "address": "D100",
+                    "status": "NG_ILLEGAL_ADDR",
+                    "last_attempt": "2024-01-01 10:00:00",
+                    "plc_ip": "192.168.1.10",
+                }
+            )
+            writer.writerow(
+                {
+                    "address": "D101",
+                    "status": "NG_ILLEGAL_ADDR",
+                    "last_attempt": "2024-01-01 10:00:00",
+                    "plc_ip": "192.168.1.10",
+                }
+            )
 
         denied = load_denied_addresses(filepath)
         assert len(denied) == 2
@@ -188,21 +173,15 @@ class TestLoadDeniedAddresses:
     def test_load_denied_addresses_filter_by_ip(self, temp_output_dir):
         """Test loading denied addresses filtered by IP"""
         filepath = os.path.join(temp_output_dir, "denied.csv")
-        with open(filepath, 'w', newline='', encoding='utf-8') as f:
+        with open(filepath, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=["address", "status", "last_attempt", "plc_ip"])
             writer.writeheader()
-            writer.writerow({
-                "address": "D100",
-                "status": "NG_ILLEGAL_ADDR",
-                "last_attempt": "2024-01-01",
-                "plc_ip": "192.168.1.10"
-            })
-            writer.writerow({
-                "address": "D200",
-                "status": "NG_ILLEGAL_ADDR",
-                "last_attempt": "2024-01-01",
-                "plc_ip": "192.168.1.20"
-            })
+            writer.writerow(
+                {"address": "D100", "status": "NG_ILLEGAL_ADDR", "last_attempt": "2024-01-01", "plc_ip": "192.168.1.10"}
+            )
+            writer.writerow(
+                {"address": "D200", "status": "NG_ILLEGAL_ADDR", "last_attempt": "2024-01-01", "plc_ip": "192.168.1.20"}
+            )
 
         denied = load_denied_addresses(filepath, plc_ip="192.168.1.10")
         assert len(denied) == 1

@@ -43,8 +43,7 @@ async def test_discovery_sets_identity_without_errors(caplog):
     discovery = PLCDiscovery(NetworkConfig())
     plc = PLCInfo("127.0.0.1", protocol=Protocol.ETHERNET_IP, port=44818)
     identity = parse_eip_identity(list_identity_reply(vendor=47, device_type=0x0E, name=b"NJ501-1300"))
-    with patch.object(discovery_module, "read_eip_identity", return_value=identity), \
-            caplog.at_level(logging.DEBUG):
+    with patch.object(discovery_module, "read_eip_identity", return_value=identity), caplog.at_level(logging.DEBUG):
         result = await discovery._query_eip_info(plc)
     assert result.manufacturer == "Omron Corporation"
     assert result.model == "NJ501-1300"

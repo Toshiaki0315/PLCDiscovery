@@ -8,18 +8,19 @@ All read operations are logged with timestamps, addresses, and results.
 import json
 import logging
 import os
-from datetime import datetime
-from pathlib import Path
-from typing import Any, Dict, List, Optional
 import threading
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
+from datetime import datetime
 from enum import Enum
+from pathlib import Path
+from typing import Any, Dict, List, Optional, TextIO
 
 logger = logging.getLogger(__name__)
 
 
 class AuditEventType(Enum):
     """Types of audit events"""
+
     SESSION_START = "SESSION_START"
     SESSION_END = "SESSION_END"
     DISCOVERY_START = "DISCOVERY_START"
@@ -38,6 +39,7 @@ class AuditEventType(Enum):
 @dataclass
 class AuditEvent:
     """Audit log event"""
+
     timestamp: str
     event_type: str
     session_id: str
@@ -74,17 +76,12 @@ class AuditLogger:
     # get_audit_logger(). The class itself is not a singleton: a singleton
     # silently ignored the log file passed to a later init_audit_logger().
 
-    def __init__(
-        self,
-        log_file: Optional[str] = None,
-        enabled: bool = True,
-        console_output: bool = False
-    ):
+    def __init__(self, log_file: Optional[str] = None, enabled: bool = True, console_output: bool = False):
         self.log_file = log_file
         self.enabled = enabled
         self.console_output = console_output
         self._session_id = self._generate_session_id()
-        self._file_handle = None
+        self._file_handle: Optional[TextIO] = None
         self._write_lock = threading.Lock()
         self._initialized = True
 
@@ -95,18 +92,20 @@ class AuditLogger:
         """Generate unique session ID"""
         return datetime.now().strftime("%Y%m%d_%H%M%S_") + os.urandom(4).hex()
 
-    def _open_log_file(self):
+    def _open_log_file(self) -> None:
         """Open log file for writing"""
+        if not self.log_file:
+            return
         try:
             path = Path(self.log_file)
             path.parent.mkdir(parents=True, exist_ok=True)
-            self._file_handle = open(path, 'a', encoding='utf-8')
+            self._file_handle = open(path, "a", encoding="utf-8")
             logger.info(f"Audit log opened: {self.log_file}")
         except Exception as e:
             logger.error(f"Failed to open audit log file: {e}")
             self._file_handle = None
 
-    def _write_event(self, event: AuditEvent):
+    def _write_event(self, event: AuditEvent) -> None:
         """Write event to log file"""
         if not self.enabled:
             return
@@ -124,60 +123,37 @@ class AuditLogger:
             if self.console_output:
                 print(f"[AUDIT] {line.strip()}")
 
-    def _create_event(
-        self,
-        event_type: AuditEventType,
-        **kwargs
-    ) -> AuditEvent:
+    def _create_event(self, event_type: AuditEventType, **kwargs: Any) -> AuditEvent:
         """Create audit event with common fields"""
         return AuditEvent(
-            timestamp=datetime.now().isoformat(),
-            event_type=event_type.value,
-            session_id=self._session_id,
-            **kwargs
+            timestamp=datetime.now().isoformat(), event_type=event_type.value, session_id=self._session_id, **kwargs
         )
 
-    def log_session_start(self, metadata: Optional[Dict] = None):
+    def log_session_start(self, metadata: Optional[Dict] = None) -> None:
         """Log session start"""
-        event = self._create_event(
-            AuditEventType.SESSION_START,
-            metadata=metadata
-        )
+        event = self._create_event(AuditEventType.SESSION_START, metadata=metadata)
         self._write_event(event)
 
-    def log_session_end(self, metadata: Optional[Dict] = None):
+    def log_session_end(self, metadata: Optional[Dict] = None) -> None:
         """Log session end"""
-        event = self._create_event(
-            AuditEventType.SESSION_END,
-            metadata=metadata
-        )
+        event = self._create_event(AuditEventType.SESSION_END, metadata=metadata)
         self._write_event(event)
 
-    def log_discovery_start(self, ip_ranges: List[str]):
+    def log_discovery_start(self, ip_ranges: List[str]) -> None:
         """Log discovery start"""
-        event = self._create_event(
-            AuditEventType.DISCOVERY_START,
-            metadata={"ip_ranges": ip_ranges}
-        )
+        event = self._create_event(AuditEventType.DISCOVERY_START, metadata={"ip_ranges": ip_ranges})
         self._write_event(event)
 
-    def log_discovery_result(self, plc_count: int, plcs: List[Dict]):
+    def log_discovery_result(self, plc_count: int, plcs: List[Dict]) -> None:
         """Log discovery result"""
         event = self._create_event(
-            AuditEventType.DISCOVERY_RESULT,
-            data_points=plc_count,
-            metadata={"discovered_plcs": plcs}
+            AuditEventType.DISCOVERY_RESULT, data_points=plc_count, metadata={"discovered_plcs": plcs}
         )
         self._write_event(event)
 
     def log_connect(
-        self,
-        plc_ip: str,
-        protocol: str,
-        port: int,
-        success: bool,
-        error_message: Optional[str] = None
-    ):
+        self, plc_ip: str, protocol: str, port: int, success: bool, error_message: Optional[str] = None
+    ) -> None:
         """Log connection attempt"""
         event = self._create_event(
             AuditEventType.CONNECT,
@@ -185,27 +161,16 @@ class AuditLogger:
             protocol=protocol,
             status="SUCCESS" if success else "FAILED",
             error_message=error_message,
-            metadata={"port": port}
+            metadata={"port": port},
         )
         self._write_event(event)
 
-    def log_disconnect(self, plc_ip: str, protocol: str):
+    def log_disconnect(self, plc_ip: str, protocol: str) -> None:
         """Log disconnection"""
-        event = self._create_event(
-            AuditEventType.DISCONNECT,
-            plc_ip=plc_ip,
-            protocol=protocol
-        )
+        event = self._create_event(AuditEventType.DISCONNECT, plc_ip=plc_ip, protocol=protocol)
         self._write_event(event)
 
-    def log_read_request(
-        self,
-        plc_ip: str,
-        protocol: str,
-        device: str,
-        address_start: int,
-        address_end: int
-    ):
+    def log_read_request(self, plc_ip: str, protocol: str, device: str, address_start: int, address_end: int) -> None:
         """Log read request"""
         event = self._create_event(
             AuditEventType.READ_REQUEST,
@@ -214,7 +179,7 @@ class AuditLogger:
             device=device,
             address_start=address_start,
             address_end=address_end,
-            count=address_end - address_start + 1
+            count=address_end - address_start + 1,
         )
         self._write_event(event)
 
@@ -226,8 +191,8 @@ class AuditLogger:
         address_start: int,
         address_end: int,
         data_points: int,
-        duration_ms: float
-    ):
+        duration_ms: float,
+    ) -> None:
         """Log successful read"""
         event = self._create_event(
             AuditEventType.READ_SUCCESS,
@@ -239,7 +204,7 @@ class AuditLogger:
             count=address_end - address_start + 1,
             data_points=data_points,
             duration_ms=duration_ms,
-            status="SUCCESS"
+            status="SUCCESS",
         )
         self._write_event(event)
 
@@ -251,8 +216,8 @@ class AuditLogger:
         address_start: int,
         address_end: int,
         error_message: str,
-        duration_ms: float
-    ):
+        duration_ms: float,
+    ) -> None:
         """Log read error"""
         event = self._create_event(
             AuditEventType.READ_ERROR,
@@ -263,32 +228,20 @@ class AuditLogger:
             address_end=address_end,
             error_message=error_message,
             duration_ms=duration_ms,
-            status="ERROR"
+            status="ERROR",
         )
         self._write_event(event)
 
-    def log_scan_start(
-        self,
-        plc_ip: str,
-        mode: str,
-        device_ranges: Optional[List[str]] = None
-    ):
+    def log_scan_start(self, plc_ip: str, mode: str, device_ranges: Optional[List[str]] = None) -> None:
         """Log scan start"""
         event = self._create_event(
-            AuditEventType.SCAN_START,
-            plc_ip=plc_ip,
-            metadata={"mode": mode, "device_ranges": device_ranges}
+            AuditEventType.SCAN_START, plc_ip=plc_ip, metadata={"mode": mode, "device_ranges": device_ranges}
         )
         self._write_event(event)
 
     def log_scan_complete(
-        self,
-        plc_ip: str,
-        total_points: int,
-        success_count: int,
-        error_count: int,
-        duration_ms: float
-    ):
+        self, plc_ip: str, total_points: int, success_count: int, error_count: int, duration_ms: float
+    ) -> None:
         """Log scan completion"""
         event = self._create_event(
             AuditEventType.SCAN_COMPLETE,
@@ -298,27 +251,19 @@ class AuditLogger:
             metadata={
                 "success_count": success_count,
                 "error_count": error_count,
-                "success_rate": f"{(success_count / total_points * 100):.2f}%" if total_points > 0 else "N/A"
-            }
+                "success_rate": f"{(success_count / total_points * 100):.2f}%" if total_points > 0 else "N/A",
+            },
         )
         self._write_event(event)
 
-    def log_error(self, message: str, metadata: Optional[Dict] = None):
+    def log_error(self, message: str, metadata: Optional[Dict] = None) -> None:
         """Log general error"""
-        event = self._create_event(
-            AuditEventType.ERROR,
-            error_message=message,
-            metadata=metadata
-        )
+        event = self._create_event(AuditEventType.ERROR, error_message=message, metadata=metadata)
         self._write_event(event)
 
-    def log_warning(self, message: str, metadata: Optional[Dict] = None):
+    def log_warning(self, message: str, metadata: Optional[Dict] = None) -> None:
         """Log warning"""
-        event = self._create_event(
-            AuditEventType.WARNING,
-            error_message=message,
-            metadata=metadata
-        )
+        event = self._create_event(AuditEventType.WARNING, error_message=message, metadata=metadata)
         self._write_event(event)
 
     def close(self):
@@ -336,11 +281,11 @@ class AuditLogger:
         """Get current session ID"""
         return self._session_id
 
-    def set_enabled(self, enabled: bool):
+    def set_enabled(self, enabled: bool) -> None:
         """Enable or disable audit logging"""
         self.enabled = enabled
 
-    def set_log_file(self, log_file: str):
+    def set_log_file(self, log_file: str) -> None:
         """Set or change log file"""
         if self._file_handle:
             self.close()
@@ -362,19 +307,13 @@ def get_audit_logger() -> AuditLogger:
 
 
 def init_audit_logger(
-    log_file: Optional[str] = None,
-    enabled: bool = True,
-    console_output: bool = False
+    log_file: Optional[str] = None, enabled: bool = True, console_output: bool = False
 ) -> AuditLogger:
     """Initialize (or re-initialize) the global audit logger"""
     global _audit_logger
     if _audit_logger is not None:
         _audit_logger.close()
-    _audit_logger = AuditLogger(
-        log_file=log_file,
-        enabled=enabled,
-        console_output=console_output
-    )
+    _audit_logger = AuditLogger(log_file=log_file, enabled=enabled, console_output=console_output)
     return _audit_logger
 
 

@@ -2,19 +2,20 @@
 Unit tests for database module
 """
 
-import pytest
-import tempfile
 import os
-from pathlib import Path
+import tempfile
 from datetime import datetime
+from pathlib import Path
 
+import pytest
+
+from plc_discovery.config import DataPoint, PLCInfo, Protocol, StatusCode
 from plc_discovery.database import (
-    DatabaseExporter,
     DatabaseConfig,
+    DatabaseExporter,
     create_database,
     get_database_exporter,
 )
-from plc_discovery.config import PLCInfo, DataPoint, StatusCode, Protocol
 
 
 class TestDatabaseConfig:
@@ -65,11 +66,7 @@ class TestDatabaseExporter:
     @pytest.fixture
     def db_exporter(self, temp_db_path):
         """Create database exporter"""
-        config = DatabaseConfig(
-            enabled=True,
-            path=temp_db_path,
-            track_history=True
-        )
+        config = DatabaseConfig(enabled=True, path=temp_db_path, track_history=True)
         db = DatabaseExporter(config)
         yield db
         db.close()
@@ -102,18 +99,8 @@ class TestDatabaseExporter:
     def test_export_discovery_results(self, db_exporter):
         """Test exporting discovery results"""
         plcs = [
-            PLCInfo(
-                ip_address="192.168.1.10",
-                protocol=Protocol.SLMP,
-                port=5001,
-                manufacturer="Mitsubishi"
-            ),
-            PLCInfo(
-                ip_address="192.168.1.20",
-                protocol=Protocol.MODBUS_TCP,
-                port=502,
-                manufacturer="Unknown"
-            ),
+            PLCInfo(ip_address="192.168.1.10", protocol=Protocol.SLMP, port=5001, manufacturer="Mitsubishi"),
+            PLCInfo(ip_address="192.168.1.20", protocol=Protocol.MODBUS_TCP, port=502, manufacturer="Unknown"),
         ]
 
         count = db_exporter.export_discovery_results(plcs)
@@ -128,18 +115,10 @@ class TestDatabaseExporter:
         """Test exporting PLC data points"""
         data_points = [
             DataPoint(
-                address="D0",
-                value=100,
-                raw_hex="0064",
-                status=StatusCode.OK,
-                timestamp=datetime.now().isoformat()
+                address="D0", value=100, raw_hex="0064", status=StatusCode.OK, timestamp=datetime.now().isoformat()
             ),
             DataPoint(
-                address="D1",
-                value=200,
-                raw_hex="00C8",
-                status=StatusCode.OK,
-                timestamp=datetime.now().isoformat()
+                address="D1", value=200, raw_hex="00C8", status=StatusCode.OK, timestamp=datetime.now().isoformat()
             ),
         ]
 
@@ -166,12 +145,7 @@ class TestDatabaseExporter:
 
             # Export some data
             data_points = [
-                DataPoint(
-                    address="D0",
-                    value=100,
-                    status=StatusCode.OK,
-                    timestamp=datetime.now().isoformat()
-                ),
+                DataPoint(address="D0", value=100, status=StatusCode.OK, timestamp=datetime.now().isoformat()),
             ]
             db_exporter.export_plc_data(data_points, "192.168.1.10", session_id)
 
@@ -182,34 +156,20 @@ class TestDatabaseExporter:
 
     def test_history_tracking(self, temp_db_path):
         """Test value change tracking"""
-        config = DatabaseConfig(
-            enabled=True,
-            path=temp_db_path,
-            track_history=True
-        )
+        config = DatabaseConfig(enabled=True, path=temp_db_path, track_history=True)
         db = DatabaseExporter(config)
 
         plc_ip = "192.168.1.10"
 
         # First value
         data_points = [
-            DataPoint(
-                address="D0",
-                value=100,
-                status=StatusCode.OK,
-                timestamp=datetime.now().isoformat()
-            ),
+            DataPoint(address="D0", value=100, status=StatusCode.OK, timestamp=datetime.now().isoformat()),
         ]
         db.export_plc_data(data_points, plc_ip)
 
         # Changed value
         data_points = [
-            DataPoint(
-                address="D0",
-                value=200,
-                status=StatusCode.OK,
-                timestamp=datetime.now().isoformat()
-            ),
+            DataPoint(address="D0", value=200, status=StatusCode.OK, timestamp=datetime.now().isoformat()),
         ]
         db.export_plc_data(data_points, plc_ip)
 
@@ -228,12 +188,7 @@ class TestDatabaseExporter:
         # Export multiple values
         for i in range(3):
             data_points = [
-                DataPoint(
-                    address="D0",
-                    value=100 + i,
-                    status=StatusCode.OK,
-                    timestamp=datetime.now().isoformat()
-                ),
+                DataPoint(address="D0", value=100 + i, status=StatusCode.OK, timestamp=datetime.now().isoformat()),
             ]
             db_exporter.export_plc_data(data_points, plc_ip)
 
@@ -248,12 +203,7 @@ class TestDatabaseExporter:
         db_exporter.export_discovery_results(plcs)
 
         data_points = [
-            DataPoint(
-                address="D0",
-                value=100,
-                status=StatusCode.OK,
-                timestamp=datetime.now().isoformat()
-            ),
+            DataPoint(address="D0", value=100, status=StatusCode.OK, timestamp=datetime.now().isoformat()),
         ]
         db_exporter.export_plc_data(data_points, "192.168.1.10")
 
@@ -340,7 +290,7 @@ class TestDatabaseWithDataTypes:
                 timestamp=datetime.now().isoformat(),
                 data_type="FLOAT",
                 converted_value=1.0,
-                display_value="1.000000"
+                display_value="1.000000",
             ),
         ]
 
@@ -488,11 +438,7 @@ class TestDatabaseOnOffSwitch:
 
     def test_enabled_with_history_tracking_off(self, temp_db_path):
         """Test enabled database with history tracking disabled"""
-        config = DatabaseConfig(
-            enabled=True,
-            path=temp_db_path,
-            track_history=False
-        )
+        config = DatabaseConfig(enabled=True, path=temp_db_path, track_history=False)
         db = DatabaseExporter(config)
 
         plc_ip = "192.168.1.10"
@@ -517,11 +463,7 @@ class TestDatabaseOnOffSwitch:
 
     def test_enabled_with_history_tracking_on(self, temp_db_path):
         """Test enabled database with history tracking enabled"""
-        config = DatabaseConfig(
-            enabled=True,
-            path=temp_db_path,
-            track_history=True
-        )
+        config = DatabaseConfig(enabled=True, path=temp_db_path, track_history=True)
         db = DatabaseExporter(config)
 
         plc_ip = "192.168.1.10"

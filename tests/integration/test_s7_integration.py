@@ -10,8 +10,8 @@ address * 2), so the simulator denies bytes 1000-1101 = words 500-550.
 
 import pytest
 
-from plc_discovery.config import DeviceType, StatusCode
 from plc_discovery.collector import PLCDataCollector
+from plc_discovery.config import DeviceType, StatusCode
 
 pytestmark = [
     pytest.mark.integration,

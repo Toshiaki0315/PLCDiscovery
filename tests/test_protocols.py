@@ -2,16 +2,17 @@
 Tests for protocol handlers
 """
 
-import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
-from plc_discovery.config import Protocol, DeviceType, StatusCode
+import pytest
+
+from plc_discovery.config import DeviceType, Protocol, StatusCode
 from plc_discovery.protocols.base import BaseProtocolHandler
-from plc_discovery.protocols.slmp import SLMPHandler
-from plc_discovery.protocols.modbus import ModbusHandler
 from plc_discovery.protocols.ethernet_ip import EtherNetIPHandler
-from plc_discovery.protocols.s7 import S7Handler
 from plc_discovery.protocols.fins import FINSHandler
+from plc_discovery.protocols.modbus import ModbusHandler
+from plc_discovery.protocols.s7 import S7Handler
+from plc_discovery.protocols.slmp import SLMPHandler
 
 
 class TestBaseProtocolHandler:
@@ -19,6 +20,7 @@ class TestBaseProtocolHandler:
 
     def test_max_read_size(self, network_config):
         """Test max read size property"""
+
         # Create a concrete implementation for testing
         class TestHandler(BaseProtocolHandler):
             protocol = Protocol.SLMP
@@ -39,6 +41,7 @@ class TestBaseProtocolHandler:
     @pytest.mark.asyncio
     async def test_binary_search_single_address_success(self, network_config):
         """Test binary search with single successful address"""
+
         class TestHandler(BaseProtocolHandler):
             protocol = Protocol.SLMP
 
@@ -63,6 +66,7 @@ class TestBaseProtocolHandler:
     @pytest.mark.asyncio
     async def test_binary_search_single_address_failure(self, network_config):
         """Test binary search with single failed address"""
+
         class TestHandler(BaseProtocolHandler):
             protocol = Protocol.SLMP
 
@@ -116,6 +120,7 @@ class TestBaseProtocolHandler:
 
     def test_session_cache_operations(self, network_config):
         """Test session cache operations"""
+
         class TestHandler(BaseProtocolHandler):
             protocol = Protocol.SLMP
 

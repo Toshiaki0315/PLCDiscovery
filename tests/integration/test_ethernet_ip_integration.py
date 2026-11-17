@@ -6,8 +6,8 @@ Tests actual communication with EtherNet/IP simulator.
 
 import pytest
 
-from plc_discovery.config import Protocol, DeviceType, PLCInfo, StatusCode
 from plc_discovery.collector import PLCDataCollector
+from plc_discovery.config import DeviceType, PLCInfo, Protocol, StatusCode
 
 pytestmark = [
     pytest.mark.integration,

@@ -10,25 +10,24 @@ Supports:
 import asyncio
 import concurrent.futures
 import ipaddress
-from typing import Dict, List, Optional, Callable
+from typing import Callable, Dict, List, Optional, Tuple
 
-from .config import (
-    Protocol, PROTOCOL_PORTS, PLCInfo, NetworkConfig
-)
+from .config import PROTOCOL_PORTS, NetworkConfig, PLCInfo, Protocol
 from .probes import UDP_PROTOCOLS, read_eip_identity, verify_protocol
 from .utils import (
     get_local_networks,
+    get_manufacturer_from_mac,
     get_subnet_hosts,
+    is_port_open,
+    logger,
     parse_ip_range,
     read_arp_cache,
-    is_port_open,
-    get_manufacturer_from_mac,
-    logger,
 )
 
 # Try to import optional dependencies
 try:
-    from scapy.all import ARP, Ether, srp, conf
+    from scapy.all import ARP, Ether, conf, srp
+
     SCAPY_AVAILABLE = True
 except ImportError:
     SCAPY_AVAILABLE = False
@@ -40,7 +39,7 @@ except ImportError:
 SIMULATOR_PORTS: Dict[Protocol, List[int]] = {
     Protocol.MODBUS_TCP: [1502],
     Protocol.S7: [1102],
-    Protocol.ETHERNET_IP: [44819, 44820],   # Logix / Omron NJ/NX modes of the EtherNet/IP simulator
+    Protocol.ETHERNET_IP: [44819, 44820],  # Logix / Omron NJ/NX modes of the EtherNet/IP simulator
 }
 
 
@@ -131,7 +130,7 @@ MAX_AUTO_SCAN_PREFIX = 22
 # Manufacturer / model implied by a verified protocol, used when the device
 # identification fails or the protocol has none. None = cannot be inferred
 # (Modbus/TCP and EtherNet/IP are implemented by many vendors).
-PROTOCOL_IDENTITY_DEFAULTS = {
+PROTOCOL_IDENTITY_DEFAULTS: Dict[Optional[Protocol], Tuple[Optional[str], Optional[str]]] = {
     Protocol.SLMP: ("三菱電機/キーエンス", "SLMP対応PLC"),
     Protocol.S7: ("シーメンス", "S7 PLC"),
     Protocol.FINS: ("オムロン", "FINS対応PLC"),
@@ -179,11 +178,7 @@ class PLCDiscovery:
     Scans network for PLCs using multiple protocols and methods.
     """
 
-    def __init__(
-        self,
-        config: Optional[NetworkConfig] = None,
-        protocols: Optional[List[Protocol]] = None
-    ):
+    def __init__(self, config: Optional[NetworkConfig] = None, protocols: Optional[List[Protocol]] = None):
         """
         Args:
             config: Network configuration
@@ -198,11 +193,11 @@ class PLCDiscovery:
         self._probe_executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
         self._progress_callback: Optional[Callable[[str, int, int], None]] = None
 
-    def set_progress_callback(self, callback: Callable[[str, int, int], None]):
+    def set_progress_callback(self, callback: Callable[[str, int, int], None]) -> None:
         """Set callback for progress updates: callback(message, current, total)"""
         self._progress_callback = callback
 
-    def _report_progress(self, message: str, current: int = 0, total: int = 0):
+    def _report_progress(self, message: str, current: int = 0, total: int = 0) -> None:
         """Report progress to callback if set"""
         if self._progress_callback:
             self._progress_callback(message, current, total)
@@ -241,7 +236,7 @@ class PLCDiscovery:
         logger.info(f"Starting same-segment discovery on: {', '.join(label for _, _, label in scan)}")
 
         for ip, netmask, label in scan:
-            hosts = [h for h in get_subnet_hosts(ip, netmask) if h != ip]   # skip this PC
+            hosts = [h for h in get_subnet_hosts(ip, netmask) if h != ip]  # skip this PC
             self._report_progress(f"Scanning {len(hosts)} hosts in {label}", 0, len(hosts))
 
             mac_table = {}
@@ -314,8 +309,7 @@ class PLCDiscovery:
             # in parallel, a TCP check plus a probe each (~2 timeouts per host)
             worst_s = total / batch_size * 2 * self.config.discovery_timeout_ms / 1000
             logger.warning(
-                f"Scanning {total} hosts may take up to ~{worst_s / 60:.0f} minutes; "
-                f"consider a narrower --ip-range"
+                f"Scanning {total} hosts may take up to ~{worst_s / 60:.0f} minutes; " f"consider a narrower --ip-range"
             )
 
         # Dedicated pool sized for one batch: every host probes all its
@@ -329,10 +323,9 @@ class PLCDiscovery:
         )
         try:
             for i in range(0, total, batch_size):
-                batch = hosts[i:i + batch_size]
+                batch = hosts[i : i + batch_size]
                 results = await asyncio.gather(
-                    *(self._probe_host_all(h, mac_table.get(h)) for h in batch),
-                    return_exceptions=True
+                    *(self._probe_host_all(h, mac_table.get(h)) for h in batch), return_exceptions=True
                 )
 
                 for result in results:
@@ -357,6 +350,7 @@ class PLCDiscovery:
         try:
             # Build network string
             from ipaddress import IPv4Network
+
             network = IPv4Network(f"{ip}/{netmask}", strict=False)
 
             # Send ARP request
@@ -366,8 +360,7 @@ class PLCDiscovery:
             # Run ARP scan with timeout
             loop = asyncio.get_running_loop()
             answered, _ = await loop.run_in_executor(
-                None,
-                lambda: srp(arp_request, timeout=self.config.discovery_timeout_ms / 1000, verbose=False)
+                None, lambda: srp(arp_request, timeout=self.config.discovery_timeout_ms / 1000, verbose=False)
             )
 
             for sent, received in answered:
@@ -403,12 +396,7 @@ class PLCDiscovery:
         found = await self._probe_host_all(ip, mac, first_only=True)
         return found[0] if found else None
 
-    async def _probe_host_all(
-        self,
-        ip: str,
-        mac: Optional[str] = None,
-        first_only: bool = False
-    ) -> List[PLCInfo]:
+    async def _probe_host_all(self, ip: str, mac: Optional[str] = None, first_only: bool = False) -> List[PLCInfo]:
         """
         Probe a single host for PLC protocols.
 
@@ -420,7 +408,8 @@ class PLCDiscovery:
         timeout = self.config.discovery_timeout_ms / 1000
         candidates = [
             (protocol, port)
-            for protocol in PROTOCOL_PORTS if protocol in self.protocols
+            for protocol in PROTOCOL_PORTS
+            if protocol in self.protocols
             for port in self._candidate_ports(ip, protocol)
         ]
 
@@ -460,7 +449,7 @@ class PLCDiscovery:
                 mac_address=mac,
                 protocol=protocol,
                 port=port,
-                manufacturer=get_manufacturer_from_mac(mac) if mac else None
+                manufacturer=get_manufacturer_from_mac(mac) if mac else None,
             )
             # Try to get detailed info using protocol-specific queries
             results.append(await self._get_detailed_info(plc_info))
@@ -518,16 +507,17 @@ class PLCDiscovery:
         """
         try:
             identity = await asyncio.get_running_loop().run_in_executor(
-                None, read_eip_identity,
-                plc_info.ip_address, plc_info.port or 44818, self.config.discovery_timeout_ms / 1000
+                None,
+                read_eip_identity,
+                plc_info.ip_address,
+                plc_info.port or 44818,
+                self.config.discovery_timeout_ms / 1000,
             )
         except Exception as e:
             logger.debug(f"EtherNet/IP identity query failed: {e}")
             return plc_info
         if identity:
-            plc_info.manufacturer = (
-                identity.get("vendor") or plc_info.manufacturer or f"Vendor {identity['vendor_id']}"
-            )
+            plc_info.manufacturer = identity.get("vendor") or plc_info.manufacturer or f"Vendor {identity['vendor_id']}"
             plc_info.model = identity.get("product_name") or plc_info.model
             plc_info.firmware_version = identity.get("revision") or plc_info.firmware_version
             plc_info.read_method = eip_read_method(identity) or plc_info.read_method
@@ -537,6 +527,7 @@ class PLCDiscovery:
         """Query Modbus device for identification"""
         try:
             from pymodbus.client import ModbusTcpClient
+
             from .protocols.modbus import modbus_unit_kwargs
 
             def _query():
@@ -554,16 +545,15 @@ class PLCDiscovery:
                         # Try to read device identification (MEI)
                         method = client.read_device_information
                         response = method(
-                            read_code=0x01,  # Basic identification
-                            object_id=0x00,
-                            **modbus_unit_kwargs(method, 1)
+                            read_code=0x01, object_id=0x00, **modbus_unit_kwargs(method, 1)  # Basic identification
                         )
 
                         if response and not response.isError():
                             info = response.information
 
                             def text(key: int) -> str:
-                                return info.get(key, b'').decode('utf-8', errors='ignore').strip()
+                                return str(info.get(key, b"").decode("utf-8", errors="ignore")).strip()
+
                             # Keep values found earlier (e.g. MAC OUI) when a field is empty
                             plc_info.manufacturer = text(0) or plc_info.manufacturer
                             plc_info.model = text(1) or plc_info.model or "Modbus/TCP対応機器"
@@ -596,6 +586,7 @@ class PLCDiscovery:
         plc_info.model = plc_info.model or "S7 PLC"
         try:
             import snap7
+
             from .protocols.s7 import read_s7_identity
 
             def _query():
@@ -639,8 +630,8 @@ class PLCDiscovery:
     async def _query_fins_info(self, plc_info: PLCInfo) -> PLCInfo:
         """Query FINS device for information"""
         try:
-            from .protocols.fins import FINSHandler
             from .config import DeviceType, StatusCode
+            from .protocols.fins import FINSHandler
 
             # Simple read to confirm connection
             handler = FINSHandler(
@@ -683,7 +674,7 @@ async def discover_plcs(
     ip_range: Optional[str] = None,
     config: Optional[NetworkConfig] = None,
     progress_callback: Optional[Callable[[str, int, int], None]] = None,
-    protocols: Optional[List[Protocol]] = None
+    protocols: Optional[List[Protocol]] = None,
 ) -> List[PLCInfo]:
     """
     Convenience function to discover PLCs.

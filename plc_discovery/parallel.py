@@ -6,14 +6,14 @@ and proper error isolation.
 """
 
 import asyncio
-from typing import Callable, Dict, List, Optional, Any
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any, Callable, Dict, List, Optional
 
-from .config import DeviceRange, DataPoint, PLCInfo, NetworkConfig, ScanMode, StatusCode
-from .collector import PLCDataCollector, collect_item
 from .audit_log import get_audit_logger
+from .collector import PLCDataCollector, collect_item
+from .config import DataPoint, DeviceRange, NetworkConfig, PLCInfo, ScanMode, StatusCode
 from .discovery import target_labels
 from .utils import success_rate_text
 
@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class PLCScanResult:
     """Result of scanning a single PLC"""
+
     plc_info: PLCInfo
     data_points: List[DataPoint]
     denied_addresses: set
@@ -64,7 +65,7 @@ class ParallelPLCScanner:
     def __init__(
         self,
         config: Optional[NetworkConfig] = None,
-        progress_callback: Optional[Callable[[str, int, int], None]] = None
+        progress_callback: Optional[Callable[[str, int, int], None]] = None,
     ):
         self.config = config or NetworkConfig()
         self.progress_callback = progress_callback
@@ -72,7 +73,7 @@ class ParallelPLCScanner:
         self._results: Dict[str, PLCScanResult] = {}
         self._audit = get_audit_logger()
 
-    def _report_progress(self, message: str, current: int = 0, total: int = 0):
+    def _report_progress(self, message: str, current: int = 0, total: int = 0) -> None:
         """Report progress"""
         if self.progress_callback:
             self.progress_callback(message, current, total)
@@ -80,10 +81,7 @@ class ParallelPLCScanner:
             logger.info(f"{message} ({current}/{total})" if total else message)
 
     async def scan_multiple_plcs(
-        self,
-        plcs: List[PLCInfo],
-        mode: ScanMode = ScanMode.FULL,
-        device_ranges: Optional[List[DeviceRange]] = None
+        self, plcs: List[PLCInfo], mode: ScanMode = ScanMode.FULL, device_ranges: Optional[List[DeviceRange]] = None
     ) -> Dict[str, PLCScanResult]:
         """
         Scan multiple PLCs concurrently.
@@ -104,14 +102,12 @@ class ParallelPLCScanner:
         self._semaphore = asyncio.Semaphore(max_concurrent)
 
         self._report_progress(
-            f"Starting parallel scan of {len(plcs)} PLCs (max {max_concurrent} concurrent)",
-            0, len(plcs)
+            f"Starting parallel scan of {len(plcs)} PLCs (max {max_concurrent} concurrent)", 0, len(plcs)
         )
 
         # Create tasks for each PLC
         tasks = [
-            self._scan_single_plc_with_semaphore(plc, mode, device_ranges, i, len(plcs))
-            for i, plc in enumerate(plcs)
+            self._scan_single_plc_with_semaphore(plc, mode, device_ranges, i, len(plcs)) for i, plc in enumerate(plcs)
         ]
 
         # Run all tasks and gather results
@@ -120,7 +116,7 @@ class ParallelPLCScanner:
         # Process results (keyed by IP, or "IP (PROTOCOL:port)" when several
         # targets share an IP, so no result is overwritten)
         for plc, label, result in zip(plcs, target_labels(plcs), results):
-            if isinstance(result, Exception):
+            if isinstance(result, BaseException):
                 self._results[label] = PLCScanResult(
                     plc_info=plc,
                     data_points=[],
@@ -135,32 +131,21 @@ class ParallelPLCScanner:
 
         # Report completion
         successful = sum(1 for r in self._results.values() if r.success)
-        self._report_progress(
-            f"Parallel scan complete: {successful}/{len(plcs)} successful",
-            len(plcs), len(plcs)
-        )
+        self._report_progress(f"Parallel scan complete: {successful}/{len(plcs)} successful", len(plcs), len(plcs))
 
         return self._results
 
     async def _scan_single_plc_with_semaphore(
-        self,
-        plc: PLCInfo,
-        mode: ScanMode,
-        device_ranges: Optional[List[DeviceRange]],
-        index: int,
-        total: int
+        self, plc: PLCInfo, mode: ScanMode, device_ranges: Optional[List[DeviceRange]], index: int, total: int
     ) -> PLCScanResult:
         """Scan a single PLC with semaphore for concurrency control"""
+        if self._semaphore is None:
+            return await self._scan_single_plc(plc, mode, device_ranges, index, total)
         async with self._semaphore:
             return await self._scan_single_plc(plc, mode, device_ranges, index, total)
 
     async def _scan_single_plc(
-        self,
-        plc: PLCInfo,
-        mode: ScanMode,
-        device_ranges: Optional[List[DeviceRange]],
-        index: int,
-        total: int
+        self, plc: PLCInfo, mode: ScanMode, device_ranges: Optional[List[DeviceRange]], index: int, total: int
     ) -> PLCScanResult:
         """Scan a single PLC"""
         start_time = datetime.now()
@@ -176,18 +161,14 @@ class ParallelPLCScanner:
             async with PLCDataCollector(plc, self.config) as collector:
                 connected = collector.is_connected
                 self._audit.log_connect(
-                    plc.ip_address,
-                    plc.protocol.name if plc.protocol else "UNKNOWN",
-                    plc.port or 0,
-                    connected
+                    plc.ip_address, plc.protocol.name if plc.protocol else "UNKNOWN", plc.port or 0, connected
                 )
 
                 if not connected:
                     reason = getattr(collector, "connect_error", None)
                     raise ConnectionError(
                         f"Failed to connect to {plc.ip_address}:{plc.port} "
-                        f"({plc.protocol.name if plc.protocol else 'UNKNOWN'})"
-                        + (f": {reason}" if reason else "")
+                        f"({plc.protocol.name if plc.protocol else 'UNKNOWN'})" + (f": {reason}" if reason else "")
                     )
 
                 if mode == ScanMode.FULL:
@@ -221,11 +202,7 @@ class ParallelPLCScanner:
         # Log scan completion
         stats = result.statistics
         self._audit.log_scan_complete(
-            plc.ip_address,
-            stats["total_points"],
-            stats["success_count"],
-            stats["error_count"],
-            result.duration_ms
+            plc.ip_address, stats["total_points"], stats["success_count"], stats["error_count"], result.duration_ms
         )
 
         return result
@@ -240,8 +217,7 @@ class ParallelPLCScanner:
         successful_plcs = sum(1 for r in self._results.values() if r.success)
         total_points = sum(len(r.data_points) for r in self._results.values())
         total_success = sum(
-            sum(1 for dp in r.data_points if dp.status == StatusCode.OK)
-            for r in self._results.values()
+            sum(1 for dp in r.data_points if dp.status == StatusCode.OK) for r in self._results.values()
         )
         total_denied = sum(len(r.denied_addresses) for r in self._results.values())
         total_duration = sum(r.duration_ms for r in self._results.values())
@@ -265,7 +241,7 @@ async def scan_plcs_parallel(
     mode: ScanMode = ScanMode.FULL,
     device_ranges: Optional[List[DeviceRange]] = None,
     config: Optional[NetworkConfig] = None,
-    progress_callback: Optional[Callable[[str, int, int], None]] = None
+    progress_callback: Optional[Callable[[str, int, int], None]] = None,
 ) -> Dict[str, PLCScanResult]:
     """
     Convenience function to scan multiple PLCs in parallel.

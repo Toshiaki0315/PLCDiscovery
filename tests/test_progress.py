@@ -2,10 +2,12 @@
 Tests for progress module
 """
 
-
 from plc_discovery.progress import (
-    SimpleProgress, RichProgressDisplay,
-    get_display, is_rich_available, create_progress_callback
+    RichProgressDisplay,
+    SimpleProgress,
+    create_progress_callback,
+    get_display,
+    is_rich_available,
 )
 
 
@@ -156,7 +158,7 @@ class TestRichProgressDisplay:
         results = {
             "192.168.1.10": {
                 "success": True,
-                "statistics": {"total_points": 100, "success_count": 95, "error_count": 5}
+                "statistics": {"total_points": 100, "success_count": 95, "error_count": 5},
             }
         }
 

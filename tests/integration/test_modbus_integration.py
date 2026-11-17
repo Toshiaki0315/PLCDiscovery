@@ -6,9 +6,8 @@ Tests actual communication with Modbus simulator.
 
 import pytest
 
-from plc_discovery.config import Protocol, DeviceType, PLCInfo, StatusCode
 from plc_discovery.collector import PLCDataCollector
-
+from plc_discovery.config import DeviceType, PLCInfo, Protocol, StatusCode
 
 # Mark all tests to require Modbus simulator
 pytestmark = [
@@ -40,9 +39,7 @@ class TestModbusConnection:
 class TestModbusDataRead:
     """Test Modbus data reading"""
 
-    async def test_read_holding_registers(
-        self, modbus_simulator, modbus_plc_info, network_config
-    ):
+    async def test_read_holding_registers(self, modbus_simulator, modbus_plc_info, network_config):
         """Test reading holding registers"""
         async with PLCDataCollector(modbus_plc_info, network_config) as collector:
             data_points = await collector.collect_range(DeviceType.HR, 0, 99)
@@ -52,18 +49,14 @@ class TestModbusDataRead:
         ok_count = sum(1 for dp in data_points if dp.status == StatusCode.OK)
         assert ok_count == 100
 
-    async def test_read_input_registers(
-        self, modbus_simulator, modbus_plc_info, network_config
-    ):
+    async def test_read_input_registers(self, modbus_simulator, modbus_plc_info, network_config):
         """Test reading input registers"""
         async with PLCDataCollector(modbus_plc_info, network_config) as collector:
             data_points = await collector.collect_range(DeviceType.IR, 0, 49)
 
         assert len(data_points) == 50
 
-    async def test_read_large_range(
-        self, modbus_simulator, modbus_plc_info, network_config
-    ):
+    async def test_read_large_range(self, modbus_simulator, modbus_plc_info, network_config):
         """Test reading large range (triggers chunking due to 125 word limit)"""
         async with PLCDataCollector(modbus_plc_info, network_config) as collector:
             data_points = await collector.collect_range(DeviceType.HR, 0, 249)
@@ -74,9 +67,7 @@ class TestModbusDataRead:
 class TestModbusDeniedAddresses:
     """Test Modbus denied address handling"""
 
-    async def test_denied_address_range(
-        self, modbus_simulator, modbus_plc_info, network_config
-    ):
+    async def test_denied_address_range(self, modbus_simulator, modbus_plc_info, network_config):
         """Test handling of denied address range"""
         async with PLCDataCollector(modbus_plc_info, network_config) as collector:
             # Read range that includes denied addresses (5000-5100)
@@ -85,15 +76,10 @@ class TestModbusDeniedAddresses:
         assert len(data_points) == 101
 
         # All should be marked as illegal
-        illegal_count = sum(
-            1 for dp in data_points
-            if dp.status == StatusCode.NG_ILLEGAL_ADDR
-        )
+        illegal_count = sum(1 for dp in data_points if dp.status == StatusCode.NG_ILLEGAL_ADDR)
         assert illegal_count == 101
 
-    async def test_binary_search_mixed_range(
-        self, modbus_simulator, modbus_plc_info, network_config
-    ):
+    async def test_binary_search_mixed_range(self, modbus_simulator, modbus_plc_info, network_config):
         """Test binary search with mixed valid/invalid addresses"""
         async with PLCDataCollector(modbus_plc_info, network_config) as collector:
             # Read range that spans valid and invalid
@@ -102,10 +88,7 @@ class TestModbusDeniedAddresses:
         assert len(data_points) == 301
 
         ok_count = sum(1 for dp in data_points if dp.status == StatusCode.OK)
-        denied_count = sum(
-            1 for dp in data_points
-            if dp.status == StatusCode.NG_ILLEGAL_ADDR
-        )
+        denied_count = sum(1 for dp in data_points if dp.status == StatusCode.NG_ILLEGAL_ADDR)
 
         # 4900-4999 and 5101-5200 should be OK
         assert ok_count == 200
@@ -116,9 +99,7 @@ class TestModbusDeniedAddresses:
 class TestModbusDataValues:
     """Test Modbus data value handling"""
 
-    async def test_register_values(
-        self, modbus_simulator, modbus_plc_info, network_config
-    ):
+    async def test_register_values(self, modbus_simulator, modbus_plc_info, network_config):
         """Test that register values are valid"""
         async with PLCDataCollector(modbus_plc_info, network_config) as collector:
             data_points = await collector.collect_range(DeviceType.HR, 0, 9)
@@ -128,9 +109,7 @@ class TestModbusDataValues:
                 assert 0 <= dp.value <= 65535
                 assert dp.raw_hex is not None
 
-    async def test_timestamp_present(
-        self, modbus_simulator, modbus_plc_info, network_config
-    ):
+    async def test_timestamp_present(self, modbus_simulator, modbus_plc_info, network_config):
         """Test that timestamps are recorded"""
         async with PLCDataCollector(modbus_plc_info, network_config) as collector:
             data_points = await collector.collect_range(DeviceType.HR, 0, 0)
@@ -141,9 +120,7 @@ class TestModbusDataValues:
 class TestModbusStatistics:
     """Test Modbus statistics"""
 
-    async def test_statistics_tracking(
-        self, modbus_simulator, modbus_plc_info, network_config
-    ):
+    async def test_statistics_tracking(self, modbus_simulator, modbus_plc_info, network_config):
         """Test statistics are correctly tracked"""
         async with PLCDataCollector(modbus_plc_info, network_config) as collector:
             await collector.collect_range(DeviceType.HR, 0, 99)
@@ -156,9 +133,7 @@ class TestModbusStatistics:
 class TestModbusCoils:
     """Test Modbus coil handling"""
 
-    async def test_read_coils_as_bit_device(
-        self, modbus_simulator, modbus_plc_info, network_config
-    ):
+    async def test_read_coils_as_bit_device(self, modbus_simulator, modbus_plc_info, network_config):
         """Test reading coils (M device type maps to coils)"""
         async with PLCDataCollector(modbus_plc_info, network_config) as collector:
             # M device type should map to coils in Modbus

@@ -19,9 +19,7 @@ else:
     tomllib = pytest.importorskip("tomli")
 
 import plc_scanner
-from plc_discovery.config import (
-    DataPoint, DeviceRange, DeviceType, NetworkConfig, PLCInfo, Protocol, StatusCode
-)
+from plc_discovery.config import DataPoint, DeviceRange, DeviceType, NetworkConfig, PLCInfo, Protocol, StatusCode
 from plc_discovery.data_types import ByteOrder, DataType, DataTypeManager, DataTypeMapping
 from plc_discovery.output import CSVExporter, csv_safe
 
@@ -43,6 +41,7 @@ def converted(points):
 # ---------------------------------------------------------------------------
 # T1: dependencies resolvable and complete
 # ---------------------------------------------------------------------------
+
 
 class TestDependencies:
 
@@ -81,11 +80,11 @@ class TestAlignment:
 
     def test_failed_word_does_not_shift_following_values(self):
         points = float_words(100, 1.0, 2.0, 3.0, 4.0)
-        points[4] = failed("D104")   # first word of 3.0
+        points[4] = failed("D104")  # first word of 3.0
         result = plc_scanner.apply_data_type_conversion(points, DataType.FLOAT, ByteOrder.LITTLE_ENDIAN)
         assert converted(result) == [("D100", 1.0), ("D102", 2.0), ("D106", 4.0)]
         assert result[5].display_value == "(part of D104, incomplete)"
-        assert [dp.address for dp in result] == [dp.address for dp in points]   # nothing dropped
+        assert [dp.address for dp in result] == [dp.address for dp in points]  # nothing dropped
 
     def test_failed_second_word_marks_value_incomplete(self):
         points = float_words(100, 1.0, 2.0)
@@ -96,18 +95,18 @@ class TestAlignment:
 
     def test_mapping_aligned_to_mapping_start(self):
         manager = DataTypeManager.from_config({"mappings": [{"start": 100, "end": 199, "type": "FLOAT"}]})
-        points = float_words(100, 1.0, 2.0)[1:]   # range starts at D101
+        points = float_words(100, 1.0, 2.0)[1:]  # range starts at D101
         result = plc_scanner.apply_data_type_conversion(points, None, ByteOrder.LITTLE_ENDIAN, manager)
         assert converted(result) == [("D102", 2.0)]
         assert result[0].display_value == "(part of D100, incomplete)"
 
     def test_without_mapping_aligned_to_range_start(self):
-        points = float_words(101, 1.0, 2.0)       # requested range starts at D101
+        points = float_words(101, 1.0, 2.0)  # requested range starts at D101
         result = plc_scanner.apply_data_type_conversion(points, DataType.FLOAT, ByteOrder.LITTLE_ENDIAN)
         assert converted(result) == [("D101", 1.0), ("D103", 2.0)]
 
     def test_each_range_has_its_own_alignment(self):
-        points = float_words(0, 1.0) + float_words(51, 2.0)   # two separate ranges
+        points = float_words(0, 1.0) + float_words(51, 2.0)  # two separate ranges
         result = plc_scanner.apply_data_type_conversion(points, DataType.FLOAT, ByteOrder.LITTLE_ENDIAN)
         assert converted(result) == [("D0", 1.0), ("D51", 2.0)]
 
@@ -115,6 +114,7 @@ class TestAlignment:
 # ---------------------------------------------------------------------------
 # T3: mappings are device-aware
 # ---------------------------------------------------------------------------
+
 
 class TestDeviceAwareMappings:
 
@@ -126,17 +126,20 @@ class TestDeviceAwareMappings:
         assert all(dp.data_type != "FLOAT" for dp in result)
 
     def test_mapping_with_device_only_applies_to_that_device(self):
-        manager = DataTypeManager.from_config({"mappings": [
-            {"device": "HR", "start": 0, "end": 1, "type": "FLOAT"},
-        ]})
-        d_points = plc_scanner.apply_data_type_conversion(
-            float_words(0, 1.0), None, ByteOrder.LITTLE_ENDIAN, manager
+        manager = DataTypeManager.from_config(
+            {
+                "mappings": [
+                    {"device": "HR", "start": 0, "end": 1, "type": "FLOAT"},
+                ]
+            }
         )
+        d_points = plc_scanner.apply_data_type_conversion(float_words(0, 1.0), None, ByteOrder.LITTLE_ENDIAN, manager)
         # D0-D1 are not HR: only the default WORD type applies
         assert [dp.data_type for dp in d_points] == ["WORD", "WORD"]
         hr_points = [ok("HR0", 0x0000), ok("HR1", 0x3F80)]
-        assert converted(plc_scanner.apply_data_type_conversion(
-            hr_points, None, ByteOrder.LITTLE_ENDIAN, manager)) == [("HR0", 1.0)]
+        assert converted(plc_scanner.apply_data_type_conversion(hr_points, None, ByteOrder.LITTLE_ENDIAN, manager)) == [
+            ("HR0", 1.0)
+        ]
 
     def test_explicit_bit_device_mapping_allowed_for_single_word(self):
         mapping = DataTypeMapping(0, 10, DataType.BOOL, device="M")
@@ -156,6 +159,7 @@ class TestDeviceAwareMappings:
 # ---------------------------------------------------------------------------
 # T4: write failures do not stop scanning
 # ---------------------------------------------------------------------------
+
 
 class FakeCollector:
     is_connected = True
@@ -202,17 +206,23 @@ async def test_periodic_scan_survives_locked_csv():
     exporter.export_denied_addresses.side_effect = [PermissionError("locked"), "denied.csv"]
 
     with patch.object(plc_scanner, "PLCDataCollector", lambda *a: collector):
-        task = asyncio.ensure_future(plc_scanner.run_periodic_scan(
-            [PLCInfo("10.0.0.1", protocol=Protocol.SLMP, port=5001)], NetworkConfig(), exporter,
-            Display(), [DeviceRange(DeviceType.D, 0, 0)], interval=0.01,
-        ))
+        task = asyncio.ensure_future(
+            plc_scanner.run_periodic_scan(
+                [PLCInfo("10.0.0.1", protocol=Protocol.SLMP, port=5001)],
+                NetworkConfig(),
+                exporter,
+                Display(),
+                [DeviceRange(DeviceType.D, 0, 0)],
+                interval=0.01,
+            )
+        )
         while collector.calls < 4:
             await asyncio.sleep(0.005)
         task.cancel()
         (outcome,) = await task
 
-    assert collector.calls >= 4                       # monitoring kept running
-    assert exporter.export_denied_addresses.call_count == 2   # failed write retried once, then done
+    assert collector.calls >= 4  # monitoring kept running
+    assert exporter.export_denied_addresses.call_count == 2  # failed write retried once, then done
     assert outcome.success is False and "write error" in outcome.error
 
 
@@ -222,40 +232,48 @@ async def test_single_scan_reports_write_failure():
     exporter.export_plc_data.side_effect = OSError("disk full")
     with patch.object(plc_scanner, "PLCDataCollector", lambda *a: FakeCollector()):
         outcome = await plc_scanner.run_single_scan(
-            PLCInfo("10.0.0.1", protocol=Protocol.SLMP, port=5001), NetworkConfig(), exporter,
-            Display(), ScanMode.RANGE, [DeviceRange(DeviceType.D, 0, 0)],
+            PLCInfo("10.0.0.1", protocol=Protocol.SLMP, port=5001),
+            NetworkConfig(),
+            exporter,
+            Display(),
+            ScanMode.RANGE,
+            [DeviceRange(DeviceType.D, 0, 0)],
         )
     assert outcome.success is False
     assert "disk full" in outcome.error
-    assert outcome.data_points   # data was still collected
+    assert outcome.data_points  # data was still collected
 
 
 from plc_discovery.config import ScanMode  # noqa: E402  (used above)
-
 
 # ---------------------------------------------------------------------------
 # T5: CSV formula injection
 # ---------------------------------------------------------------------------
 
+
 class TestCSVSafe:
 
-    @pytest.mark.parametrize("value, expected", [
-        ('=HYPERLINK("http://x")', '\'=HYPERLINK("http://x")'),
-        ("+cmd", "'+cmd"),
-        ("@SUM(A1)", "'@SUM(A1)"),
-        ("-2+3", "'-2+3"),
-        ("-12.500000", "-12.500000"),   # negative number stays numeric
-        ("0x3F80", "0x3F80"),
-        ("Omron", "Omron"),
-        (-5, -5),
-        (None, None),
-    ])
+    @pytest.mark.parametrize(
+        "value, expected",
+        [
+            ('=HYPERLINK("http://x")', '\'=HYPERLINK("http://x")'),
+            ("+cmd", "'+cmd"),
+            ("@SUM(A1)", "'@SUM(A1)"),
+            ("-2+3", "'-2+3"),
+            ("-12.500000", "-12.500000"),  # negative number stays numeric
+            ("0x3F80", "0x3F80"),
+            ("Omron", "Omron"),
+            (-5, -5),
+            (None, None),
+        ],
+    )
     def test_csv_safe(self, value, expected):
         assert csv_safe(value) == expected
 
     def test_discovery_csv_neutralizes_device_strings(self, tmp_path):
-        plc = PLCInfo("10.0.0.5", manufacturer='=HYPERLINK("http://x","click")',
-                      model="@cmd", protocol=Protocol.MODBUS_TCP)
+        plc = PLCInfo(
+            "10.0.0.5", manufacturer='=HYPERLINK("http://x","click")', model="@cmd", protocol=Protocol.MODBUS_TCP
+        )
         path = CSVExporter(str(tmp_path)).export_discovery_results([plc])
         row = next(csv.DictReader(open(path, encoding="utf-8")))
         assert row["manufacturer"].startswith("'=")
@@ -263,8 +281,7 @@ class TestCSVSafe:
         assert row["ip_address"] == "10.0.0.5"
 
     def test_data_csv_keeps_negative_numbers(self, tmp_path):
-        dp = DataPoint("D0", 0xFFFF, "0xFFFF", StatusCode.OK, data_type="INT16",
-                       converted_value=-1, display_value="-1")
+        dp = DataPoint("D0", 0xFFFF, "0xFFFF", StatusCode.OK, data_type="INT16", converted_value=-1, display_value="-1")
         path = CSVExporter(str(tmp_path)).export_plc_data([dp], "1.2.3.4")
         row = next(csv.DictReader(open(path, encoding="utf-8")))
         assert row["converted_value"] == "-1" and row["display_value"] == "-1"
@@ -273,6 +290,7 @@ class TestCSVSafe:
 # ---------------------------------------------------------------------------
 # T6: Docker ports match the simulators
 # ---------------------------------------------------------------------------
+
 
 def test_docker_compose_ports_match_run_all():
     compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")

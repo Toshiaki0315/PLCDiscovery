@@ -13,11 +13,11 @@ Supported Protocols:
 """
 
 from .base import BaseProtocolHandler
-from .slmp import SLMPHandler, SLMPBinaryHandler
-from .modbus import ModbusHandler, ModbusRTUOverTCPHandler
 from .ethernet_ip import EtherNetIPHandler
-from .s7 import S7Handler
 from .fins import FINSHandler
+from .modbus import ModbusHandler, ModbusRTUOverTCPHandler
+from .s7 import S7Handler
+from .slmp import SLMPBinaryHandler, SLMPHandler
 
 __all__ = [
     "BaseProtocolHandler",

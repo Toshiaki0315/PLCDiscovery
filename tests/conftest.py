@@ -2,14 +2,12 @@
 Pytest Configuration and Shared Fixtures
 """
 
-import pytest
 import tempfile
 from unittest.mock import MagicMock
 
-from plc_discovery.config import (
-    Protocol, DeviceType, PLCInfo, DataPoint, StatusCode,
-    NetworkConfig, DeviceRange
-)
+import pytest
+
+from plc_discovery.config import DataPoint, DeviceRange, DeviceType, NetworkConfig, PLCInfo, Protocol, StatusCode
 
 
 @pytest.fixture
@@ -23,7 +21,7 @@ def sample_plc_info():
         protocol=Protocol.SLMP,
         port=5001,
         cpu_type="R04CPU",
-        firmware_version="1.0"
+        firmware_version="1.0",
     )
 
 
@@ -62,33 +60,17 @@ def sample_plc_list():
 def sample_data_points():
     """Sample DataPoint list for testing"""
     return [
-        DataPoint(
-            address="D0",
-            value=100,
-            raw_hex="0x0064",
-            status=StatusCode.OK,
-            timestamp="2024-01-01 10:00:00.000"
-        ),
-        DataPoint(
-            address="D1",
-            value=200,
-            raw_hex="0x00C8",
-            status=StatusCode.OK,
-            timestamp="2024-01-01 10:00:00.001"
-        ),
+        DataPoint(address="D0", value=100, raw_hex="0x0064", status=StatusCode.OK, timestamp="2024-01-01 10:00:00.000"),
+        DataPoint(address="D1", value=200, raw_hex="0x00C8", status=StatusCode.OK, timestamp="2024-01-01 10:00:00.001"),
         DataPoint(
             address="D2",
             value=None,
             raw_hex=None,
             status=StatusCode.NG_ILLEGAL_ADDR,
-            timestamp="2024-01-01 10:00:00.002"
+            timestamp="2024-01-01 10:00:00.002",
         ),
         DataPoint(
-            address="D3",
-            value=None,
-            raw_hex=None,
-            status=StatusCode.NG_TIMEOUT,
-            timestamp="2024-01-01 10:00:00.003"
+            address="D3", value=None, raw_hex=None, status=StatusCode.NG_TIMEOUT, timestamp="2024-01-01 10:00:00.003"
         ),
     ]
 
@@ -96,11 +78,7 @@ def sample_data_points():
 @pytest.fixture
 def sample_device_range():
     """Sample DeviceRange for testing"""
-    return DeviceRange(
-        device_type=DeviceType.D,
-        start_address=0,
-        end_address=99
-    )
+    return DeviceRange(device_type=DeviceType.D, start_address=0, end_address=99)
 
 
 @pytest.fixture
@@ -112,7 +90,7 @@ def network_config():
         packet_interval_ms=10,
         retry_interval_ms=50,
         request_timeout_ms=1000,
-        max_concurrent=1
+        max_concurrent=1,
     )
 
 

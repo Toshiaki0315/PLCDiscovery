@@ -12,15 +12,22 @@ import pytest
 import plc_scanner
 from plc_discovery.collector import PLCDataCollector
 from plc_discovery.config import (
-    DataPoint, DeviceRange, DeviceType, NetworkConfig, PLCInfo, Protocol, ScanMode, StatusCode
+    DataPoint,
+    DeviceRange,
+    DeviceType,
+    NetworkConfig,
+    PLCInfo,
+    Protocol,
+    ScanMode,
+    StatusCode,
 )
 from plc_discovery.config_loader import ConfigLoader
 from plc_discovery.probes import probe_fins_udp
 
-
 # ---------------------------------------------------------------------------
 # 1: invalid option values fail only that target
 # ---------------------------------------------------------------------------
+
 
 def load(tmp_path, targets):
     path = tmp_path / "c.json"
@@ -30,24 +37,30 @@ def load(tmp_path, targets):
     return loader
 
 
-@pytest.mark.parametrize("protocol, options, message", [
-    ("fins", {"dest_node": 300}, "dest_node must be an integer 0-254"),
-    ("fins_tcp", {"source_node": -1}, "source_node must be an integer 0-254"),
-    ("s7", {"slot": 99}, "slot must be an integer 0-31"),
-    ("s7", {"db_number": 0}, "db_number must be an integer 1-65535"),
-    ("modbus", {"unit_id": "1"}, "unit_id must be an integer 0-255"),
-    ("eip", {"slot": True}, "slot must be an integer 0-255"),
-])
+@pytest.mark.parametrize(
+    "protocol, options, message",
+    [
+        ("fins", {"dest_node": 300}, "dest_node must be an integer 0-254"),
+        ("fins_tcp", {"source_node": -1}, "source_node must be an integer 0-254"),
+        ("s7", {"slot": 99}, "slot must be an integer 0-31"),
+        ("s7", {"db_number": 0}, "db_number must be an integer 1-65535"),
+        ("modbus", {"unit_id": "1"}, "unit_id must be an integer 0-255"),
+        ("eip", {"slot": True}, "slot must be an integer 0-255"),
+    ],
+)
 def test_validate_rejects_out_of_range_options(tmp_path, protocol, options, message):
     loader = load(tmp_path, [{"ip": "10.0.0.1", "protocol": protocol, "options": options}])
     assert any(message in e for e in loader.validate())
 
 
 def test_validate_accepts_valid_options(tmp_path):
-    loader = load(tmp_path, [
-        {"ip": "10.0.0.1", "protocol": "fins", "options": {"dest_node": 0, "source_node": 254}},
-        {"ip": "10.0.0.2", "protocol": "s7", "options": {"rack": 0, "slot": 2, "db_number": 100}},
-    ])
+    loader = load(
+        tmp_path,
+        [
+            {"ip": "10.0.0.1", "protocol": "fins", "options": {"dest_node": 0, "source_node": 254}},
+            {"ip": "10.0.0.2", "protocol": "s7", "options": {"rack": 0, "slot": 2, "db_number": 100}},
+        ],
+    )
     assert loader.validate() == []
 
 
@@ -55,7 +68,7 @@ def test_validate_accepts_valid_options(tmp_path):
 async def test_collector_bad_option_value_returns_false():
     plc = PLCInfo("127.0.0.1", protocol=Protocol.FINS, port=9600, options={"dest_node": 300})
     collector = PLCDataCollector(plc)
-    assert await collector.connect() is False          # previously raised ValueError
+    assert await collector.connect() is False  # previously raised ValueError
     assert "dest_node must be 0-254" in collector.connect_error
 
 
@@ -98,7 +111,11 @@ async def test_bad_target_does_not_stop_other_targets(tmp_path):
     with patch.object(plc_scanner, "PLCDataCollector", make):
         outcomes = [
             await plc_scanner.run_single_scan(
-                plc, NetworkConfig(), exporter, Display(), ScanMode.RANGE,
+                plc,
+                NetworkConfig(),
+                exporter,
+                Display(),
+                ScanMode.RANGE,
                 [DeviceRange(DeviceType.D, 0, 0)],
             )
             for plc in (bad, good)
@@ -112,6 +129,7 @@ async def test_bad_target_does_not_stop_other_targets(tmp_path):
 # ---------------------------------------------------------------------------
 # 2: FINS/UDP probe uses the same node numbers as FINSHandler
 # ---------------------------------------------------------------------------
+
 
 def test_fins_udp_probe_uses_ip_derived_nodes():
     received = []
@@ -135,5 +153,5 @@ def test_fins_udp_probe_uses_ip_derived_nodes():
         srv.close()
 
     request = received[0]
-    assert request[4] == 1   # DA1 = last octet of 127.0.0.1
-    assert request[7] == 1   # SA1 = last octet of the local address (127.0.0.1)
+    assert request[4] == 1  # DA1 = last octet of 127.0.0.1
+    assert request[7] == 1  # SA1 = last octet of the local address (127.0.0.1)

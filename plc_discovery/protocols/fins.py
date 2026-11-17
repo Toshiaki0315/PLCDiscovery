@@ -7,35 +7,35 @@ CS/CJ/CP/NJ/NX series PLCs.
 
 import asyncio
 import ipaddress
-import struct
 import logging
+import struct
 from typing import Dict, List, Optional, Tuple
 
-from ..config import Protocol, DeviceType, StatusCode, NetworkConfig
+from ..config import DeviceType, NetworkConfig, Protocol, StatusCode
 from .base import BaseProtocolHandler
 
 logger = logging.getLogger(__name__)
 
 
 # FINS Frame constants
-FINS_ICF = 0x80          # Information Control Field (command)
-FINS_RSV = 0x00          # Reserved
-FINS_GCT = 0x02          # Permissible number of gateways
-FINS_DNA = 0x00          # Destination network address (local)
-FINS_DA1 = 0x00          # Destination node address (PLC node)
-FINS_DA2 = 0x00          # Destination unit address (CPU unit)
-FINS_SNA = 0x00          # Source network address (local)
-FINS_SA1 = 0x00          # Source node address (client node)
-FINS_SA2 = 0x00          # Source unit address
+FINS_ICF = 0x80  # Information Control Field (command)
+FINS_RSV = 0x00  # Reserved
+FINS_GCT = 0x02  # Permissible number of gateways
+FINS_DNA = 0x00  # Destination network address (local)
+FINS_DA1 = 0x00  # Destination node address (PLC node)
+FINS_DA2 = 0x00  # Destination unit address (CPU unit)
+FINS_SNA = 0x00  # Source network address (local)
+FINS_SA1 = 0x00  # Source node address (client node)
+FINS_SA2 = 0x00  # Source unit address
 
 # FINS Memory Area codes
 FINS_AREA_CODES = {
-    DeviceType.DM: 0x82,     # DM Area (word)
-    DeviceType.D: 0x82,      # Alias for DM
-    DeviceType.HR: 0xB2,     # HR Area (word)
-    DeviceType.W: 0xB1,      # W Area (word)
-    DeviceType.IR: 0xDC,     # IR Area (word) - Actually CIO
-    DeviceType.M: 0xB0,      # CIO Area (word access; 0x30 is bit access = 1 byte/point)
+    DeviceType.DM: 0x82,  # DM Area (word)
+    DeviceType.D: 0x82,  # Alias for DM
+    DeviceType.HR: 0xB2,  # HR Area (word)
+    DeviceType.W: 0xB1,  # W Area (word)
+    DeviceType.IR: 0xDC,  # IR Area (word) - Actually CIO
+    DeviceType.M: 0xB0,  # CIO Area (word access; 0x30 is bit access = 1 byte/point)
 }
 
 # End code bits that are flags, not errors:
@@ -45,8 +45,8 @@ FINS_AREA_CODES = {
 FINS_END_CODE_MASK = 0x7F3F
 
 # FINS Commands
-FINS_CMD_MEMORY_READ = (0x01, 0x01)   # Memory area read
-FINS_CMD_CONTROLLER_DATA_READ = (0x05, 0x01)   # Controller data read (CPU model / version)
+FINS_CMD_MEMORY_READ = (0x01, 0x01)  # Memory area read
+FINS_CMD_CONTROLLER_DATA_READ = (0x05, 0x01)  # Controller data read (CPU model / version)
 # Controller data reply: CPU unit model (20 bytes) and version (20 bytes) first
 FINS_CONTROLLER_MODEL_BYTES = 20
 FINS_CONTROLLER_VERSION_BYTES = 20
@@ -142,7 +142,7 @@ class FINSHandler(BaseProtocolHandler):
         config: Optional[NetworkConfig] = None,
         use_tcp: bool = False,
         source_node: Optional[int] = None,
-        dest_node: Optional[int] = None
+        dest_node: Optional[int] = None,
     ):
         """
         Initialize FINS handler.
@@ -158,11 +158,7 @@ class FINSHandler(BaseProtocolHandler):
                 PLC's IP address (Omron automatic address conversion); with
                 FINS/TCP the PLC reports its node during the handshake.
         """
-        super().__init__(
-            ip_address,
-            port or self.DEFAULT_PORT_UDP,
-            config
-        )
+        super().__init__(ip_address, port or self.DEFAULT_PORT_UDP, config)
 
         self.use_tcp = use_tcp
         if use_tcp:
@@ -175,10 +171,10 @@ class FINSHandler(BaseProtocolHandler):
         self.source_node = source_node if source_node is not None else 0
         self.dest_node = dest_node if dest_node is not None else _last_octet(ip_address)
 
-        self._transport = None
-        self._protocol_instance = None
-        self._reader = None
-        self._writer = None
+        self._transport: Optional[asyncio.DatagramTransport] = None
+        self._protocol_instance: Optional["FINSUDPProtocol"] = None
+        self._reader: Optional[asyncio.StreamReader] = None
+        self._writer: Optional[asyncio.StreamWriter] = None
         self._sid = 0  # Service ID counter
 
     async def connect(self) -> bool:
@@ -195,22 +191,19 @@ class FINSHandler(BaseProtocolHandler):
     async def _connect_tcp(self) -> bool:
         """Establish TCP connection"""
         try:
-            self._reader, self._writer = await asyncio.wait_for(
-                asyncio.open_connection(self.ip_address, self.port),
-                timeout=self.config.request_timeout_ms / 1000
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(self.ip_address, self.port), timeout=self.config.request_timeout_ms / 1000
             )
+            self._reader, self._writer = reader, writer
 
             # Send FINS/TCP node address negotiation
             handshake = self._build_tcp_handshake()
-            self._writer.write(handshake)
-            await self._writer.drain()
+            writer.write(handshake)
+            await writer.drain()
 
             # Wait for response (16-byte header + client node + server node)
             try:
-                response = await asyncio.wait_for(
-                    self._reader.readexactly(24),
-                    timeout=self.config.request_timeout_ms / 1000
-                )
+                response = await asyncio.wait_for(reader.readexactly(24), timeout=self.config.request_timeout_ms / 1000)
             except asyncio.IncompleteReadError:
                 logger.error("Invalid FINS/TCP handshake response")
                 await self._close_tcp()
@@ -255,14 +248,14 @@ class FINSHandler(BaseProtocolHandler):
             loop = asyncio.get_running_loop()
 
             # Create UDP endpoint
-            self._transport, self._protocol_instance = await loop.create_datagram_endpoint(
-                lambda: FINSUDPProtocol(self),
-                remote_addr=(self.ip_address, self.port)
+            transport, protocol_instance = await loop.create_datagram_endpoint(
+                lambda: FINSUDPProtocol(self), remote_addr=(self.ip_address, self.port or 9600)
             )
+            self._transport, self._protocol_instance = transport, protocol_instance
 
             # Default SA1: last octet of the local address used to reach the PLC
             if not self._source_node_explicit:
-                sockname = self._transport.get_extra_info("sockname")
+                sockname = transport.get_extra_info("sockname")
                 self.source_node = _last_octet(sockname[0]) if sockname else 0
 
             # UDP has no handshake: confirm a FINS node answers (any FINS
@@ -270,7 +263,7 @@ class FINSHandler(BaseProtocolHandler):
             frame = self._build_read_command(DeviceType.DM, 0, 1)
             if await self._send_udp(frame, self._sid) is None:
                 logger.error(f"FINS/UDP: no response from {self.ip_address}:{self.port}")
-                self._transport.close()
+                transport.close()
                 self._transport = None
                 self._protocol_instance = None
                 return False
@@ -301,10 +294,7 @@ class FINSHandler(BaseProtocolHandler):
             self._protocol_instance = None
 
     async def read_device_raw(
-        self,
-        device_type: DeviceType,
-        start_address: int,
-        count: int
+        self, device_type: DeviceType, start_address: int, count: int
     ) -> Tuple[Optional[List[int]], StatusCode]:
         """
         Read raw device data from PLC.
@@ -349,12 +339,7 @@ class FINSHandler(BaseProtocolHandler):
             logger.error(f"FINS read error: {e}")
             return None, StatusCode.NG_COMM_ERROR
 
-    def _build_read_command(
-        self,
-        device_type: DeviceType,
-        start_address: int,
-        count: int
-    ) -> bytes:
+    def _build_read_command(self, device_type: DeviceType, start_address: int, count: int) -> bytes:
         """Build FINS memory read command"""
         # Get memory area code (read_device_raw rejects other device types)
         area_code = FINS_AREA_CODES[device_type]
@@ -363,18 +348,20 @@ class FINSHandler(BaseProtocolHandler):
         self._sid = (self._sid + 1) & 0xFF
 
         # Build FINS header
-        header = bytes([
-            FINS_ICF,           # ICF
-            FINS_RSV,           # RSV
-            FINS_GCT,           # GCT
-            FINS_DNA,           # DNA (destination network)
-            self.dest_node,     # DA1 (destination node)
-            FINS_DA2,           # DA2 (destination unit)
-            FINS_SNA,           # SNA (source network)
-            self.source_node,   # SA1 (source node)
-            FINS_SA2,           # SA2 (source unit)
-            self._sid,          # SID (service ID)
-        ])
+        header = bytes(
+            [
+                FINS_ICF,  # ICF
+                FINS_RSV,  # RSV
+                FINS_GCT,  # GCT
+                FINS_DNA,  # DNA (destination network)
+                self.dest_node,  # DA1 (destination node)
+                FINS_DA2,  # DA2 (destination unit)
+                FINS_SNA,  # SNA (source network)
+                self.source_node,  # SA1 (source node)
+                FINS_SA2,  # SA2 (source unit)
+                self._sid,  # SID (service ID)
+            ]
+        )
 
         # Build command code
         cmd = bytes(FINS_CMD_MEMORY_READ)
@@ -384,14 +371,16 @@ class FINSHandler(BaseProtocolHandler):
         addr_high = (start_address >> 8) & 0xFF
         addr_low = start_address & 0xFF
 
-        data = bytes([
-            area_code,      # Memory area code
-            addr_high,      # Address high byte
-            addr_low,       # Address low byte
-            0x00,           # Bit position (always 0 for word access)
-            (count >> 8) & 0xFF,  # Count high byte
-            count & 0xFF,         # Count low byte
-        ])
+        data = bytes(
+            [
+                area_code,  # Memory area code
+                addr_high,  # Address high byte
+                addr_low,  # Address low byte
+                0x00,  # Bit position (always 0 for word access)
+                (count >> 8) & 0xFF,  # Count high byte
+                count & 0xFF,  # Count low byte
+            ]
+        )
 
         fins_frame = header + cmd + data
 
@@ -404,8 +393,20 @@ class FINSHandler(BaseProtocolHandler):
     def _build_command(self, command: Tuple[int, int], data: bytes) -> bytes:
         """FINS frame (TCP-wrapped when needed) for any command, with the next SID"""
         self._sid = (self._sid + 1) & 0xFF
-        header = bytes([FINS_ICF, FINS_RSV, FINS_GCT, FINS_DNA, self.dest_node, FINS_DA2,
-                        FINS_SNA, self.source_node, FINS_SA2, self._sid])
+        header = bytes(
+            [
+                FINS_ICF,
+                FINS_RSV,
+                FINS_GCT,
+                FINS_DNA,
+                self.dest_node,
+                FINS_DA2,
+                FINS_SNA,
+                self.source_node,
+                FINS_SA2,
+                self._sid,
+            ]
+        )
         frame = header + bytes(command) + data
         return self._wrap_tcp_frame(frame) if self.use_tcp else frame
 
@@ -417,7 +418,7 @@ class FINSHandler(BaseProtocolHandler):
         """
         if not await self._ensure_fresh_connection() or not self._connected:
             return None
-        await self._rate_limiter.wait()           # same packet interval as data reads
+        await self._rate_limiter.wait()  # same packet interval as data reads
         try:
             frame = self._build_command(FINS_CMD_CONTROLLER_DATA_READ, b"\x00")
             sid = self._sid
@@ -437,7 +438,7 @@ class FINSHandler(BaseProtocolHandler):
             return raw.split(b"\x00")[0].decode("ascii", errors="ignore").strip()
 
         model = text(data[:FINS_CONTROLLER_MODEL_BYTES])
-        version = text(data[FINS_CONTROLLER_MODEL_BYTES:FINS_CONTROLLER_MODEL_BYTES + FINS_CONTROLLER_VERSION_BYTES])
+        version = text(data[FINS_CONTROLLER_MODEL_BYTES : FINS_CONTROLLER_MODEL_BYTES + FINS_CONTROLLER_VERSION_BYTES])
         return {"model": model, "version": version} if model else None
 
     def _build_tcp_handshake(self) -> bytes:
@@ -452,30 +453,41 @@ class FINSHandler(BaseProtocolHandler):
     def _wrap_tcp_frame(self, fins_frame: bytes) -> bytes:
         """Wrap FINS frame with TCP header"""
         length = len(fins_frame) + 8
-        header = bytes([
-            0x46, 0x49, 0x4E, 0x53,  # "FINS"
-            (length >> 24) & 0xFF,
-            (length >> 16) & 0xFF,
-            (length >> 8) & 0xFF,
-            length & 0xFF,
-            0x00, 0x00, 0x00, 0x02,  # Command: FINS frame
-            0x00, 0x00, 0x00, 0x00,  # Error code
-        ])
+        header = bytes(
+            [
+                0x46,
+                0x49,
+                0x4E,
+                0x53,  # "FINS"
+                (length >> 24) & 0xFF,
+                (length >> 16) & 0xFF,
+                (length >> 8) & 0xFF,
+                length & 0xFF,
+                0x00,
+                0x00,
+                0x00,
+                0x02,  # Command: FINS frame
+                0x00,
+                0x00,
+                0x00,
+                0x00,  # Error code
+            ]
+        )
         return header + fins_frame
 
     @staticmethod
-    def _response_matches(response: bytes, sid: int,
-                          command: Tuple[int, int] = FINS_CMD_MEMORY_READ) -> bool:
+    def _response_matches(response: bytes, sid: int, command: Tuple[int, int] = FINS_CMD_MEMORY_READ) -> bool:
         """Check that a FINS frame is the response to the request with this SID and command"""
         return (
             len(response) >= 12
-            and (response[0] & 0x40) != 0           # ICF: response frame
-            and response[9] == sid                  # SID echoes the request
+            and (response[0] & 0x40) != 0  # ICF: response frame
+            and response[9] == sid  # SID echoes the request
             and response[10:12] == bytes(command)
         )
 
-    async def _send_tcp(self, frame: bytes, sid: int,
-                        command: Tuple[int, int] = FINS_CMD_MEMORY_READ) -> Optional[bytes]:
+    async def _send_tcp(
+        self, frame: bytes, sid: int, command: Tuple[int, int] = FINS_CMD_MEMORY_READ
+    ) -> Optional[bytes]:
         """
         Send frame via TCP and receive response.
 
@@ -485,22 +497,23 @@ class FINSHandler(BaseProtocolHandler):
         """
         timeout = self.config.request_timeout_ms / 1000
         try:
-            self._writer.write(frame)
-            await self._writer.drain()
+            reader, writer = self._reader, self._writer
+            if reader is None or writer is None:
+                raise ConnectionError("FINS/TCP is not connected")
+            writer.write(frame)
+            await writer.drain()
 
             # FINS/TCP header: "FINS" + length + command + error code
-            header = await asyncio.wait_for(self._reader.readexactly(16), timeout=timeout)
+            header = await asyncio.wait_for(reader.readexactly(16), timeout=timeout)
             if header[:4] != b"FINS":
                 raise ValueError("FINS/TCP header magic mismatch")
 
-            length = struct.unpack(">I", header[4:8])[0]
+            length = int(struct.unpack(">I", header[4:8])[0])
             if length < 8:
                 raise ValueError(f"FINS/TCP invalid length: {length}")
 
             # Read FINS frame (length counts command + error code + frame)
-            fins_data = await asyncio.wait_for(
-                self._reader.readexactly(length - 8), timeout=timeout
-            )
+            fins_data = await asyncio.wait_for(reader.readexactly(length - 8), timeout=timeout)
 
             tcp_error = struct.unpack(">I", header[12:16])[0]
             if tcp_error != 0:
@@ -518,15 +531,16 @@ class FINSHandler(BaseProtocolHandler):
         self._needs_reconnect = True
         return None
 
-    async def _send_udp(self, frame: bytes, sid: int,
-                        command: Tuple[int, int] = FINS_CMD_MEMORY_READ) -> Optional[bytes]:
+    async def _send_udp(
+        self, frame: bytes, sid: int, command: Tuple[int, int] = FINS_CMD_MEMORY_READ
+    ) -> Optional[bytes]:
         """
         Send frame via UDP and receive the matching response.
 
         Late responses to earlier (timed-out) requests are discarded by SID,
         so they can never be taken as data for the current request.
         """
-        if not self._protocol_instance:
+        if not self._protocol_instance or not self._transport:
             return None
 
         loop = asyncio.get_running_loop()
@@ -544,9 +558,7 @@ class FINSHandler(BaseProtocolHandler):
                 remaining = deadline - loop.time()
                 if remaining <= 0:
                     raise asyncio.TimeoutError()
-                response = await asyncio.wait_for(
-                    self._protocol_instance.receive(), timeout=remaining
-                )
+                response = await asyncio.wait_for(self._protocol_instance.receive(), timeout=remaining)
                 if self._response_matches(response, sid, command):
                     return response
                 logger.debug("FINS/UDP: discarded unmatched/stale response")
@@ -558,10 +570,7 @@ class FINSHandler(BaseProtocolHandler):
             logger.error(f"FINS/UDP send error: {e}")
             return None
 
-    def _parse_read_response(
-        self,
-        response: bytes
-    ) -> Tuple[Optional[List[int]], StatusCode]:
+    def _parse_read_response(self, response: bytes) -> Tuple[Optional[List[int]], StatusCode]:
         """Parse FINS read response"""
         if len(response) < 14:
             return None, StatusCode.NG_COMM_ERROR
@@ -611,7 +620,7 @@ class FINSUDPProtocol(asyncio.DatagramProtocol):
     def __init__(self, handler: FINSHandler):
         self.handler = handler
         self._response_future = None
-        self._response_queue = asyncio.Queue()
+        self._response_queue: "asyncio.Queue[bytes]" = asyncio.Queue()
 
     def connection_made(self, transport):
         self.transport = transport

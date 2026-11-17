@@ -6,32 +6,29 @@ Provides validation and default values for all settings.
 """
 
 import json
+import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-import logging
 
 logger = logging.getLogger(__name__)
 
 # Try to import YAML support
 try:
     import yaml
+
     YAML_AVAILABLE = True
 except ImportError:
     YAML_AVAILABLE = False
     logger.debug("PyYAML not installed, YAML config files not supported")
 
-from .config import (
-    Protocol, DeviceType, DeviceRange, NetworkConfig, PLCInfo, ScanMode, range_size_error
-)
-from .data_types import DataType, ByteOrder, DataTypeManager
-from .utils import ip_range_error, target_address_error
+from .config import DeviceRange, DeviceType, NetworkConfig, PLCInfo, Protocol, ScanMode, range_size_error
+from .data_types import ByteOrder, DataType, DataTypeManager
 from .names import parse_byte_order, parse_device_type, parse_protocol
-
+from .utils import ip_range_error, target_address_error
 
 # Default configuration template
 DEFAULT_CONFIG = {
     "version": "1.0",
-
     # Network settings
     "network": {
         "discovery_timeout_ms": 1000,
@@ -41,7 +38,6 @@ DEFAULT_CONFIG = {
         "request_timeout_ms": 5000,
         "max_concurrent": 1,
     },
-
     # Discovery settings
     "discovery": {
         "enabled": True,
@@ -50,7 +46,6 @@ DEFAULT_CONFIG = {
         # Protocols probed during discovery (applies only when set in the file)
         "protocols": ["slmp", "ethernet_ip", "modbus", "s7", "fins", "fins_tcp"],
     },
-
     # Target PLCs (for direct connection without discovery)
     "targets": [
         # Example:
@@ -61,7 +56,6 @@ DEFAULT_CONFIG = {
         #     "name": "Main PLC",
         # }
     ],
-
     # Scan settings
     "scan": {
         # "range" (production-safe), "discover", or "full" (factory downtime only:
@@ -74,7 +68,6 @@ DEFAULT_CONFIG = {
         ],
         "interval_seconds": 0,  # 0 = single scan, >0 = continuous
     },
-
     # Output settings
     "output": {
         "directory": "./plc_scan_results",
@@ -83,7 +76,6 @@ DEFAULT_CONFIG = {
         "format": "csv",  # "csv" or "json"
         "include_timestamp": True,
     },
-
     # Logging settings
     "logging": {
         "level": "INFO",
@@ -91,7 +83,6 @@ DEFAULT_CONFIG = {
         "audit_log": None,  # Audit log file path (optional)
         "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     },
-
     # Data type conversion settings
     "data_types": {
         "default_type": "WORD",
@@ -167,6 +158,7 @@ class ConfigLoader:
     def _load_defaults(self):
         """Load default configuration"""
         import copy
+
         self.config = copy.deepcopy(DEFAULT_CONFIG)
 
     def load(self, config_path: Optional[str] = None) -> Dict[str, Any]:
@@ -179,13 +171,13 @@ class ConfigLoader:
         Returns:
             Merged configuration dictionary
         """
-        path = config_path or self.config_path
+        given = config_path or self.config_path
 
-        if not path:
+        if not given:
             logger.debug("No config file specified, using defaults")
             return self.config
 
-        path = Path(path)
+        path = Path(given)
 
         if not path.exists():
             logger.warning(f"Config file not found: {path}, using defaults")
@@ -195,12 +187,12 @@ class ConfigLoader:
         suffix = path.suffix.lower()
 
         try:
-            with open(path, 'r', encoding='utf-8') as f:
-                if suffix in ['.yaml', '.yml']:
+            with open(path, "r", encoding="utf-8") as f:
+                if suffix in [".yaml", ".yml"]:
                     if not YAML_AVAILABLE:
                         raise ImportError("PyYAML is required for YAML config files. Install with: pip install pyyaml")
                     file_config = yaml.safe_load(f)
-                elif suffix == '.json':
+                elif suffix == ".json":
                     file_config = json.load(f)
                 else:
                     raise ValueError(f"Unsupported config file format: {suffix}")
@@ -215,7 +207,7 @@ class ConfigLoader:
 
         return self.config
 
-    def _merge_config(self, file_config: Dict[str, Any]):
+    def _merge_config(self, file_config: Dict[str, Any]) -> None:
         """Recursively merge file config with defaults"""
         if not file_config:
             return
@@ -257,6 +249,7 @@ class ConfigLoader:
     def _validate_notifications(self) -> List[str]:
         """Errors in notifications[] and notification_settings"""
         from .notifications import NOTIFICATION_TYPES, NotificationType
+
         errors = []
         settings = self.config.get("notification_settings") or {}
         if not isinstance(settings, dict):
@@ -341,11 +334,13 @@ class ConfigLoader:
             device_type = self._parse_device_type(range_def.get("device", "D"))
 
             if device_type:
-                ranges.append(DeviceRange(
-                    device_type=device_type,
-                    start_address=range_def.get("start", 0),
-                    end_address=range_def.get("end", 999),
-                ))
+                ranges.append(
+                    DeviceRange(
+                        device_type=device_type,
+                        start_address=range_def.get("start", 0),
+                        end_address=range_def.get("end", 999),
+                    )
+                )
 
         return ranges
 
@@ -359,8 +354,11 @@ class ConfigLoader:
         members = self.config.get("scan", {}).get("tag_members") or {}
         if not isinstance(members, dict):
             return {}
-        return {str(name).strip(): [str(m).strip() for m in names if str(m).strip()]
-                for name, names in members.items() if isinstance(names, list)}
+        return {
+            str(name).strip(): [str(m).strip() for m in names if str(m).strip()]
+            for name, names in members.items()
+            if isinstance(names, list)
+        }
 
     def get_scan_mode(self) -> ScanMode:
         """
@@ -374,7 +372,7 @@ class ConfigLoader:
 
     def get_ip_ranges(self) -> List[str]:
         """Get IP ranges for discovery"""
-        return self.config.get("discovery", {}).get("ip_ranges", [])
+        return list(self.config.get("discovery", {}).get("ip_ranges", []))
 
     def get_discovery_protocols(self) -> Optional[List[Protocol]]:
         """
@@ -387,11 +385,11 @@ class ConfigLoader:
 
     def get_output_settings(self) -> Dict[str, Any]:
         """Get output settings"""
-        return self.config.get("output", {})
+        return dict(self.config.get("output", {}))
 
     def get_logging_settings(self) -> Dict[str, Any]:
         """Get logging settings"""
-        return self.config.get("logging", {})
+        return dict(self.config.get("logging", {}))
 
     def _parse_protocol(self, protocol_str: Optional[str]) -> Optional[Protocol]:
         """Parse a protocol name or alias (see names.PROTOCOL_NAMES)"""
@@ -435,13 +433,13 @@ class ConfigLoader:
         order = self.config.get("data_types", {}).get("default_byte_order", "little")
         return parse_byte_order(order) or ByteOrder.LITTLE_ENDIAN
 
-    def save_template(self, path: str):
+    def save_template(self, file_path: str) -> None:
         """Save configuration template to file"""
-        path = Path(path)
+        path = Path(file_path)
         suffix = path.suffix.lower()
 
-        with open(path, 'w', encoding='utf-8') as f:
-            if suffix in ['.yaml', '.yml']:
+        with open(path, "w", encoding="utf-8") as f:
+            if suffix in [".yaml", ".yml"]:
                 if not YAML_AVAILABLE:
                     raise ImportError("PyYAML is required for YAML files")
                 yaml.dump(DEFAULT_CONFIG, f, default_flow_style=False, allow_unicode=True)
@@ -481,10 +479,7 @@ class ConfigLoader:
             protocol_str = target.get("protocol")
             protocol = self._parse_protocol(protocol_str)
             if protocol_str and protocol is None:
-                errors.append(
-                    f"targets[{i}].protocol: unknown protocol '{protocol_str}' "
-                    f"(omit it to auto-detect)"
-                )
+                errors.append(f"targets[{i}].protocol: unknown protocol '{protocol_str}' " f"(omit it to auto-detect)")
             options = target.get("options") or {}
             if not isinstance(options, dict):
                 errors.append(f"targets[{i}].options must be a mapping")
@@ -503,9 +498,7 @@ class ConfigLoader:
                         continue
                     low, high = valid
                     if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
-                        errors.append(
-                            f"targets[{i}].options.{key} must be an integer {low}-{high}, got {value!r}"
-                        )
+                        errors.append(f"targets[{i}].options.{key} must be an integer {low}-{high}, got {value!r}")
 
         # Validate discovery IP ranges (syntax and size)
         for i, ip_range in enumerate(self.config.get("discovery", {}).get("ip_ranges", []) or []):
@@ -523,26 +516,23 @@ class ConfigLoader:
         if self.is_set("scan", "mode"):
             mode = self.config["scan"]["mode"]
             if str(mode).strip().lower() not in _SCAN_MODES:
-                errors.append(
-                    f"scan.mode: unknown mode {mode!r} (allowed: {', '.join(_SCAN_MODES)})"
-                )
+                errors.append(f"scan.mode: unknown mode {mode!r} (allowed: {', '.join(_SCAN_MODES)})")
 
         # Validate periodic interval
         interval = self.config.get("scan", {}).get("interval_seconds", 0) or 0
         if isinstance(interval, bool) or not isinstance(interval, (int, float)):
             errors.append(f"scan.interval_seconds must be a number, got {interval!r}")
         elif interval < 0 or 0 < interval < MIN_INTERVAL_SECONDS:
-            errors.append(
-                f"scan.interval_seconds must be 0 (single scan) or >= {MIN_INTERVAL_SECONDS:g}"
-            )
+            errors.append(f"scan.interval_seconds must be 0 (single scan) or >= {MIN_INTERVAL_SECONDS:g}")
 
         tags = self.config.get("scan", {}).get("tags")
         if tags is not None and (not isinstance(tags, list) or not all(isinstance(t, str) for t in tags)):
             errors.append("scan.tags must be a list of tag names")
         members = self.config.get("scan", {}).get("tag_members")
         if members is not None and (
-                not isinstance(members, dict)
-                or not all(isinstance(v, list) and all(isinstance(m, str) for m in v) for v in members.values())):
+            not isinstance(members, dict)
+            or not all(isinstance(v, list) and all(isinstance(m, str) for m in v) for v in members.values())
+        ):
             errors.append("scan.tag_members must map variable names to lists of member names")
 
         # Validate device ranges
@@ -579,8 +569,7 @@ class ConfigLoader:
                 error = integer_error(database["max_history_days"], 0)
                 if error:
                     errors.append(f"output.database.max_history_days {error}")
-            for key, minimum, exclusive in (("max_size_mb", 0, False),
-                                            ("cleanup_interval_hours", 0, True)):
+            for key, minimum, exclusive in (("max_size_mb", 0, False), ("cleanup_interval_hours", 0, True)):
                 if key in database:
                     error = number_error(database[key], minimum, exclusive)
                     if error:
@@ -621,7 +610,7 @@ def load_config(config_path: Optional[str] = None) -> ConfigLoader:
     return loader
 
 
-def generate_config_template(path: str = "plc_config.yaml", overwrite: bool = False):
+def generate_config_template(path: str = "plc_config.yaml", overwrite: bool = False) -> None:
     """
     Generate a configuration template file.
 

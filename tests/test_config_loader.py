@@ -3,16 +3,13 @@ Tests for config_loader module
 """
 
 import json
-import tempfile
 import os
+import tempfile
+
 import pytest
 
-from plc_discovery.config_loader import (
-    ConfigLoader, load_config, generate_config_template, DEFAULT_CONFIG
-)
-from plc_discovery.config import (
-    Protocol, DeviceType, ScanMode, NetworkConfig
-)
+from plc_discovery.config import DeviceType, NetworkConfig, Protocol, ScanMode
+from plc_discovery.config_loader import DEFAULT_CONFIG, ConfigLoader, generate_config_template, load_config
 
 
 class TestConfigLoader:
@@ -39,14 +36,10 @@ class TestConfigLoader:
                 "max_concurrent": 5,
                 "packet_interval_ms": 100,
             },
-            "targets": [
-                {"ip": "192.168.1.10", "protocol": "slmp", "port": 5001}
-            ]
+            "targets": [{"ip": "192.168.1.10", "protocol": "slmp", "port": 5001}],
         }
 
-        with tempfile.NamedTemporaryFile(
-            mode='w', suffix='.json', delete=False
-        ) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             json.dump(config_data, f)
             temp_path = f.name
 
@@ -68,14 +61,9 @@ class TestConfigLoader:
         except ImportError:
             pytest.skip("PyYAML not installed")
 
-        config_data = {
-            "network": {"max_concurrent": 3},
-            "discovery": {"enabled": False}
-        }
+        config_data = {"network": {"max_concurrent": 3}, "discovery": {"enabled": False}}
 
-        with tempfile.NamedTemporaryFile(
-            mode='w', suffix='.yaml', delete=False
-        ) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
             yaml.dump(config_data, f)
             temp_path = f.name
 
@@ -90,13 +78,9 @@ class TestConfigLoader:
 
     def test_config_merge(self):
         """Test that file config merges with defaults"""
-        config_data = {
-            "network": {"max_concurrent": 10}
-        }
+        config_data = {"network": {"max_concurrent": 10}}
 
-        with tempfile.NamedTemporaryFile(
-            mode='w', suffix='.json', delete=False
-        ) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             json.dump(config_data, f)
             temp_path = f.name
 
@@ -122,9 +106,7 @@ class TestConfigLoader:
             }
         }
 
-        with tempfile.NamedTemporaryFile(
-            mode='w', suffix='.json', delete=False
-        ) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             json.dump(config_data, f)
             temp_path = f.name
 
@@ -150,9 +132,7 @@ class TestConfigLoader:
             ]
         }
 
-        with tempfile.NamedTemporaryFile(
-            mode='w', suffix='.json', delete=False
-        ) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             json.dump(config_data, f)
             temp_path = f.name
 
@@ -181,9 +161,7 @@ class TestConfigLoader:
             }
         }
 
-        with tempfile.NamedTemporaryFile(
-            mode='w', suffix='.json', delete=False
-        ) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             json.dump(config_data, f)
             temp_path = f.name
 
@@ -205,9 +183,7 @@ class TestConfigLoader:
         """Test getting scan mode from configuration"""
         config_data = {"scan": {"mode": "range"}}
 
-        with tempfile.NamedTemporaryFile(
-            mode='w', suffix='.json', delete=False
-        ) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             json.dump(config_data, f)
             temp_path = f.name
 
@@ -228,13 +204,9 @@ class TestConfigLoader:
 
     def test_validate_invalid_max_concurrent(self):
         """Test validation catches invalid max_concurrent"""
-        config_data = {
-            "network": {"max_concurrent": 0}
-        }
+        config_data = {"network": {"max_concurrent": 0}}
 
-        with tempfile.NamedTemporaryFile(
-            mode='w', suffix='.json', delete=False
-        ) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             json.dump(config_data, f)
             temp_path = f.name
 
@@ -249,17 +221,9 @@ class TestConfigLoader:
 
     def test_validate_invalid_range(self):
         """Test validation catches invalid device range"""
-        config_data = {
-            "scan": {
-                "device_ranges": [
-                    {"device": "D", "start": 1000, "end": 100}  # Invalid: start > end
-                ]
-            }
-        }
+        config_data = {"scan": {"device_ranges": [{"device": "D", "start": 1000, "end": 100}]}}  # Invalid: start > end
 
-        with tempfile.NamedTemporaryFile(
-            mode='w', suffix='.json', delete=False
-        ) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             json.dump(config_data, f)
             temp_path = f.name
 

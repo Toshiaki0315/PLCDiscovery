@@ -20,7 +20,6 @@ from plc_discovery.database import DatabaseConfig, DatabaseExporter
 from plc_discovery.discovery import PLCDiscovery
 from plc_discovery.report import ReportConfig, ReportFormat, create_report, json_safe
 
-
 # ---------------------------------------------------------------------------
 # W1 / W2: every local network, also without a default gateway
 # ---------------------------------------------------------------------------
@@ -42,7 +41,9 @@ LINUX_IP = """\
 3: tun0    inet 10.8.0.2/32 scope global tun0
 """
 
-OLD_LINUX_IFCONFIG = "eth0  Link encap:Ethernet\n      inet addr:192.168.50.3  Bcast:192.168.50.255  Mask:255.255.255.0\n"
+OLD_LINUX_IFCONFIG = (
+    "eth0  Link encap:Ethernet\n      inet addr:192.168.50.3  Bcast:192.168.50.255  Mask:255.255.255.0\n"
+)
 
 WINDOWS_POWERSHELL = "192.168.10.2/24\r\n127.0.0.1/8\r\n169.254.3.4/16\r\n"
 
@@ -51,8 +52,10 @@ class TestInterfaceParsing:
 
     def test_macos_ifconfig(self):
         assert utils.parse_interface_listing(MACOS_IFCONFIG) == [
-            ("127.0.0.1", "255.0.0.0"), ("192.168.1.8", "255.255.255.0"),
-            ("10.10.0.5", "255.255.0.0"), ("169.254.12.34", "255.255.0.0"),
+            ("127.0.0.1", "255.0.0.0"),
+            ("192.168.1.8", "255.255.255.0"),
+            ("10.10.0.5", "255.255.0.0"),
+            ("169.254.12.34", "255.255.0.0"),
         ]
 
     def test_linux_ip_addr(self):
@@ -66,24 +69,29 @@ class TestInterfaceParsing:
 
 
 def networks_with(listing):
-    with patch.object(utils, "_networks_from_netifaces", return_value=None), \
-            patch.object(utils, "_networks_from_os", return_value=utils.parse_interfaces(listing)):
+    with (
+        patch.object(utils, "_networks_from_netifaces", return_value=None),
+        patch.object(utils, "_networks_from_os", return_value=utils.parse_interfaces(listing)),
+    ):
         return utils.get_local_networks()
 
 
 def test_all_networks_listed_without_loopback_link_local_or_p2p():
     assert networks_with(MACOS_IFCONFIG) == [("192.168.1.8", "255.255.255.0"), ("10.10.0.5", "255.255.0.0")]
-    assert networks_with(LINUX_IP) == [("172.16.5.20", "255.255.255.0")]   # tun0 /32 skipped
+    assert networks_with(LINUX_IP) == [("172.16.5.20", "255.255.255.0")]  # tun0 /32 skipped
 
 
 def test_isolated_lan_without_default_gateway():
     """Previously fell back to 127.0.0.1/24 when 8.8.8.8 was unreachable"""
+
     def unreachable(*args, **kwargs):
         raise OSError(51, "Network is unreachable")
 
-    with patch.object(utils, "_networks_from_netifaces", return_value=None), \
-            patch.object(utils, "_networks_from_os", return_value=[("eth1", "10.10.0.5", "255.255.255.0")]), \
-            patch.object(socket.socket, "connect", unreachable):
+    with (
+        patch.object(utils, "_networks_from_netifaces", return_value=None),
+        patch.object(utils, "_networks_from_os", return_value=[("eth1", "10.10.0.5", "255.255.255.0")]),
+        patch.object(socket.socket, "connect", unreachable),
+    ):
         assert utils.get_network_info() == ("10.10.0.5", "255.255.255.0", "10.10.0.255")
 
 
@@ -96,10 +104,12 @@ async def test_same_segment_scans_every_network():
         scanned.append((hosts[0], hosts[-1], len(hosts)))
 
     networks = [("192.168.1.8", "255.255.255.0"), ("10.10.0.5", "255.255.255.252")]
-    with patch.object(discovery_module, "get_local_networks", return_value=networks), \
-            patch.object(discovery_module, "SCAPY_AVAILABLE", False), \
-            patch.object(discovery, "_probe_hosts", side_effect=fake_probe_hosts), \
-            patch.object(discovery, "_fill_macs_from_arp_cache", AsyncMock()):
+    with (
+        patch.object(discovery_module, "get_local_networks", return_value=networks),
+        patch.object(discovery_module, "SCAPY_AVAILABLE", False),
+        patch.object(discovery, "_probe_hosts", side_effect=fake_probe_hosts),
+        patch.object(discovery, "_fill_macs_from_arp_cache", AsyncMock()),
+    ):
         await discovery.discover_same_segment()
 
     assert scanned == [("192.168.1.1", "192.168.1.254", 253), ("10.10.0.6", "10.10.0.6", 1)]
@@ -120,8 +130,10 @@ async def test_broadcast_sent_to_every_network():
     transport.sendto.side_effect = lambda data, addr: sent.append(addr[0])
     loop = asyncio.get_running_loop()
     networks = [("192.168.1.8", "255.255.255.0"), ("10.10.0.5", "255.255.0.0")]
-    with patch.object(broadcast_module, "get_local_networks", return_value=networks), \
-            patch.object(loop, "create_datagram_endpoint", AsyncMock(return_value=(transport, None))):
+    with (
+        patch.object(broadcast_module, "get_local_networks", return_value=networks),
+        patch.object(loop, "create_datagram_endpoint", AsyncMock(return_value=(transport, None))),
+    ):
         await BroadcastDiscovery()._send_broadcast(44818, b"x", 0.01)
     assert sent == ["192.168.1.255", "10.10.255.255", "255.255.255.255"]
 
@@ -129,6 +141,7 @@ async def test_broadcast_sent_to_every_network():
 # ---------------------------------------------------------------------------
 # W3: NaN / Infinity never written as non-standard JSON
 # ---------------------------------------------------------------------------
+
 
 def strict_loads(text):
     return json.loads(text, parse_constant=lambda c: (_ for _ in ()).throw(ValueError(c)))
@@ -139,10 +152,18 @@ def test_json_safe():
 
 
 def test_json_report_is_strict_json():
-    dp = DataPoint("D0", 0xFFFF, "0xFFFF", StatusCode.OK, data_type="FLOAT",
-                   converted_value=math.nan, display_value="nan")
-    generator, data = create_report([PLCInfo("10.0.0.1", protocol=Protocol.SLMP)], {"10.0.0.1": [dp]}, {},
-                                    "range", None, None, ReportConfig(format=ReportFormat.JSON))
+    dp = DataPoint(
+        "D0", 0xFFFF, "0xFFFF", StatusCode.OK, data_type="FLOAT", converted_value=math.nan, display_value="nan"
+    )
+    generator, data = create_report(
+        [PLCInfo("10.0.0.1", protocol=Protocol.SLMP)],
+        {"10.0.0.1": [dp]},
+        {},
+        "range",
+        None,
+        None,
+        ReportConfig(format=ReportFormat.JSON),
+    )
     report = strict_loads(generator.generate(data))
     assert "NaN" not in json.dumps(report)
 

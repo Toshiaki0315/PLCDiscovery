@@ -42,15 +42,15 @@ def _exchange(ip: str, port: int, request: bytes, timeout: float, min_len: int) 
 
 def probe_slmp(ip: str, port: int, timeout: float) -> bool:
     """SLMP 3E binary "Read Type Name" (0x0101); any 3E response (D0 00) counts"""
-    payload = struct.pack("<HHH", 0x0010, 0x0101, 0x0000)          # timer, command, subcommand
+    payload = struct.pack("<HHH", 0x0010, 0x0101, 0x0000)  # timer, command, subcommand
     request = (
-        struct.pack("<H", 0x0050)                                  # subheader "50 00"
-        + struct.pack("<BBHB", 0x00, 0xFF, 0x03FF, 0x00)           # network, PC, I/O, station
+        struct.pack("<H", 0x0050)  # subheader "50 00"
+        + struct.pack("<BBHB", 0x00, 0xFF, 0x03FF, 0x00)  # network, PC, I/O, station
         + struct.pack("<H", len(payload))
         + payload
     )
     reply = _exchange(ip, port, request, timeout, 2)
-    return bool(reply) and reply[:2] == b"\xD0\x00"
+    return reply is not None and reply[:2] == b"\xd0\x00"
 
 
 def probe_modbus(ip: str, port: int, timeout: float) -> bool:
@@ -67,16 +67,32 @@ def probe_modbus(ip: str, port: int, timeout: float) -> bool:
 
 def probe_s7(ip: str, port: int, timeout: float) -> bool:
     """ISO-on-TCP (TPKT/COTP) connection request; COTP Connection Confirm counts"""
-    cotp_cr = bytes([
-        0x11, 0xE0, 0x00, 0x00, 0x00, 0x01, 0x00,   # length, CR, dst ref, src ref, class
-        0xC0, 0x01, 0x0A,                           # TPDU size 1024
-        0xC1, 0x02, 0x01, 0x00,                     # source TSAP
-        0xC2, 0x02, 0x01, 0x02,                     # destination TSAP (rack 0, slot 2)
-    ])
+    cotp_cr = bytes(
+        [
+            0x11,
+            0xE0,
+            0x00,
+            0x00,
+            0x00,
+            0x01,
+            0x00,  # length, CR, dst ref, src ref, class
+            0xC0,
+            0x01,
+            0x0A,  # TPDU size 1024
+            0xC1,
+            0x02,
+            0x01,
+            0x00,  # source TSAP
+            0xC2,
+            0x02,
+            0x01,
+            0x02,  # destination TSAP (rack 0, slot 2)
+        ]
+    )
     request = struct.pack(">BBH", 0x03, 0x00, 4 + len(cotp_cr)) + cotp_cr
     reply = _exchange(ip, port, request, timeout, 6)
     # TPKT version 3 and COTP PDU type CC (0xD0)
-    return bool(reply) and len(reply) >= 6 and reply[0] == 0x03 and (reply[5] & 0xF0) == 0xD0
+    return reply is not None and len(reply) >= 6 and reply[0] == 0x03 and (reply[5] & 0xF0) == 0xD0
 
 
 def probe_ethernet_ip(ip: str, port: int, timeout: float) -> bool:
@@ -110,26 +126,34 @@ def probe_fins_udp(ip: str, port: int, timeout: float) -> bool:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             sock.settimeout(timeout)
             sock.connect((ip, port))
-            request = bytes([
-                0x80, 0x00, 0x02,                            # ICF, RSV, GCT
-                0x00, _last_octet(ip), 0x00,                 # DNA, DA1, DA2
-                0x00, _last_octet(sock.getsockname()[0]), 0x00,  # SNA, SA1, SA2
-                sid,
-                0x01, 0x01,                                  # memory area read
-                0x82, 0x00, 0x00, 0x00,                      # DM, address 0, bit 0
-                0x00, 0x01,                                  # 1 word
-            ])
+            request = bytes(
+                [
+                    0x80,
+                    0x00,
+                    0x02,  # ICF, RSV, GCT
+                    0x00,
+                    _last_octet(ip),
+                    0x00,  # DNA, DA1, DA2
+                    0x00,
+                    _last_octet(sock.getsockname()[0]),
+                    0x00,  # SNA, SA1, SA2
+                    sid,
+                    0x01,
+                    0x01,  # memory area read
+                    0x82,
+                    0x00,
+                    0x00,
+                    0x00,  # DM, address 0, bit 0
+                    0x00,
+                    0x01,  # 1 word
+                ]
+            )
             sock.send(request)
             reply = sock.recv(2048)
     except OSError as e:  # timeout or ICMP port unreachable
         logger.debug(f"FINS/UDP probe {ip}:{port} failed: {e}")
         return False
-    return (
-        len(reply) >= 12
-        and (reply[0] & 0x40) != 0
-        and reply[9] == sid
-        and reply[10:12] == b"\x01\x01"
-    )
+    return len(reply) >= 12 and (reply[0] & 0x40) != 0 and reply[9] == sid and reply[10:12] == b"\x01\x01"
 
 
 def parse_eip_identity(reply: bytes) -> Optional[dict]:
@@ -147,18 +171,18 @@ def parse_eip_identity(reply: bytes) -> Optional[dict]:
         item_count = struct.unpack("<H", reply[24:26])[0]
         offset = 26
         for _ in range(item_count):
-            item_type, item_len = struct.unpack("<HH", reply[offset:offset + 4])
+            item_type, item_len = struct.unpack("<HH", reply[offset : offset + 4])
             offset += 4
-            item = reply[offset:offset + item_len]
+            item = reply[offset : offset + item_len]
             offset += item_len
             if item_type != 0x000C or len(item) < 2 + 16 + 15:
                 continue
-            body = item[2 + 16:]   # skip protocol version and socket address
+            body = item[2 + 16 :]  # skip protocol version and socket address
             vendor_id, device_type, product_code = struct.unpack("<HHH", body[:6])
             revision = f"{body[6]}.{body[7]}"
             serial = struct.unpack("<I", body[10:14])[0]
             name_len = body[14]
-            product_name = clean_device_text(body[15:15 + name_len].decode("ascii", errors="replace"))
+            product_name = clean_device_text(body[15 : 15 + name_len].decode("ascii", errors="replace"))
             identity = {
                 "vendor_id": vendor_id,
                 "device_type": device_type,
@@ -169,6 +193,7 @@ def parse_eip_identity(reply: bytes) -> Optional[dict]:
             }
             try:
                 from pycomm3.custom_types import PRODUCT_TYPES, VENDORS
+
                 identity["vendor"] = VENDORS.get(vendor_id)
                 identity["product_type"] = PRODUCT_TYPES.get(device_type)
             except ImportError:
@@ -209,7 +234,7 @@ def probe_fins_tcp(ip: str, port: int, timeout: float) -> bool:
     """FINS/TCP node address request; a "FINS" framed reply counts"""
     request = b"FINS" + struct.pack(">III", 12, 0, 0) + struct.pack(">I", 0)
     reply = _exchange(ip, port, request, timeout, 16)
-    return bool(reply) and reply[:4] == b"FINS"
+    return reply is not None and reply[:4] == b"FINS"
 
 
 PROBES: Dict[Protocol, Callable[[str, int, float], bool]] = {

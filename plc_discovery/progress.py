@@ -5,27 +5,33 @@ Provides enhanced progress display using the 'rich' library if available,
 with fallback to simple console output.
 """
 
-import sys
-import time
-from typing import Optional, List, Dict, Any
-from contextlib import contextmanager
 import logging
 import re
+import sys
+import time
+from contextlib import contextmanager
+from typing import Any, Callable, Dict, Iterator, List, Optional
 
 logger = logging.getLogger(__name__)
 
 # Try to import rich
 try:
+    from rich import box
     from rich.console import Console
+    from rich.markup import escape
+    from rich.panel import Panel
     from rich.progress import (
-        Progress, SpinnerColumn, TextColumn, BarColumn,
-        TaskProgressColumn, TimeRemainingColumn, TimeElapsedColumn
+        BarColumn,
+        Progress,
+        SpinnerColumn,
+        TaskProgressColumn,
+        TextColumn,
+        TimeElapsedColumn,
+        TimeRemainingColumn,
     )
     from rich.table import Table
-    from rich.panel import Panel
     from rich.text import Text
-    from rich import box
-    from rich.markup import escape
+
     RICH_AVAILABLE = True
 except ImportError:
     RICH_AVAILABLE = False
@@ -54,9 +60,9 @@ class SimpleProgress:
         self._current = 0
         self._total = 0
         self._message = ""
-        self._last_update = 0
+        self._last_update = 0.0
 
-    def update(self, message: str, current: int = 0, total: int = 0):
+    def update(self, message: str, current: int = 0, total: int = 0) -> None:
         """Update progress"""
         self._message = message
         self._current = current
@@ -78,17 +84,17 @@ class SimpleProgress:
         else:
             print(f"\r{message}...", end="", flush=True)
 
-    def complete(self, message: str = "Complete"):
+    def complete(self, message: str = "Complete") -> None:
         """Mark as complete"""
         print(f"\r{message}" + " " * 50)
 
-    def error(self, message: str):
+    def error(self, message: str) -> None:
         """Display error"""
         marker = "✗" if _stream_can_encode("✗") else "[ERROR]"
         print(f"\r{marker} {message}" + " " * 30)
 
 
-def _stream_can_encode(text: str, stream=None) -> bool:
+def _stream_can_encode(text: str, stream: Any = None) -> bool:
     """True if the output stream's encoding can represent text"""
     stream = stream or sys.stdout
     encoding = getattr(stream, "encoding", None) or "ascii"
@@ -116,14 +122,12 @@ class RichProgressDisplay:
         """
         self.title = title
         self.console = Console() if (RICH_AVAILABLE and use_rich) else None
-        self.markers = (
-            _SYMBOL_MARKERS if _stream_can_encode("".join(_SYMBOL_MARKERS.values())) else _ASCII_MARKERS
-        )
-        self._progress = None
+        self.markers = _SYMBOL_MARKERS if _stream_can_encode("".join(_SYMBOL_MARKERS.values())) else _ASCII_MARKERS
+        self._progress: Any = None
         self._task_id = None
         self._status_table = None
 
-    def print(self, message: str, style: str = ""):
+    def print(self, message: str, style: str = "") -> None:
         """Print message"""
         if self.console:
             self.console.print(_safe(message), style=style, markup=False)
@@ -133,18 +137,20 @@ class RichProgressDisplay:
     def print_header(self):
         """Print application header"""
         if self.console:
-            self.console.print(Panel(
-                Text("PLC Discovery Tool", justify="center", style="bold blue"),
-                subtitle="Factory PLC Auto-Detection and Data Collection",
-                box=box.DOUBLE
-            ))
+            self.console.print(
+                Panel(
+                    Text("PLC Discovery Tool", justify="center", style="bold blue"),
+                    subtitle="Factory PLC Auto-Detection and Data Collection",
+                    box=box.DOUBLE,
+                )
+            )
         else:
             print("=" * 60)
             print("PLC Discovery Tool")
             print("Factory PLC Auto-Detection and Data Collection")
             print("=" * 60)
 
-    def print_discovery_results(self, plcs: List[Dict[str, Any]]):
+    def print_discovery_results(self, plcs: List[Dict[str, Any]]) -> None:
         """Print discovery results as table"""
         if not plcs:
             self.print("No PLCs discovered.", style="yellow")
@@ -173,7 +179,7 @@ class RichProgressDisplay:
             for plc in plcs:
                 print(_safe(f"  {plc.get('ip_address')}: {plc.get('protocol')} - {plc.get('manufacturer', 'Unknown')}"))
 
-    def print_scan_results(self, results: Dict[str, Any]):
+    def print_scan_results(self, results: Dict[str, Any]) -> None:
         """Print scan results"""
         if self.console:
             table = Table(title="Scan Results", box=box.ROUNDED)
@@ -186,8 +192,7 @@ class RichProgressDisplay:
 
             for ip, result in results.items():
                 stats = result.get("statistics", {})
-                status = (f"{self.markers['ok']} OK" if result.get("success")
-                          else f"{self.markers['error']} Failed")
+                status = f"{self.markers['ok']} OK" if result.get("success") else f"{self.markers['error']} Failed"
                 status_style = "green" if result.get("success") else "red"
 
                 table.add_row(
@@ -207,7 +212,7 @@ class RichProgressDisplay:
                 status = "OK" if result.get("success") else "Failed"
                 print(f"  {ip}: {status} - {stats.get('total_points', 0)} points")
 
-    def print_statistics(self, stats: Dict[str, Any]):
+    def print_statistics(self, stats: Dict[str, Any]) -> None:
         """Print statistics summary"""
         if self.console:
             table = Table(title="Summary Statistics", box=box.SIMPLE)
@@ -226,7 +231,7 @@ class RichProgressDisplay:
                 print(f"  {key}: {value}")
 
     @contextmanager
-    def progress_context(self, description: str = "Processing"):
+    def progress_context(self, description: str = "Processing") -> Iterator[Any]:
         """Context manager for progress tracking"""
         if self.console:
             with Progress(
@@ -248,13 +253,13 @@ class RichProgressDisplay:
     def create_task(self, description: str, total: int = 100) -> int:
         """Create a progress task"""
         if self._progress:
-            return self._progress.add_task(description, total=total)
+            return int(self._progress.add_task(description, total=total))
         return 0
 
-    def update_task(self, task_id: int, advance: int = 1, description: str = None):
+    def update_task(self, task_id: int, advance: int = 1, description: Optional[str] = None) -> None:
         """Update progress task"""
         if self._progress:
-            kwargs = {"advance": advance}
+            kwargs: Dict[str, Any] = {"advance": advance}
             if description:
                 kwargs["description"] = description
             self._progress.update(task_id, **kwargs)
@@ -262,40 +267,37 @@ class RichProgressDisplay:
     def _print_marked(self, kind: str, style: str, message: str, label: str = "") -> None:
         marker = self.markers[kind]
         if self.markers is _ASCII_MARKERS:
-            label = ""          # "[ERROR]" already says it
+            label = ""  # "[ERROR]" already says it
         prefix = f"{marker} {label}".rstrip()
         if self.console:
             self.console.print(f"[{style}]{escape(prefix)}[/{style}] {escape(_safe(message))}")
         else:
             print(f"{prefix} {_safe(message)}")
 
-    def print_error(self, message: str):
+    def print_error(self, message: str) -> None:
         """Print error message"""
         self._print_marked("error", "bold red", message, "Error:")
 
-    def print_warning(self, message: str):
+    def print_warning(self, message: str) -> None:
         """Print warning message"""
         self._print_marked("warning", "yellow", message, "Warning:")
 
-    def print_success(self, message: str):
+    def print_success(self, message: str) -> None:
         """Print success message"""
         self._print_marked("ok", "bold green", message)
 
-    def print_info(self, message: str):
+    def print_info(self, message: str) -> None:
         """Print info message"""
         self._print_marked("info", "blue", message)
 
 
-def create_progress_callback(display: RichProgressDisplay, task_id: int):
+def create_progress_callback(display: RichProgressDisplay, task_id: int) -> Callable[[str, int, int], None]:
     """Create a progress callback function for use with other modules"""
-    def callback(message: str, current: int, total: int):
+
+    def callback(message: str, current: int, total: int) -> None:
         if display._progress and task_id:
-            display._progress.update(
-                task_id,
-                completed=current,
-                total=total,
-                description=message
-            )
+            display._progress.update(task_id, completed=current, total=total, description=message)
+
     return callback
 
 

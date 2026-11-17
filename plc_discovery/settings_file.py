@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 try:
     import yaml
+
     YAML_AVAILABLE = True
 except ImportError:  # pragma: no cover - PyYAML is a dependency
     YAML_AVAILABLE = False
@@ -35,6 +36,7 @@ def read_file(path: str) -> Dict[str, Any]:
     with open(file, encoding="utf-8") as f:
         if file.suffix.lower() == ".json":
             import json
+
             data = json.load(f)
         else:
             if not YAML_AVAILABLE:
@@ -96,6 +98,7 @@ def save(path: str, updates: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]
     with open(tmp, "w", encoding="utf-8") as f:
         if file.suffix.lower() == ".json":
             import json
+
             json.dump(config, f, ensure_ascii=False, indent=2)
         else:
             f.write("# PLC Discovery settings (written by the GUI; also usable with plc_scanner.py -c)\n")

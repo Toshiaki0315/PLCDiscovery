@@ -15,11 +15,17 @@ import plc_scanner
 from plc_discovery import parallel
 from plc_discovery.collector import PLCDataCollector
 from plc_discovery.config import (
-    DataPoint, DeviceRange, DeviceType, NetworkConfig, PLCInfo, Protocol, ScanMode, StatusCode
+    DataPoint,
+    DeviceRange,
+    DeviceType,
+    NetworkConfig,
+    PLCInfo,
+    Protocol,
+    ScanMode,
+    StatusCode,
 )
 from plc_discovery.discovery import target_labels
 from plc_discovery.protocols.base import BaseProtocolHandler
-
 
 # ---------------------------------------------------------------------------
 # A1: targets sharing an IP
@@ -33,12 +39,15 @@ OTHER = PLCInfo("10.0.0.2", protocol=Protocol.SLMP, port=5001)
 def test_target_labels():
     assert target_labels([SLMP, OTHER]) == ["127.0.0.1", "10.0.0.2"]
     assert target_labels([SLMP, MODBUS, OTHER]) == [
-        "127.0.0.1 (SLMP:5001)", "127.0.0.1 (MODBUS_TCP:1502)", "10.0.0.2",
+        "127.0.0.1 (SLMP:5001)",
+        "127.0.0.1 (MODBUS_TCP:1502)",
+        "10.0.0.2",
     ]
     # same IP, protocol and port (gateway with two unit IDs)
     unit2 = PLCInfo("127.0.0.1", protocol=Protocol.MODBUS_TCP, port=1502, options={"unit_id": 2})
     assert target_labels([MODBUS, unit2]) == [
-        "127.0.0.1 (MODBUS_TCP:1502)", "127.0.0.1 (MODBUS_TCP:1502) #2",
+        "127.0.0.1 (MODBUS_TCP:1502)",
+        "127.0.0.1 (MODBUS_TCP:1502) #2",
     ]
 
 
@@ -85,15 +94,21 @@ async def test_periodic_scan_reads_every_target_sharing_an_ip():
     read_by.clear()
     exporter = MagicMock()
     with patch.object(plc_scanner, "PLCDataCollector", FakeCollector):
-        task = asyncio.ensure_future(plc_scanner.run_periodic_scan(
-            [SLMP, MODBUS], NetworkConfig(), exporter, Display(),
-            [DeviceRange(DeviceType.D, 0, 0)], interval=0.01,
-        ))
+        task = asyncio.ensure_future(
+            plc_scanner.run_periodic_scan(
+                [SLMP, MODBUS],
+                NetworkConfig(),
+                exporter,
+                Display(),
+                [DeviceRange(DeviceType.D, 0, 0)],
+                interval=0.01,
+            )
+        )
         while len(read_by) < 4:
             await asyncio.sleep(0.005)
         task.cancel()
         outcomes = await task
-    assert set(read_by) == {Protocol.SLMP, Protocol.MODBUS_TCP}   # previously MODBUS_TCP only
+    assert set(read_by) == {Protocol.SLMP, Protocol.MODBUS_TCP}  # previously MODBUS_TCP only
     assert [o.label for o in outcomes] == ["127.0.0.1 (SLMP:5001)", "127.0.0.1 (MODBUS_TCP:1502)"]
     assert all(o.ip_address == "127.0.0.1" and o.success for o in outcomes)
     # data files are still named by IP
@@ -106,11 +121,15 @@ async def test_parallel_scan_keeps_every_target_sharing_an_ip():
     exporter = MagicMock()
     with patch.object(parallel, "PLCDataCollector", FakeCollector):
         results = await plc_scanner.run_parallel_scan(
-            [SLMP, MODBUS, OTHER], NetworkConfig(max_concurrent=3), exporter, Display(),
-            ScanMode.RANGE, [DeviceRange(DeviceType.D, 0, 0)],
+            [SLMP, MODBUS, OTHER],
+            NetworkConfig(max_concurrent=3),
+            exporter,
+            Display(),
+            ScanMode.RANGE,
+            [DeviceRange(DeviceType.D, 0, 0)],
         )
     assert set(results) == {"127.0.0.1 (SLMP:5001)", "127.0.0.1 (MODBUS_TCP:1502)", "10.0.0.2"}
-    assert exporter.export_plc_data.call_count == 3   # previously one result (and its CSV) was lost
+    assert exporter.export_plc_data.call_count == 3  # previously one result (and its CSV) was lost
 
 
 @pytest.mark.asyncio
@@ -126,8 +145,10 @@ async def test_parallel_scan_unique_ips_still_keyed_by_ip():
 # A2: recovery after a failed reconnect
 # ---------------------------------------------------------------------------
 
+
 class FlakyHandler(BaseProtocolHandler):
     """Connects only while self.plc_up is True"""
+
     protocol = Protocol.SLMP
 
     def __init__(self, *a, **k):
@@ -172,8 +193,8 @@ async def test_collect_range_recovers_after_failed_reconnect():
     handler._circuit_breaker._state = handler._circuit_breaker._state.OPEN
 
     down = await collector.collect_range(DeviceType.D, 0, 2)
-    assert [p.status for p in down] == [StatusCode.NG_COMM_ERROR] * 3   # previously []
-    assert collector.get_denied_addresses() == set()                    # not learned as inaccessible
+    assert [p.status for p in down] == [StatusCode.NG_COMM_ERROR] * 3  # previously []
+    assert collector.get_denied_addresses() == set()  # not learned as inaccessible
 
     handler.plc_up = True
     up = await collector.collect_range(DeviceType.D, 0, 2)
@@ -190,7 +211,9 @@ async def test_full_scan_reports_unreachable_ranges_then_recovers():
     with patch.dict("plc_discovery.collector.DEFAULT_DEVICE_RANGES", {Protocol.SLMP: ranges}):
         down = await collector.collect_full_scan()
         assert [(p.address, p.status) for p in down] == [
-            ("D0", StatusCode.NG_COMM_ERROR), ("D1", StatusCode.NG_COMM_ERROR), ("M0", StatusCode.NG_COMM_ERROR),
+            ("D0", StatusCode.NG_COMM_ERROR),
+            ("D1", StatusCode.NG_COMM_ERROR),
+            ("M0", StatusCode.NG_COMM_ERROR),
         ]
         handler.plc_up = True
         assert all(p.status == StatusCode.OK for p in await collector.collect_full_scan())

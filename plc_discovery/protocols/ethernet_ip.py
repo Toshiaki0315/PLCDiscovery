@@ -9,14 +9,18 @@ Supports:
 """
 
 import asyncio
-from typing import List, Optional, Tuple, Dict
 import logging
+from typing import Any, Dict, List, Optional, Tuple
 
-from .base import BaseProtocolHandler
-from ..config import DataPoint, Protocol, DeviceType, StatusCode, PROTOCOL_PORTS
+from ..config import PROTOCOL_PORTS, DataPoint, DeviceType, Protocol, StatusCode
 from ..utils import get_timestamp, value_to_hex
+from .base import BaseProtocolHandler
 from .cip_symbolic import (
-    MAX_BATCH_REQUEST_BYTES, MAX_BATCH_TAGS, SymbolicReadError, read_symbolic, read_symbolic_batch,
+    MAX_BATCH_REQUEST_BYTES,
+    MAX_BATCH_TAGS,
+    SymbolicReadError,
+    read_symbolic,
+    read_symbolic_batch,
     split_element_count,
 )
 
@@ -26,9 +30,9 @@ logger = logging.getLogger(__name__)
 # Data-file addressing ("N7:0") is only understood by SLC-style controllers;
 # Logix and generic CIP devices use symbolic tags, which this tool does not read.
 EIP_DEVICE_MAP = {
-    DeviceType.D: ("N", 7),    # Integer file N7
-    DeviceType.HR: ("N", 7),   # Integer file N7
-    DeviceType.M: ("B", 3),    # Bit file B3 (read as 16-bit words)
+    DeviceType.D: ("N", 7),  # Integer file N7
+    DeviceType.HR: ("N", 7),  # Integer file N7
+    DeviceType.M: ("B", 3),  # Bit file B3 (read as 16-bit words)
 }
 
 
@@ -39,7 +43,7 @@ CIP_PRODUCT_TYPE_PLC = 0x0E  # "Programmable Logic Controller"
 # PLC-5/SLC/MicroLogix data-file limits as encoded by pycomm3's SLCDriver:
 # the element number and the byte size of a read are single bytes
 SLC_MAX_ELEMENT = 255
-SLC_MAX_READ_WORDS = 100   # 200 bytes (byte size field max 255)
+SLC_MAX_READ_WORDS = 100  # 200 bytes (byte size field max 255)
 
 
 def is_slc_identity(identity: Optional[Dict]) -> bool:
@@ -55,10 +59,8 @@ def is_slc_identity(identity: Optional[Dict]) -> bool:
     vendor = identity.get("vendor_id", identity.get("vendor"))
     product_type = identity.get("product_type")
     name = str(identity.get("product_name", ""))
-    vendor_ok = vendor == ROCKWELL_VENDOR_ID or "rockwell" in str(vendor).lower() \
-        or "allen" in str(vendor).lower()
-    type_ok = product_type == CIP_PRODUCT_TYPE_PLC or \
-        "programmable logic controller" in str(product_type).lower()
+    vendor_ok = vendor == ROCKWELL_VENDOR_ID or "rockwell" in str(vendor).lower() or "allen" in str(vendor).lower()
+    type_ok = product_type == CIP_PRODUCT_TYPE_PLC or "programmable logic controller" in str(product_type).lower()
     name = name.lower()
     is_logix = "logix" in name and "micrologix" not in name
     return vendor_ok and type_ok and not is_logix
@@ -73,17 +75,11 @@ class EtherNetIPHandler(BaseProtocolHandler):
 
     protocol = Protocol.ETHERNET_IP
 
-    def __init__(
-        self,
-        ip_address: str,
-        port: Optional[int] = None,
-        slot: int = 0,
-        **kwargs
-    ):
+    def __init__(self, ip_address: str, port: Optional[int] = None, slot: int = 0, **kwargs: Any):
         super().__init__(ip_address, port or PROTOCOL_PORTS[Protocol.ETHERNET_IP], **kwargs)
-        self._client = None
+        self._client: Any = None
         self._slot = slot
-        self._plc_type = None  # 'logix', 'slc' or 'generic'
+        self._plc_type: Optional[str] = None  # 'logix', 'slc' or 'generic'
 
     def _connection_path(self, include_slot: bool) -> str:
         """
@@ -132,7 +128,7 @@ class EtherNetIPHandler(BaseProtocolHandler):
             loop = asyncio.get_running_loop()
             self._client = await loop.run_in_executor(None, _connect)
             self._connected = True
-            self._plc_type = 'logix'
+            self._plc_type = "logix"
             logger.info(f"EtherNet/IP (Logix) connected to {self.ip_address}:{self.port}")
             return True
 
@@ -164,15 +160,13 @@ class EtherNetIPHandler(BaseProtocolHandler):
                     # EtherNet/IP device accepts. Data-file reads would then fail
                     # and be misreported as illegal addresses.
                     client.close()
-                    raise ConnectionError(
-                        f"not an SLC/PLC-5/MicroLogix controller (identity: {identity})"
-                    )
+                    raise ConnectionError(f"not an SLC/PLC-5/MicroLogix controller (identity: {identity})")
                 return client
 
             loop = asyncio.get_running_loop()
             self._client = await loop.run_in_executor(None, _connect)
             self._connected = True
-            self._plc_type = 'slc'
+            self._plc_type = "slc"
             logger.info(f"EtherNet/IP (SLC) connected to {self.ip_address}:{self.port}")
             return True
         except Exception as e:
@@ -193,7 +187,7 @@ class EtherNetIPHandler(BaseProtocolHandler):
             loop = asyncio.get_running_loop()
             self._client = await loop.run_in_executor(None, _connect)
             self._connected = True
-            self._plc_type = 'generic'
+            self._plc_type = "generic"
             logger.info(f"EtherNet/IP (Generic) connected to {self.ip_address}:{self.port}")
             return True
 
@@ -206,6 +200,7 @@ class EtherNetIPHandler(BaseProtocolHandler):
         """Close EtherNet/IP connection"""
         if self._client:
             try:
+
                 def _disconnect():
                     self._client.close()
 
@@ -219,10 +214,7 @@ class EtherNetIPHandler(BaseProtocolHandler):
                 logger.info(f"EtherNet/IP disconnected from {self.ip_address}")
 
     async def read_device_raw(
-        self,
-        device_type: DeviceType,
-        start_address: int,
-        count: int
+        self, device_type: DeviceType, start_address: int, count: int
     ) -> Tuple[Optional[List[int]], StatusCode]:
         """
         Read device data using EtherNet/IP protocol.
@@ -236,7 +228,7 @@ class EtherNetIPHandler(BaseProtocolHandler):
             return None, StatusCode.NG_COMM_ERROR
 
         try:
-            if self._plc_type == 'slc':
+            if self._plc_type == "slc":
                 return await self._read_ab_style(device_type, start_address, count)
             # Logix / generic CIP devices have no numeric device addresses.
             # Returning data from another object under these addresses would
@@ -262,10 +254,7 @@ class EtherNetIPHandler(BaseProtocolHandler):
             return None, StatusCode.NG_COMM_ERROR
 
     async def _read_ab_style(
-        self,
-        device_type: DeviceType,
-        start_address: int,
-        count: int
+        self, device_type: DeviceType, start_address: int, count: int
     ) -> Tuple[Optional[List[int]], StatusCode]:
         """
         Read data using Allen-Bradley tag style.
@@ -281,8 +270,7 @@ class EtherNetIPHandler(BaseProtocolHandler):
             # number in one byte (a larger one raises DataError before
             # anything is sent, which looked like a transport failure)
             logger.debug(
-                f"SLC element out of range: {device_type.value}{start_address} "
-                f"x{count} (max {SLC_MAX_ELEMENT})"
+                f"SLC element out of range: {device_type.value}{start_address} " f"x{count} (max {SLC_MAX_ELEMENT})"
             )
             return None, StatusCode.NG_ILLEGAL_ADDR
 
@@ -364,7 +352,7 @@ class EtherNetIPHandler(BaseProtocolHandler):
             return await self._read_tags_generic(tags)
         results: List[DataPoint] = []
         for start in range(0, len(tags), TAG_BATCH_SIZE):
-            batch = tags[start:start + TAG_BATCH_SIZE]
+            batch = tags[start : start + TAG_BATCH_SIZE]
             if not self.supports_tags:
                 results += [_tag_point(t, StatusCode.NG_UNSUPPORTED) for t in batch]
                 continue
@@ -373,9 +361,11 @@ class EtherNetIPHandler(BaseProtocolHandler):
                 continue
             await self._rate_limiter.wait()
             try:
+
                 def _read():
                     replies = self._client.read(*batch)
                     return replies if isinstance(replies, list) else [replies]
+
                 replies = await self._run_blocking(_read)
             except asyncio.TimeoutError:
                 results += [_tag_point(t, StatusCode.NG_TIMEOUT) for t in batch]
@@ -406,9 +396,10 @@ class EtherNetIPHandler(BaseProtocolHandler):
             client = self._client
 
             def read(client=client, group=group):
-                if group[0].rstrip().endswith("}"):       # element-count read: alone, fragmented
+                if group[0].rstrip().endswith("}"):  # element-count read: alone, fragmented
                     return [_capture(read_symbolic, client, group[0])]
                 return read_symbolic_batch(client, group)
+
             try:
                 outcomes = await self._run_blocking(read)
             except asyncio.TimeoutError:
@@ -463,7 +454,7 @@ TAG_BATCH_SIZE = 20
 MAX_TAG_ARRAY_ELEMENTS = 1000
 
 
-def _tag_point(name: str, status: StatusCode, value=None) -> DataPoint:
+def _tag_point(name: str, status: StatusCode, value: Any = None) -> DataPoint:
     """Data point for one tag value"""
     point = DataPoint(address=name, status=status, timestamp=get_timestamp())
     if status != StatusCode.OK:
@@ -483,7 +474,7 @@ def _tag_point(name: str, status: StatusCode, value=None) -> DataPoint:
     return point
 
 
-def _tag_points(name: str, reply) -> List[DataPoint]:
+def _tag_points(name: str, reply: Any) -> List[DataPoint]:
     """Data points for one LogixDriver reply (Tag(tag, value, type, error))"""
     if reply is None or getattr(reply, "error", None):
         logger.debug(f"Tag {name}: {getattr(reply, 'error', 'no reply')}")
@@ -491,7 +482,7 @@ def _tag_points(name: str, reply) -> List[DataPoint]:
     return _value_points(name, reply.value)
 
 
-def _value_points(name: str, value) -> List[DataPoint]:
+def _value_points(name: str, value: Any) -> List[DataPoint]:
     """
     Data points for a tag value: one per array element ("Tag[i]") and per
     structure member ("Tag.Member", nested: "Tag.Sub.Member", "Tag[1].Member").
@@ -510,7 +501,7 @@ def _value_points(name: str, value) -> List[DataPoint]:
     return _flatten(name.split("{")[0], value)
 
 
-def _flatten(name: str, value) -> List[DataPoint]:
+def _flatten(name: str, value: Any) -> List[DataPoint]:
     if isinstance(value, dict):
         points = []
         for member, member_value in value.items():

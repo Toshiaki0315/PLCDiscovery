@@ -4,13 +4,16 @@ Tests for broadcast_discovery module
 
 import struct
 from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
 
 from plc_discovery.broadcast_discovery import (
-    BroadcastDiscovery, discover_broadcast,
-    UDPDiscoveryProtocol, EIP_LIST_IDENTITY_CMD
+    EIP_LIST_IDENTITY_CMD,
+    BroadcastDiscovery,
+    UDPDiscoveryProtocol,
+    discover_broadcast,
 )
-from plc_discovery.config import Protocol, PLCInfo, NetworkConfig
+from plc_discovery.config import NetworkConfig, PLCInfo, Protocol
 
 
 class TestUDPDiscoveryProtocol:
@@ -85,7 +88,7 @@ class TestBroadcastDiscovery:
         discovery = BroadcastDiscovery()
 
         # Build a valid SLMP response (D000 subheader)
-        response = b"\xD0\x00" + b"\x00" * 20
+        response = b"\xd0\x00" + b"\x00" * 20
 
         result = discovery._parse_slmp_response("192.168.1.10", response)
 
@@ -172,12 +175,12 @@ class TestBroadcastDiscovery:
         discovery = BroadcastDiscovery()
 
         # Mock the _send_broadcast method
-        mock_response = b"\xD0\x00" + b"\x00" * 20
+        mock_response = b"\xd0\x00" + b"\x00" * 20
 
         async def mock_send_broadcast(port, data, timeout):
             return {"192.168.1.10": mock_response}
 
-        with patch.object(discovery, '_send_broadcast', mock_send_broadcast):
+        with patch.object(discovery, "_send_broadcast", mock_send_broadcast):
             plcs = await discovery.discover_slmp_broadcast()
 
         assert len(plcs) == 1
@@ -197,7 +200,7 @@ class TestBroadcastDiscovery:
         async def mock_send_broadcast(port, data, timeout):
             return {"192.168.1.20": mock_response}
 
-        with patch.object(discovery, '_send_broadcast', mock_send_broadcast):
+        with patch.object(discovery, "_send_broadcast", mock_send_broadcast):
             plcs = await discovery.discover_eip_broadcast()
 
         assert len(plcs) == 1
@@ -210,7 +213,7 @@ class TestBroadcastDiscovery:
         discovery = BroadcastDiscovery()
 
         # Mock responses for both protocols
-        slmp_response = b"\xD0\x00" + b"\x00" * 20
+        slmp_response = b"\xd0\x00" + b"\x00" * 20
         eip_response = struct.pack("<H", EIP_LIST_IDENTITY_CMD) + struct.pack("<H", 10) + b"\x00" * 20
 
         call_count = [0]
@@ -223,7 +226,7 @@ class TestBroadcastDiscovery:
                 return {"192.168.1.20": eip_response}
             return {}
 
-        with patch.object(discovery, '_send_broadcast', mock_send_broadcast):
+        with patch.object(discovery, "_send_broadcast", mock_send_broadcast):
             plcs = await discovery.discover_all_broadcast()
 
         assert len(plcs) == 2
@@ -238,11 +241,8 @@ class TestDiscoverBroadcast:
     @pytest.mark.asyncio
     async def test_convenience_function(self):
         """Test the convenience function"""
-        with patch.object(BroadcastDiscovery, 'discover_all_broadcast',
-                          new_callable=AsyncMock) as mock_discover:
-            mock_discover.return_value = [
-                PLCInfo(ip_address="192.168.1.10", protocol=Protocol.SLMP)
-            ]
+        with patch.object(BroadcastDiscovery, "discover_all_broadcast", new_callable=AsyncMock) as mock_discover:
+            mock_discover.return_value = [PLCInfo(ip_address="192.168.1.10", protocol=Protocol.SLMP)]
 
             plcs = await discover_broadcast()
 
@@ -254,8 +254,7 @@ class TestDiscoverBroadcast:
         """Test with custom config"""
         config = NetworkConfig(discovery_timeout_ms=3000)
 
-        with patch.object(BroadcastDiscovery, 'discover_all_broadcast',
-                          new_callable=AsyncMock) as mock_discover:
+        with patch.object(BroadcastDiscovery, "discover_all_broadcast", new_callable=AsyncMock) as mock_discover:
             mock_discover.return_value = []
 
             await discover_broadcast(config=config)
