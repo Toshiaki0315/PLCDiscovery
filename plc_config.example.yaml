@@ -128,8 +128,16 @@ output:
     track_history: true
     
     # Days of data to keep: older rows are deleted when the database is
-    # opened and once a day during periodic scans (0 = keep everything)
+    # opened and every cleanup_interval_hours during periodic scans
+    # (0 = keep everything)
     max_history_days: 30
+    
+    # Upper limit of the data in MB: the oldest rows are deleted until it
+    # fits; the latest value of every address is kept (0 = no limit)
+    max_size_mb: 0
+    
+    # How often a periodic scan applies the two limits above (hours)
+    cleanup_interval_hours: 24
 
 # Logging settings
 logging:
@@ -188,6 +196,15 @@ data_types:
       description: "Signed integer values"
 
 # Notification settings
+# Notification timing (minutes, 0 = off)
+notification_settings:
+  # During a periodic scan, send a status report (OK/NG per PLC) this often
+  report_interval_minutes: 0
+  # Send each event type at most once in this many minutes (repeats are
+  # dropped), so a PLC failing every cycle does not flood the channel
+  min_interval_minutes: 0
+
+# Event types: scan_complete, scan_error, discovery_complete, status_report
 notifications:
   # Webhook notification
   - name: main_webhook

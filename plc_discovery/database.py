@@ -30,7 +30,8 @@ from .report import json_safe
 logger = logging.getLogger(__name__)
 
 
-# How often a long run (periodic monitoring) applies max_history_days
+# Default for how often a long run (periodic monitoring) applies
+# max_history_days / max_size_mb (output.database.cleanup_interval_hours)
 CLEANUP_INTERVAL_SECONDS = 24 * 60 * 60
 
 # Database schema version for migrations
@@ -141,9 +142,15 @@ class DatabaseConfig:
     enabled: bool = False
     path: str = "./plc_data.db"
     track_history: bool = True
-    # Data older than this is deleted when the database is opened and once a
-    # day during long runs (0 = keep everything)
+    # Data older than this is deleted when the database is opened and every
+    # cleanup_interval_hours during long runs (0 = keep everything)
     max_history_days: int = 30
+    # Upper limit of the data in the database in MB: the oldest rows are
+    # deleted until it fits (0 = no limit). The latest value per address is
+    # always kept.
+    max_size_mb: float = 0
+    # How often a long run (periodic monitoring) applies the two limits
+    cleanup_interval_hours: float = 24
     
     @classmethod
     def from_dict(cls, config: Dict) -> 'DatabaseConfig':
@@ -153,6 +160,8 @@ class DatabaseConfig:
             path=config.get("path", "./plc_data.db"),
             track_history=config.get("track_history", True),
             max_history_days=config.get("max_history_days", 30),
+            max_size_mb=config.get("max_size_mb", 0) or 0,
+            cleanup_interval_hours=config.get("cleanup_interval_hours", 24) or 24,
         )
 
 
@@ -556,7 +565,7 @@ class DatabaseExporter:
         # Long runs: delete expired rows once a day (no VACUUM, which would
         # block the monitoring cycle while it rewrites the whole file)
         if (self._last_cleanup is not None
-                and time.monotonic() - self._last_cleanup >= CLEANUP_INTERVAL_SECONDS):
+                and time.monotonic() - self._last_cleanup >= self._cleanup_interval_seconds):
             self._apply_retention(vacuum=False)
         return count
     
@@ -810,18 +819,76 @@ class DatabaseExporter:
         self._latest_values.clear()
         return self._cleanup_old_data(days)
     
+    @property
+    def _cleanup_interval_seconds(self) -> float:
+        hours = self.config.cleanup_interval_hours or 0
+        return hours * 3600 if hours > 0 else CLEANUP_INTERVAL_SECONDS
+    
     def _apply_retention(self, vacuum: bool) -> None:
-        """Delete rows older than max_history_days (never raises)"""
+        """Apply max_history_days and max_size_mb (never raises)"""
         self._last_cleanup = time.monotonic()
+        deleted = 0
         days = self.config.max_history_days
-        if not days or days <= 0:
-            return
         try:
-            deleted = self._cleanup_old_data(days, vacuum=None if vacuum else False)
+            if days and days > 0:
+                deleted += self._cleanup_old_data(days, vacuum=False)
+            deleted += self._enforce_size_limit()
             if deleted:
-                logger.info(f"Deleted {deleted} database rows older than {days} days")
+                logger.info(f"Database cleanup: deleted {deleted} rows")
+                if vacuum:
+                    # Give the freed space back to the file system (only when
+                    # opening: VACUUM rewrites the whole file)
+                    self._connection.execute("VACUUM")
         except Exception as e:
             logger.warning(f"Database retention cleanup failed: {e}")
+    
+    def used_bytes(self) -> int:
+        """Bytes of data in the database (excluding free pages)"""
+        pragma = lambda name: self._connection.execute(f"PRAGMA {name}").fetchone()[0]
+        return (pragma("page_count") - pragma("freelist_count")) * pragma("page_size")
+    
+    def _enforce_size_limit(self) -> int:
+        """
+        Delete the oldest rows until the data fits in max_size_mb.
+        
+        The latest data point of every address of every target is kept, so
+        a limit that is too small cannot empty the database. Freed pages are
+        reused; the file itself shrinks at the next VACUUM.
+        
+        Returns:
+            Number of rows deleted
+        """
+        limit = float(self.config.max_size_mb or 0) * 1024 * 1024
+        if limit <= 0 or not self.is_enabled:
+            return 0
+        deleted = 0
+        while self.used_bytes() > limit:
+            removed = 0
+            for sql in (
+                # Oldest change history and denied-address log entries first
+                """DELETE FROM data_history WHERE id IN (
+                       SELECT id FROM data_history ORDER BY id LIMIT
+                       (SELECT MAX(100, COUNT(*) / 10) FROM data_history))""",
+                """DELETE FROM denied_addresses WHERE id IN (
+                       SELECT id FROM denied_addresses ORDER BY id LIMIT
+                       (SELECT MAX(100, COUNT(*) / 10) FROM denied_addresses))""",
+                """DELETE FROM data_points WHERE id IN (
+                       SELECT id FROM data_points
+                       WHERE id NOT IN (SELECT MAX(id) FROM data_points
+                                        GROUP BY plc_ip, protocol, port, address)
+                       ORDER BY id LIMIT
+                       (SELECT MAX(1000, COUNT(*) / 10) FROM data_points))""",
+            ):
+                removed += self._connection.execute(sql).rowcount
+            self._connection.commit()
+            if not removed:
+                logger.warning(
+                    f"Database still uses {self.used_bytes() / 1048576:.1f} MB after keeping only "
+                    f"the latest values; max_size_mb ({self.config.max_size_mb}) is too small"
+                )
+                break
+            deleted += removed
+        return deleted
     
     def _cleanup_old_data(self, days: int = None, vacuum: Optional[bool] = True) -> int:
         """

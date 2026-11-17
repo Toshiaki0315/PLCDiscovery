@@ -255,6 +255,52 @@ class ConfigLoader:
         """Get periodic scan interval in seconds (0 = single scan)"""
         return float(self.config.get("scan", {}).get("interval_seconds", 0) or 0)
     
+    def _validate_notifications(self) -> List[str]:
+        """Errors in notifications[] and notification_settings"""
+        from .notifications import NOTIFICATION_TYPES, NotificationType
+        errors = []
+        settings = self.config.get("notification_settings") or {}
+        if not isinstance(settings, dict):
+            errors.append("notification_settings must be a mapping")
+            settings = {}
+        for key in ("report_interval_minutes", "min_interval_minutes"):
+            if key in settings:
+                error = number_error(settings[key], 0)
+                if error:
+                    errors.append(f"notification_settings.{key} {error}")
+        
+        destinations = self.config.get("notifications") or []
+        if not isinstance(destinations, list):
+            return errors + ["notifications must be a list"]
+        known_events = {t.value for t in NotificationType}
+        names = set()
+        for i, item in enumerate(destinations):
+            where = f"notifications[{i}]"
+            if not isinstance(item, dict):
+                errors.append(f"{where} must be a mapping")
+                continue
+            kind = str(item.get("type", "webhook")).lower()
+            if kind not in NOTIFICATION_TYPES:
+                errors.append(f"{where}.type: unknown type '{kind}' (allowed: {', '.join(NOTIFICATION_TYPES)})")
+            url = item.get("url") or item.get("webhook_url")
+            if item.get("enabled", True) and not url:
+                errors.append(f"{where}.url is required for an enabled notification")
+            elif url and not str(url).lower().startswith(("http://", "https://")):
+                errors.append(f"{where}.url must start with http:// or https://")
+            name = item.get("name", "unnamed")
+            if name in names:
+                errors.append(f"{where}.name '{name}' is used twice (names must be unique)")
+            names.add(name)
+            for event in item.get("events") or []:
+                if event not in known_events:
+                    errors.append(f"{where}.events: unknown event '{event}'")
+            for key, minimum, exclusive in (("timeout", 0, True), ("retry_count", 1, False)):
+                if key in item:
+                    error = number_error(item[key], minimum, exclusive)
+                    if error:
+                        errors.append(f"{where}.{key} {error}")
+        return errors
+    
     def get_network_config(self) -> NetworkConfig:
         """Get NetworkConfig from loaded configuration"""
         net = self.config.get("network", {})
@@ -539,12 +585,21 @@ class ConfigLoader:
             if self._parse_device_type(str(range_def.get("device", "D"))) is None:
                 errors.append(f"{where}: unknown device '{range_def.get('device')}'")
 
-        # Database retention (0 = keep everything)
+        # Database retention (0 = keep everything / no size limit)
         database = (self.config.get("output") or {}).get("database") or {}
-        if isinstance(database, dict) and "max_history_days" in database:
-            error = integer_error(database["max_history_days"], 0)
-            if error:
-                errors.append(f"output.database.max_history_days {error}")
+        if isinstance(database, dict):
+            if "max_history_days" in database:
+                error = integer_error(database["max_history_days"], 0)
+                if error:
+                    errors.append(f"output.database.max_history_days {error}")
+            for key, minimum, exclusive in (("max_size_mb", 0, False),
+                                            ("cleanup_interval_hours", 0, True)):
+                if key in database:
+                    error = number_error(database[key], minimum, exclusive)
+                    if error:
+                        errors.append(f"output.database.{key} {error}")
+        
+        errors.extend(self._validate_notifications())
         
         # Validate data type settings (default type/byte order and mappings)
         try:
@@ -553,6 +608,15 @@ class ConfigLoader:
             errors.append(str(e))
 
         return errors
+
+
+def number_error(value: Any, minimum: float, exclusive: bool = False) -> Optional[str]:
+    """Why value is not a number >= (or > when exclusive) minimum"""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return f"must be a number, got {value!r}"
+    if value < minimum or (exclusive and value == minimum):
+        return f"must be {'>' if exclusive else '>='} {minimum:g}, got {value:g}"
+    return None
 
 
 def load_config(config_path: Optional[str] = None) -> ConfigLoader:

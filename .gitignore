@@ -30,3 +30,10 @@ dist/
 
 # Scan output written by plc_scanner.py / the GUI (default --output-dir)
 plc_scan_results/
+
+# Settings saved by the GUI / the CLI default config: may contain webhook
+# URLs (secrets) for Teams/Slack notifications
+plc_config.yaml
+
+# SQLite database output (default path)
+plc_data.db

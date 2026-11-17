@@ -17,6 +17,7 @@ Supports:
 import asyncio
 import json
 import logging
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -43,7 +44,21 @@ class NotificationType(Enum):
     PLC_FOUND = "plc_found"
     PLC_UNREACHABLE = "plc_unreachable"
     THRESHOLD_EXCEEDED = "threshold_exceeded"
+    # Periodic summary while a periodic (monitoring) scan runs
+    STATUS_REPORT = "status_report"
     CUSTOM = "custom"
+
+
+# Event types offered in configuration (and the GUI), with a short label
+CONFIGURABLE_EVENTS = {
+    NotificationType.SCAN_COMPLETE: "スキャン完了",
+    NotificationType.SCAN_ERROR: "エラー（接続できないPLCなど）",
+    NotificationType.DISCOVERY_COMPLETE: "探索完了",
+    NotificationType.STATUS_REPORT: "周期実行中の定期報告",
+}
+
+# Notification destination types offered in configuration
+NOTIFICATION_TYPES = ("webhook", "slack", "teams")
 
 
 class NotificationPriority(Enum):
@@ -394,8 +409,24 @@ class NotificationManager:
         ))
     """
     
-    def __init__(self):
+    def __init__(self, min_interval_seconds: float = 0, report_interval_seconds: float = 0):
+        """
+        Args:
+            min_interval_seconds: an event type is sent at most once in this
+                many seconds; repeats in between are dropped (0 = no limit),
+                so a PLC failing every cycle does not flood the channel
+            report_interval_seconds: how often a periodic scan sends a
+                STATUS_REPORT summary (0 = never); read by the scan loops
+        """
         self._handlers: Dict[str, NotificationHandler] = {}
+        self.min_interval_seconds = max(0.0, float(min_interval_seconds or 0))
+        self.report_interval_seconds = max(0.0, float(report_interval_seconds or 0))
+        self._last_sent: Dict[NotificationType, float] = {}
+    
+    @property
+    def has_handlers(self) -> bool:
+        """True when at least one destination is enabled"""
+        return any(h.config.enabled for h in self._handlers.values())
     
     def add_handler(self, config: NotificationConfig) -> None:
         """Add a notification handler"""
@@ -502,6 +533,15 @@ class NotificationManager:
         tasks = []
         handler_names = []
         
+        now = time.monotonic()
+        last = self._last_sent.get(event.type)
+        if self.min_interval_seconds and last is not None and now - last < self.min_interval_seconds:
+            logger.info(
+                f"Notification '{event.type.value}' suppressed: one was sent "
+                f"{now - last:.0f}s ago (minimum interval {self.min_interval_seconds:.0f}s)"
+            )
+            return results
+        
         for name, handler in self._handlers.items():
             # Filter by specific handlers if provided
             if handlers and name not in handlers:
@@ -515,6 +555,7 @@ class NotificationManager:
             handler_names.append(name)
         
         if tasks:
+            self._last_sent[event.type] = now
             outcomes = await asyncio.gather(*tasks, return_exceptions=True)
             
             for name, outcome in zip(handler_names, outcomes):
@@ -589,6 +630,22 @@ class NotificationManager:
         )
         return await self.notify(event)
     
+    async def notify_status_report(
+        self,
+        message: str,
+        has_problems: bool = False,
+        **extra_data
+    ) -> Dict[str, bool]:
+        """Send a periodic status report (summary of a monitoring run)"""
+        event = NotificationEvent(
+            type=NotificationType.STATUS_REPORT,
+            title="PLC Monitoring Status",
+            message=message,
+            priority=NotificationPriority.HIGH if has_problems else NotificationPriority.LOW,
+            data=extra_data,
+        )
+        return await self.notify(event)
+    
     @classmethod
     def from_config(cls, config: Dict) -> 'NotificationManager':
         """
@@ -604,9 +661,13 @@ class NotificationManager:
                 type: slack
                 url: https://hooks.slack.com/...
         """
-        manager = cls()
+        settings = config.get("notification_settings") or {}
+        manager = cls(
+            min_interval_seconds=60 * float(settings.get("min_interval_minutes", 0) or 0),
+            report_interval_seconds=60 * float(settings.get("report_interval_minutes", 0) or 0),
+        )
         
-        notifications = config.get("notifications", [])
+        notifications = config.get("notifications", []) or []
         for notif_config in notifications:
             try:
                 # Parse events

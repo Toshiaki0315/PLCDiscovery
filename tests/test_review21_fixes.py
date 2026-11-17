@@ -75,7 +75,8 @@ def test_retention_applied_daily_during_long_runs(tmp_path, monkeypatch):
         db._connection.commit()
         db.export_plc_data(_point(9), "10.0.0.1", protocol="SLMP", port=5001)
         assert _count(path, "data_points") == 4             # not yet a day
-        clock = [db._last_cleanup + database.CLEANUP_INTERVAL_SECONDS]
+        # +1 s: (t + interval) - t can round to just below interval
+        clock = [db._last_cleanup + database.CLEANUP_INTERVAL_SECONDS + 1]
         monkeypatch.setattr(database.time, "monotonic", lambda: clock[0])
         db.export_plc_data(_point(10), "10.0.0.1", protocol="SLMP", port=5001)
         assert _count(path, "data_points") == 2             # old rows gone, newest kept

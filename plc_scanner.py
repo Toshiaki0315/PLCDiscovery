@@ -1041,10 +1041,14 @@ async def run_periodic_scan(
     data_type: Optional[DataType] = None,
     byte_order: ByteOrder = ByteOrder.LITTLE_ENDIAN,
     type_manager: Optional[DataTypeManager] = None,
-    db_exporter: DatabaseExporter = None
+    db_exporter: DatabaseExporter = None,
+    notifier: Optional[NotificationManager] = None
 ) -> List[ScanOutcome]:
     """
     Periodic range scan of one or more PLCs until Ctrl+C.
+    
+    With notification_settings.report_interval_minutes, a STATUS_REPORT
+    summary of the latest cycle is sent at that interval.
     
     All targets stay connected (keeping their session cache of denied
     addresses) and are read one after another in every cycle, so every
@@ -1091,6 +1095,7 @@ async def run_periodic_scan(
             f"(Ctrl+C to stop)"
         )
         started_at = loop.time()
+        last_report = started_at
         interrupted = False
         try:
             iteration = 0
@@ -1112,6 +1117,18 @@ async def run_periodic_scan(
                     writers[key].export_new_denied(
                         collector.get_denied_addresses(), collector.get_denied_statuses()
                     )
+                
+                if (notifier and notifier.report_interval_seconds
+                        and loop.time() - last_report >= notifier.report_interval_seconds):
+                    last_report = loop.time()
+                    message, problems = status_report_message(
+                        {key: outcomes[key].data_points for key in collectors},
+                        [key for key in collectors if key not in reached],
+                        iteration,
+                    )
+                    await _notify(notifier, lambda n: n.notify_status_report(
+                        message, has_problems=problems, iteration=iteration,
+                    ))
                 
                 wait = max(0.0, interval - (loop.time() - cycle_started))
                 if wait == 0.0:
@@ -1155,6 +1172,28 @@ UNDETECTED_PROTOCOL = (
     "no PLC protocol answered (check the PLC power and network, "
     "or specify the protocol with --protocol / targets[].protocol)"
 )
+
+
+def status_report_message(
+    points_by_target: Dict[str, List[DataPoint]],
+    unreachable: List[str],
+    iteration: int,
+) -> tuple:
+    """
+    Text of a periodic status report: per target, the OK / NG counts of the
+    latest cycle. Returns (message, has_problems).
+    """
+    lines = [f"Cycle {iteration}"]
+    problems = bool(unreachable)
+    for label, points in points_by_target.items():
+        if label in unreachable:
+            lines.append(f"{label}: not reachable")
+            continue
+        ok = sum(1 for p in points if p.status == StatusCode.OK)
+        ng = len(points) - ok
+        problems = problems or ng > 0
+        lines.append(f"{label}: OK {ok} / NG {ng}")
+    return "\n".join(lines), problems
 
 
 async def resolve_target(
@@ -1515,7 +1554,7 @@ async def main():
                     display.print_info("Periodic scans read targets one after another (--max-concurrent not used)")
                 outcomes = await run_periodic_scan(
                     plc_infos, config, exporter, display, device_ranges, interval,
-                    data_type, byte_order, type_manager, db_exporter
+                    data_type, byte_order, type_manager, db_exporter, notifier
                 )
                 for outcome in outcomes:
                     if not outcome.success:

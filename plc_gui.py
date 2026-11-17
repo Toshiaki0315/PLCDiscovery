@@ -40,10 +40,16 @@ from plc_discovery.config import (
     StatusCode,
 )
 from plc_discovery.data_types import ByteOrder
+from plc_discovery.database import DatabaseConfig, DatabaseExporter
+from plc_discovery.notifications import (
+    CONFIGURABLE_EVENTS, NOTIFICATION_TYPES, NotificationEvent, NotificationManager,
+    NotificationPriority, NotificationType,
+)
+from plc_discovery import settings_file
 from plc_discovery.discovery import PLCDiscovery, discover_plcs, merge_discovery_results
 from plc_discovery.output import DEFAULT_OUTPUT_DIR, CSVExporter
 from plc_discovery.utils import MAX_IP_RANGE_HOSTS, ip_range_error, target_address_error
-from plc_scanner import BYTE_ORDER_MAP, DATA_TYPE_MAP, apply_data_type_conversion
+from plc_scanner import BYTE_ORDER_MAP, DATA_TYPE_MAP, apply_data_type_conversion, status_report_message
 
 APP_TITLE = "PLC Discovery - PLC自動探索・データ収集ツール"
 
@@ -129,6 +135,40 @@ class AsyncWorker:
         self.loop.call_soon_threadsafe(self.loop.stop)
 
 
+class JobOutputs:
+    """
+    Notification and database outputs of one job, built from the settings
+    tabs when the job starts. The database is opened in the worker thread
+    (opening applies the retention limits, which may take a moment).
+    """
+
+    def __init__(self, notifier: Optional[NotificationManager], db_config: Optional[DatabaseConfig]) -> None:
+        self.notifier = notifier
+        self.db_config = db_config
+        self.db: Optional[DatabaseExporter] = None
+
+    def open_db(self) -> None:
+        if self.db_config and self.db_config.enabled:
+            try:
+                self.db = DatabaseExporter(self.db_config)
+            except Exception as e:
+                logging.error(f"データベースを開けませんでした（CSVへの保存は続けます）: {e}")
+
+    async def notify(self, send) -> None:
+        """Send a notification if destinations are set; never stops the job"""
+        if self.notifier is None or not self.notifier.has_handlers:
+            return
+        try:
+            await send(self.notifier)
+        except Exception as e:
+            logging.warning(f"通知の送信に失敗しました: {e}")
+
+    def close(self) -> None:
+        if self.db:
+            self.db.close()
+            self.db = None
+
+
 class QueueLogHandler(logging.Handler):
     """ログレコードを GUI キューへ流す"""
 
@@ -175,6 +215,8 @@ class PLCScannerApp:
         self._build_layout()
         self._on_mode_change()
         self._on_discover_scope_change()
+        # Settings saved earlier (③〜⑤ tabs): loaded if the file exists
+        self._load_settings(quiet=True)
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.after(100, self._poll_queue)
@@ -207,6 +249,21 @@ class PLCScannerApp:
         self.var_timeout = tk.StringVar(value="5000")
         self.var_output_dir = tk.StringVar(value=str(Path(DEFAULT_OUTPUT_DIR).resolve()))
         self.var_encoding = tk.StringVar(value="utf-8-sig")
+        self.var_settings_path = tk.StringVar(value=str(Path(settings_file.DEFAULT_SETTINGS_FILE).resolve()))
+
+        # 通知タブ（通知先は設定ファイルの notifications[] と同じ形の dict）
+        self.notify_destinations: List[Dict] = []
+        self.var_report_interval = tk.StringVar(value="0")
+        self.var_min_interval = tk.StringVar(value="0")
+
+        # データベースタブ
+        self.var_db_enabled = tk.BooleanVar(value=False)
+        self.var_db_path = tk.StringVar(value=str(Path("plc_data.db").resolve()))
+        self.var_db_history = tk.BooleanVar(value=True)
+        self.var_db_days = tk.StringVar(value="30")
+        self.var_db_size = tk.StringVar(value="0")
+        self.var_db_interval = tk.StringVar(value="24")
+        self.var_db_status = tk.StringVar(value="")
 
         # ステータス表示
         self.var_status = tk.StringVar(value="準備完了")
@@ -240,13 +297,19 @@ class PLCScannerApp:
         self.tab_discover = ttk.Frame(self.notebook, padding=10)
         self.tab_collect = ttk.Frame(self.notebook, padding=10)
         self.tab_settings = ttk.Frame(self.notebook, padding=10)
+        self.tab_notify = ttk.Frame(self.notebook, padding=10)
+        self.tab_db = ttk.Frame(self.notebook, padding=10)
         self.notebook.add(self.tab_discover, text="  ① PLC探索  ")
         self.notebook.add(self.tab_collect, text="  ② データ収集  ")
         self.notebook.add(self.tab_settings, text="  ③ 通信・出力設定  ")
+        self.notebook.add(self.tab_notify, text="  ④ 通知  ")
+        self.notebook.add(self.tab_db, text="  ⑤ データベース  ")
 
         self._build_discover_tab()
         self._build_collect_tab()
         self._build_settings_tab()
+        self._build_notify_tab()
+        self._build_db_tab()
 
         # ログ表示エリア
         log_frame = ttk.LabelFrame(paned, text="ログ", padding=6)
@@ -351,12 +414,14 @@ class PLCScannerApp:
         self.ent_end = ttk.Entry(rng, textvariable=self.var_end, width=7)
         self.ent_end.pack(side=tk.LEFT)
         # GX Works shows X/Y/B/W in hexadecimal; this tool uses decimal
-        # everywhere and converts when sending (README: 範囲指定モード)
-        ttk.Label(mode, text="10進数で入力（X/Y/B/W も。例: X1F → 31）",
-                  style="Hint.TLabel").grid(row=1, column=4, sticky=tk.W, padx=(8, 0))
+        # everywhere and converts when sending (README: 範囲指定モード).
+        # Own row: next to the address fields it pushed the data type
+        # frame out of the window
+        ttk.Label(mode, text="アドレスは10進数で入力（X/Y/B/W も。例: X1F → 31）",
+                  style="Hint.TLabel").grid(row=2, column=0, columnspan=4, sticky=tk.W, padx=(20, 0))
 
         per = ttk.Frame(mode)
-        per.grid(row=2, column=0, columnspan=4, sticky=tk.W, padx=(20, 0), pady=(4, 0))
+        per.grid(row=3, column=0, columnspan=4, sticky=tk.W, padx=(20, 0), pady=(4, 0))
         self.chk_periodic = ttk.Checkbutton(per, text="周期実行:", variable=self.var_periodic,
                                             command=self._on_mode_change)
         self.chk_periodic.pack(side=tk.LEFT)
@@ -365,9 +430,9 @@ class PLCScannerApp:
         ttk.Label(per, text="秒ごと（停止ボタンで終了）").pack(side=tk.LEFT)
 
         ttk.Radiobutton(mode, text="フルスキャン（工場停止時のみ推奨）", value="full", variable=self.var_mode,
-                        command=self._on_mode_change).grid(row=3, column=0, columnspan=4, sticky=tk.W, pady=(8, 0))
+                        command=self._on_mode_change).grid(row=4, column=0, columnspan=4, sticky=tk.W, pady=(8, 0))
         ttk.Label(mode, text="プロトコルごとの全デバイス範囲を読み取ります。時間がかかります。",
-                  style="Hint.TLabel").grid(row=4, column=0, columnspan=4, sticky=tk.W, padx=(20, 0))
+                  style="Hint.TLabel").grid(row=5, column=0, columnspan=4, sticky=tk.W, padx=(20, 0))
 
         # データ型変換
         dt = ttk.LabelFrame(top, text="データ型変換（任意）", padding=8)
@@ -427,6 +492,386 @@ class PLCScannerApp:
                         variable=self.var_encoding).pack(side=tk.LEFT, padx=12)
         ttk.Radiobutton(enc, text="Shift-JIS", value="shift-jis",
                         variable=self.var_encoding).pack(side=tk.LEFT)
+
+        cfg = ttk.LabelFrame(f, text="設定ファイル（③〜⑤タブの設定を保存・読み込み）", padding=10)
+        cfg.pack(fill=tk.X)
+        ttk.Label(cfg, text="ファイル", width=16).grid(row=0, column=0, sticky=tk.W)
+        ttk.Entry(cfg, textvariable=self.var_settings_path, width=60).grid(row=0, column=1, sticky=tk.W)
+        ttk.Button(cfg, text="参照...", command=self._browse_settings_file).grid(row=0, column=2, padx=6)
+        btns = ttk.Frame(cfg)
+        btns.grid(row=1, column=1, sticky=tk.W, pady=(6, 0))
+        ttk.Button(btns, text="設定を保存", command=self._save_settings).pack(side=tk.LEFT)
+        ttk.Button(btns, text="設定を読み込み", command=self._load_settings).pack(side=tk.LEFT, padx=8)
+        ttk.Label(cfg, text="CLI でも同じファイルを使えます（plc_scanner.py -c ファイル名）。"
+                            "保存すると、ファイル内のコメントは消えます。ほかの項目（targets など）はそのまま残ります。",
+                  style="Hint.TLabel", wraplength=640, justify=tk.LEFT).grid(
+            row=2, column=1, columnspan=2, sticky=tk.W, pady=(6, 0))
+
+    def _build_notify_tab(self) -> None:
+        f = self.tab_notify
+        ttk.Label(f, text="スキャンの結果を Teams / Slack / Webhook に通知します", style="Title.TLabel").pack(anchor=tk.W)
+        ttk.Label(f, text="通知先を追加し、送る出来事（スキャン完了・エラーなど）を選んでください。"
+                          "設定は「③ 通信・出力設定」の設定ファイルに保存できます。",
+                  style="Hint.TLabel").pack(anchor=tk.W, pady=(0, 8))
+
+        timing = ttk.LabelFrame(f, text="通知のタイミング", padding=8)
+        timing.pack(fill=tk.X)
+        ttk.Label(timing, text="定期報告の間隔", width=18).grid(row=0, column=0, sticky=tk.W)
+        ttk.Entry(timing, textvariable=self.var_report_interval, width=8).grid(row=0, column=1, sticky=tk.W)
+        ttk.Label(timing, text="分（周期実行中、各PLCの OK/NG 件数を送る。0 = 送らない）",
+                  style="Hint.TLabel").grid(row=0, column=2, sticky=tk.W, padx=6)
+        ttk.Label(timing, text="同じ通知の最小間隔", width=18).grid(row=1, column=0, sticky=tk.W, pady=(4, 0))
+        ttk.Entry(timing, textvariable=self.var_min_interval, width=8).grid(row=1, column=1, sticky=tk.W, pady=(4, 0))
+        ttk.Label(timing, text="分（この間に起きた同じ種類の通知は送らない。0 = 制限なし）",
+                  style="Hint.TLabel").grid(row=1, column=2, sticky=tk.W, padx=6, pady=(4, 0))
+
+        btns = ttk.Frame(f)
+        btns.pack(fill=tk.X, pady=(10, 4))
+        ttk.Button(btns, text="追加...", command=self._add_destination).pack(side=tk.LEFT)
+        ttk.Button(btns, text="編集...", command=self._edit_destination).pack(side=tk.LEFT, padx=6)
+        ttk.Button(btns, text="削除", command=self._delete_destination).pack(side=tk.LEFT)
+        ttk.Button(btns, text="テスト送信", command=self._test_destination).pack(side=tk.LEFT, padx=6)
+
+        cols = ("name", "type", "enabled", "events", "url")
+        headings = ("名前", "通知方法", "有効", "通知する出来事", "URL")
+        widths = (120, 80, 50, 260, 320)
+        self.tree_notify = self._make_tree(f, cols, headings, widths)
+        self.tree_notify.bind("<Double-1>", lambda e: self._edit_destination())
+
+    def _refresh_notify_tree(self) -> None:
+        tree = self.tree_notify
+        tree.delete(*tree.get_children())
+        for i, d in enumerate(self.notify_destinations):
+            events = d.get("events") or []
+            labels = [CONFIGURABLE_EVENTS.get(NotificationType(e), e) for e in events
+                      if e in {t.value for t in NotificationType}]
+            tree.insert("", tk.END, iid=str(i), values=(
+                d.get("name", ""), d.get("type", "webhook"), "○" if d.get("enabled", True) else "×",
+                "、".join(labels) if labels else "すべて", d.get("url", ""),
+            ))
+
+    def _selected_destination(self) -> Optional[int]:
+        sel = self.tree_notify.selection()
+        if not sel:
+            messagebox.showinfo("通知先", "一覧から通知先を選んでください。")
+            return None
+        return int(sel[0])
+
+    def _add_destination(self) -> None:
+        result = self._destination_dialog(None)
+        if result:
+            self.notify_destinations.append(result)
+            self._refresh_notify_tree()
+
+    def _edit_destination(self) -> None:
+        index = self._selected_destination()
+        if index is None:
+            return
+        result = self._destination_dialog(self.notify_destinations[index], index)
+        if result:
+            self.notify_destinations[index] = result
+            self._refresh_notify_tree()
+
+    def _delete_destination(self) -> None:
+        index = self._selected_destination()
+        if index is None:
+            return
+        name = self.notify_destinations[index].get("name", "")
+        if messagebox.askyesno("通知先の削除", f"通知先「{name}」を削除しますか？"):
+            del self.notify_destinations[index]
+            self._refresh_notify_tree()
+
+    def _destination_dialog(self, current: Optional[Dict], index: Optional[int] = None) -> Optional[Dict]:
+        """通知先の追加・編集ダイアログ。OK なら設定ファイルの notifications[] の 1 件を返す"""
+        current = dict(current or {"name": "", "type": "teams", "url": "", "enabled": True,
+                                   "events": ["scan_complete", "scan_error"]})
+        win = tk.Toplevel(self.root)
+        win.title("通知先の編集" if index is not None else "通知先の追加")
+        win.transient(self.root)
+        win.resizable(False, False)
+        body = ttk.Frame(win, padding=12)
+        body.pack(fill=tk.BOTH, expand=True)
+
+        v_name = tk.StringVar(value=current.get("name", ""))
+        v_type = tk.StringVar(value=str(current.get("type", "teams")).lower())
+        v_url = tk.StringVar(value=current.get("url") or current.get("webhook_url") or "")
+        v_enabled = tk.BooleanVar(value=bool(current.get("enabled", True)))
+        v_timeout = tk.StringVar(value=str(current.get("timeout", 10)))
+        v_retry = tk.StringVar(value=str(current.get("retry_count", 3)))
+        chosen = set(current.get("events") or [])
+        v_events = {t: tk.BooleanVar(value=t.value in chosen) for t in CONFIGURABLE_EVENTS}
+
+        rows = [("名前", ttk.Entry(body, textvariable=v_name, width=30)),
+                ("通知方法", ttk.Combobox(body, textvariable=v_type, values=list(NOTIFICATION_TYPES),
+                                         state="readonly", width=12)),
+                ("URL", ttk.Entry(body, textvariable=v_url, width=60))]
+        for r, (label, widget) in enumerate(rows):
+            ttk.Label(body, text=label, width=12).grid(row=r, column=0, sticky=tk.W, pady=3)
+            widget.grid(row=r, column=1, columnspan=3, sticky=tk.W, pady=3)
+        ttk.Label(body, text="Teams: ワークフロー「Webhook 要求を受信したらチャネルに投稿する」の URL / "
+                             "Slack: Incoming Webhook の URL / webhook: 任意の受信 URL（JSON を POST）",
+                  style="Hint.TLabel", wraplength=520, justify=tk.LEFT).grid(row=3, column=1, columnspan=3, sticky=tk.W)
+
+        ev = ttk.LabelFrame(body, text="通知する出来事（何も選ばないと、すべて通知）", padding=6)
+        ev.grid(row=4, column=0, columnspan=4, sticky=tk.EW, pady=(8, 4))
+        for i, (t, label) in enumerate(CONFIGURABLE_EVENTS.items()):
+            ttk.Checkbutton(ev, text=label, variable=v_events[t]).grid(row=i // 2, column=i % 2, sticky=tk.W, padx=(0, 16))
+
+        ttk.Label(body, text="タイムアウト(秒)", width=12).grid(row=5, column=0, sticky=tk.W, pady=3)
+        ttk.Entry(body, textvariable=v_timeout, width=6).grid(row=5, column=1, sticky=tk.W)
+        ttk.Label(body, text="送信回数").grid(row=5, column=2, sticky=tk.E, padx=(10, 4))
+        ttk.Entry(body, textvariable=v_retry, width=6).grid(row=5, column=3, sticky=tk.W)
+        ttk.Checkbutton(body, text="この通知先を有効にする", variable=v_enabled).grid(
+            row=6, column=0, columnspan=4, sticky=tk.W, pady=(6, 0))
+
+        result: Dict = {}
+
+        def on_ok() -> None:
+            name = v_name.get().strip()
+            url = v_url.get().strip()
+            try:
+                if not name:
+                    raise ValueError("名前を入力してください。")
+                if any(d.get("name") == name for i, d in enumerate(self.notify_destinations) if i != index):
+                    raise ValueError(f"名前「{name}」はすでに使われています。")
+                if not url.lower().startswith(("http://", "https://")):
+                    raise ValueError("URL は http:// または https:// で始めてください。")
+                timeout = float(v_timeout.get())
+                retry = int(v_retry.get())
+                if timeout <= 0 or retry < 1:
+                    raise ValueError
+            except ValueError as e:
+                messagebox.showwarning("入力エラー", str(e) or "タイムアウトは正の数、送信回数は 1 以上の整数にしてください。",
+                                       parent=win)
+                return
+            result.update({
+                "name": name, "type": v_type.get(), "url": url, "enabled": v_enabled.get(),
+                "events": [t.value for t, var in v_events.items() if var.get()],
+                "timeout": timeout, "retry_count": retry,
+            })
+            win.destroy()
+
+        act = ttk.Frame(body)
+        act.grid(row=7, column=0, columnspan=4, sticky=tk.E, pady=(10, 0))
+        ttk.Button(act, text="OK", command=on_ok).pack(side=tk.RIGHT)
+        ttk.Button(act, text="キャンセル", command=win.destroy).pack(side=tk.RIGHT, padx=6)
+        win.grab_set()
+        win.wait_window()
+        return result or None
+
+    def _test_destination(self) -> None:
+        index = self._selected_destination()
+        if index is None:
+            return
+        dest = dict(self.notify_destinations[index], enabled=True, events=[])   # すべての出来事を受ける
+        manager = NotificationManager.from_config({"notifications": [dest]})
+        event = NotificationEvent(
+            type=NotificationType.CUSTOM, title="PLC Discovery テスト通知",
+            message="PLC Discovery からのテスト通知です。この通知が届いていれば設定は正しく動作しています。",
+            priority=NotificationPriority.LOW,
+        )
+
+        async def job() -> None:
+            results = await manager.notify(event)
+            ok = all(results.values()) and bool(results)
+            name = dest.get("name", "")
+            if ok:
+                logging.info(f"通知先「{name}」へのテスト送信に成功しました")
+            else:
+                logging.error(f"通知先「{name}」へのテスト送信に失敗しました（URL・ネットワークを確認してください）")
+            self._post("status", "テスト送信: " + ("成功" if ok else "失敗（ログを確認してください）"))
+
+        self._run_job(job(), f"通知先「{dest.get('name', '')}」にテスト送信しています...")
+
+    def _build_db_tab(self) -> None:
+        f = self.tab_db
+        ttk.Label(f, text="収集したデータをデータベース（SQLite）にも保存します", style="Title.TLabel").pack(anchor=tk.W)
+        ttk.Label(f, text="CSV に加えて、値の変化の履歴を残せます。古いデータは下の条件で自動的に整理されます。",
+                  style="Hint.TLabel").pack(anchor=tk.W, pady=(0, 8))
+
+        box = ttk.LabelFrame(f, text="データベース", padding=10)
+        box.pack(fill=tk.X)
+        ttk.Checkbutton(box, text="データベースに保存する", variable=self.var_db_enabled).grid(
+            row=0, column=0, columnspan=3, sticky=tk.W)
+        ttk.Label(box, text="ファイル", width=18).grid(row=1, column=0, sticky=tk.W, pady=(6, 0))
+        ttk.Entry(box, textvariable=self.var_db_path, width=60).grid(row=1, column=1, sticky=tk.W, pady=(6, 0))
+        ttk.Button(box, text="参照...", command=self._browse_db_file).grid(row=1, column=2, padx=6, pady=(6, 0))
+        ttk.Checkbutton(box, text="値の変化の履歴を記録する", variable=self.var_db_history).grid(
+            row=2, column=1, sticky=tk.W, pady=(6, 0))
+
+        clean = ttk.LabelFrame(f, text="自動整理（古いデータの削除）", padding=10)
+        clean.pack(fill=tk.X, pady=10)
+        rows = [
+            ("保存する期間", self.var_db_days, "日", "これより古いデータを削除（0 = 期間で削除しない）"),
+            ("サイズの上限", self.var_db_size, "MB", "超えたら古いデータから削除（0 = 上限なし）。各アドレスの最新値は残す"),
+            ("整理の間隔", self.var_db_interval, "時間", "周期実行中に上の条件で整理する間隔（開いたときにも整理）"),
+        ]
+        for i, (label, var, unit, hint) in enumerate(rows):
+            ttk.Label(clean, text=label, width=18).grid(row=i, column=0, sticky=tk.W, pady=3)
+            ttk.Entry(clean, textvariable=var, width=8).grid(row=i, column=1, sticky=tk.W)
+            ttk.Label(clean, text=unit).grid(row=i, column=2, sticky=tk.W, padx=4)
+            ttk.Label(clean, text=hint, style="Hint.TLabel").grid(row=i, column=3, sticky=tk.W, padx=10)
+        act = ttk.Frame(clean)
+        act.grid(row=len(rows), column=0, columnspan=4, sticky=tk.W, pady=(8, 0))
+        ttk.Button(act, text="今すぐ整理", command=self._clean_db_now).pack(side=tk.LEFT)
+        ttk.Label(act, textvariable=self.var_db_status).pack(side=tk.LEFT, padx=10)
+
+    def _browse_db_file(self) -> None:
+        path = filedialog.asksaveasfilename(
+            initialfile=Path(self.var_db_path.get() or "plc_data.db").name,
+            initialdir=str(Path(self.var_db_path.get() or ".").parent),
+            defaultextension=".db", filetypes=[("SQLite データベース", "*.db"), ("すべて", "*.*")])
+        if path:
+            self.var_db_path.set(path)
+
+    def _clean_db_now(self) -> None:
+        try:
+            db_config = self._database_config(force_enabled=True)
+        except ValueError as e:
+            messagebox.showwarning("入力エラー", str(e))
+            return
+
+        async def job() -> None:
+            def work() -> str:
+                db = DatabaseExporter(db_config)   # 開くときに期間・サイズの条件で整理する
+                try:
+                    return f"整理しました（データ量 {db.used_bytes() / 1048576:.1f} MB）"
+                finally:
+                    db.close()
+            message = await asyncio.get_running_loop().run_in_executor(None, work)
+            logging.info(f"データベース {db_config.path}: {message}")
+            self._post("db_status", message)
+
+        self._run_job(job(), "データベースを整理しています...")
+
+    # ----- 設定（③〜⑤タブ）と設定ファイル --------------------------------
+
+    def _float_field(self, var: tk.StringVar, label: str, minimum: float = 0.0, exclusive: bool = False) -> float:
+        try:
+            v = float(var.get().strip())
+        except ValueError:
+            raise ValueError(f"「{label}」には数値を入力してください。")
+        if v < minimum or (exclusive and v == minimum):
+            raise ValueError(f"「{label}」は {minimum:g} {'より大きく' if exclusive else '以上に'}してください。")
+        return v
+
+    def _database_config(self, force_enabled: bool = False) -> DatabaseConfig:
+        return DatabaseConfig(
+            enabled=force_enabled or self.var_db_enabled.get(),
+            path=self.var_db_path.get().strip() or "plc_data.db",
+            track_history=self.var_db_history.get(),
+            max_history_days=self._int_field(self.var_db_days, "保存する期間"),
+            max_size_mb=self._float_field(self.var_db_size, "サイズの上限"),
+            cleanup_interval_hours=self._float_field(self.var_db_interval, "整理の間隔", exclusive=True),
+        )
+
+    def _notification_settings(self) -> Dict:
+        return {
+            "report_interval_minutes": self._float_field(self.var_report_interval, "定期報告の間隔"),
+            "min_interval_minutes": self._float_field(self.var_min_interval, "同じ通知の最小間隔"),
+        }
+
+    def _settings_dict(self) -> Dict:
+        """③〜⑤タブの内容（設定ファイルの該当セクション）。不正な値は ValueError"""
+        network = self._network_config()
+        db = self._database_config()
+        return {
+            "network": {
+                "packet_interval_ms": network.packet_interval_ms,
+                "retry_interval_ms": network.retry_interval_ms,
+                "request_timeout_ms": network.request_timeout_ms,
+            },
+            "output": {
+                "directory": self.var_output_dir.get().strip() or DEFAULT_OUTPUT_DIR,
+                "encoding": self.var_encoding.get(),
+                "database": {
+                    "enabled": db.enabled, "path": db.path, "track_history": db.track_history,
+                    "max_history_days": db.max_history_days, "max_size_mb": db.max_size_mb,
+                    "cleanup_interval_hours": db.cleanup_interval_hours,
+                },
+            },
+            "notifications": [dict(d) for d in self.notify_destinations],
+            "notification_settings": self._notification_settings(),
+        }
+
+    def _apply_settings(self, config: Dict) -> None:
+        """読み込んだ設定（既定値と合成済み）を③〜⑤タブに反映する"""
+        get = settings_file.section
+        net = get(config, "network", default={}) or {}
+        for var, key in ((self.var_packet_interval, "packet_interval_ms"),
+                         (self.var_retry_interval, "retry_interval_ms"),
+                         (self.var_timeout, "request_timeout_ms")):
+            if key in net:
+                var.set(str(net[key]))
+        out = get(config, "output", default={}) or {}
+        if out.get("directory"):
+            self.var_output_dir.set(str(Path(out["directory"]).expanduser()))
+        if out.get("encoding") in ("utf-8-sig", "utf-8", "shift-jis"):
+            self.var_encoding.set(out["encoding"])
+        db = out.get("database") or {}
+        defaults = DatabaseConfig()
+        self.var_db_enabled.set(bool(db.get("enabled", False)))
+        self.var_db_path.set(str(db.get("path", defaults.path)))
+        self.var_db_history.set(bool(db.get("track_history", True)))
+        self.var_db_days.set(str(db.get("max_history_days", defaults.max_history_days)))
+        self.var_db_size.set(f"{db.get('max_size_mb', defaults.max_size_mb):g}")
+        self.var_db_interval.set(f"{db.get('cleanup_interval_hours', defaults.cleanup_interval_hours):g}")
+        timing = get(config, "notification_settings", default={}) or {}
+        self.var_report_interval.set(f"{timing.get('report_interval_minutes', 0):g}")
+        self.var_min_interval.set(f"{timing.get('min_interval_minutes', 0):g}")
+        self.notify_destinations = [dict(d) for d in (get(config, "notifications", default=[]) or [])
+                                    if isinstance(d, dict)]
+        self._refresh_notify_tree()
+
+    def _browse_settings_file(self) -> None:
+        path = filedialog.asksaveasfilename(
+            initialfile=Path(self.var_settings_path.get() or settings_file.DEFAULT_SETTINGS_FILE).name,
+            initialdir=str(Path(self.var_settings_path.get() or ".").parent),
+            defaultextension=".yaml", filetypes=[("YAML", "*.yaml *.yml"), ("JSON", "*.json"), ("すべて", "*.*")])
+        if path:
+            self.var_settings_path.set(path)
+
+    def _save_settings(self) -> None:
+        path = self.var_settings_path.get().strip()
+        try:
+            updates = self._settings_dict()
+        except ValueError as e:
+            messagebox.showwarning("入力エラー", str(e))
+            return
+        try:
+            _, errors = settings_file.save(path, updates)
+        except Exception as e:
+            messagebox.showerror("保存エラー", f"設定ファイルを保存できませんでした:\n{e}")
+            return
+        if errors:
+            messagebox.showwarning("設定の誤り", "保存しませんでした:\n" + "\n".join(errors[:10]))
+            return
+        logging.info(f"設定を保存しました: {path}")
+        self.var_status.set(f"設定を保存しました → {path}")
+
+    def _load_settings(self, quiet: bool = False) -> None:
+        path = self.var_settings_path.get().strip()
+        if not Path(path).is_file():
+            if not quiet:
+                messagebox.showinfo("設定の読み込み", f"設定ファイルがありません:\n{path}")
+            return
+        try:
+            config, errors = settings_file.load(path)
+        except Exception as e:
+            messagebox.showerror("読み込みエラー", f"設定ファイルを読み込めませんでした:\n{e}")
+            return
+        self._apply_settings(config)
+        if errors:
+            logging.warning("設定ファイルに誤りがあります: " + " / ".join(errors[:5]))
+        logging.info(f"設定を読み込みました: {path}")
+        if not quiet:
+            self.var_status.set(f"設定を読み込みました ← {path}")
+
+    def _job_outputs(self) -> JobOutputs:
+        """ジョブ開始時の④⑤タブの設定。不正な値は ValueError"""
+        settings = self._settings_dict()
+        notifier = NotificationManager.from_config(settings) if settings["notifications"] else None
+        return JobOutputs(notifier, self._database_config())
 
     def _make_tree(self, parent, cols, headings, widths) -> ttk.Treeview:
         """スクロールバー付きの一覧表（Treeview）を作る"""
@@ -562,6 +1007,7 @@ class PLCScannerApp:
     def _start_discovery(self) -> None:
         try:
             config = self._network_config()
+            outputs = self._job_outputs()
         except ValueError as e:
             messagebox.showwarning("入力エラー", str(e))
             return
@@ -579,12 +1025,13 @@ class PLCScannerApp:
         self.tree_plc.delete(*self.tree_plc.get_children())
         self.discovered = []
         self.lbl_discover_count.configure(text="")
-        self._run_job(self._discover_job(config, ip_range, self.var_broadcast.get(), self._exporter()),
+        self._run_job(self._discover_job(config, ip_range, self.var_broadcast.get(), self._exporter(), outputs),
                       "PLCを探索しています...")
 
     async def _discover_job(self, config: NetworkConfig, ip_range: Optional[str], use_broadcast: bool,
-                            exporter: CSVExporter) -> None:
+                            exporter: CSVExporter, outputs: Optional[JobOutputs] = None) -> None:
         """ブロードキャスト探索とポートスキャンでPLCを探し、結果をCSVに保存する"""
+        outputs = outputs or JobOutputs(None, None)
         plcs: List[PLCInfo] = []
         if use_broadcast:
             self._post("status", "UDPブロードキャストで探索中...")
@@ -606,7 +1053,16 @@ class PLCScannerApp:
                 path = exporter.export_discovery_results(plcs)
             except Exception as e:  # 一覧は表示する
                 logging.error(f"探索結果CSVの書き込みに失敗しました: {e}")
+            outputs.open_db()
+            try:
+                if outputs.db:
+                    outputs.db.export_discovery_results(plcs)
+            except Exception as e:
+                logging.error(f"探索結果をデータベースに保存できませんでした: {e}")
+            finally:
+                outputs.close()
         self._post("discovered", plcs, path)
+        await outputs.notify(lambda n: n.notify_discovery(len(plcs), [p.to_dict() for p in plcs]))
 
     def _show_discovered(self, plcs: List[PLCInfo], path: Optional[str]) -> None:
         self.discovered = plcs
@@ -661,6 +1117,7 @@ class PLCScannerApp:
                     raise ValueError("「周期」には数値（秒）を入力してください。")
                 if interval < MIN_PERIODIC_INTERVAL_SEC:
                     raise ValueError(f"周期は {MIN_PERIODIC_INTERVAL_SEC:g} 秒以上にしてください（PLC負荷対策）。")
+            outputs = self._job_outputs()
         except ValueError as e:
             messagebox.showwarning("入力エラー", str(e))
             return
@@ -684,13 +1141,15 @@ class PLCScannerApp:
         self.var_summary.set("")
         self._run_job(
             self._collect_job(config, ip, protocol, port, mode, device_type, start, end, interval,
-                              data_type, byte_order, self._exporter()),
+                              data_type, byte_order, self._exporter(), outputs),
             f"{ip} に接続しています...",
         )
 
     async def _collect_job(self, config, ip, protocol, port, mode, device_type, start, end, interval,
-                           data_type, byte_order, exporter: CSVExporter) -> None:
+                           data_type, byte_order, exporter: CSVExporter,
+                           outputs: Optional[JobOutputs] = None) -> None:
         """指定PLCに接続してデータを読み取り、CSVに保存する（周期実行時は停止まで繰り返す）"""
+        outputs = outputs or JobOutputs(None, None)
         # プロトコル決定（自動検出または手動指定）
         if protocol is None:
             self._post("status", f"{ip} のプロトコルを自動検出中...")
@@ -701,6 +1160,8 @@ class PLCScannerApp:
                     plc.port = port
                 logging.info(f"プロトコルを検出しました: {plc.protocol.name}")
             else:
+                await outputs.notify(lambda n: n.notify_error(
+                    f"{ip}: no PLC protocol answered", plc_ip=ip))
                 raise RuntimeError(
                     f"{ip} のプロトコルを検出できませんでした。\n"
                     "PLCの電源・ネットワーク接続を確認するか、プロトコルを手動で選択してください。")
@@ -712,6 +1173,8 @@ class PLCScannerApp:
         if not await collector.connect():
             if not interval or collector.connect_error:
                 await collector.disconnect()
+                await outputs.notify(lambda n: n.notify_error(
+                    f"Failed to connect to {ip}:{plc.port} ({plc.protocol.name})", plc_ip=ip))
                 raise RuntimeError(f"{ip}:{plc.port} ({plc.protocol.name}) に接続できませんでした。")
             # Periodic monitoring started while the PLC is off or restarting:
             # keep going; every cycle retries the connection and records the
@@ -719,8 +1182,13 @@ class PLCScannerApp:
             logging.warning(f"{ip}:{plc.port} ({plc.protocol.name}) に接続できません。周期ごとに再接続を試みます。")
         exported_denied: set = set()
         loop = asyncio.get_running_loop()
+        protocol_name = plc.protocol.name if plc.protocol else None
+        outputs.open_db()
+        job_started = last_report = loop.time()
+        iteration = 0
+        points: List[DataPoint] = []
+        reported_unreachable = False
         try:
-            iteration = 0
             while True:
                 iteration += 1
                 started = loop.time()
@@ -754,16 +1222,60 @@ class PLCScannerApp:
                         exported_denied |= new_denied
                     except Exception as e:
                         logging.error(f"アクセス不可ログの書き込みに失敗しました（次回再試行）: {e}")
+                if outputs.db:
+                    try:
+                        outputs.db.export_plc_data(points, ip, protocol=protocol_name, port=plc.port)
+                        if new_denied:
+                            outputs.db.export_denied_addresses(
+                                new_denied, ip, statuses=collector.get_denied_statuses(),
+                                protocol=protocol_name, port=plc.port)
+                    except Exception as e:
+                        logging.error(f"データベースへの保存に失敗しました（収集は継続します）: {e}")
                 self._post("data", points, collector.get_statistics(), path, denied_path, iteration)
 
                 if not interval:
                     break
+
+                # Periodic monitoring: an error notification when the PLC stops
+                # answering (once per outage) and the periodic status report
+                unreachable = not collector.is_connected
+                if unreachable and not reported_unreachable:
+                    await outputs.notify(lambda n: n.notify_error(
+                        f"{ip}:{plc.port} ({protocol_name}) is not reachable", plc_ip=ip))
+                reported_unreachable = unreachable
+                notifier = outputs.notifier
+                if (notifier and notifier.report_interval_seconds
+                        and loop.time() - last_report >= notifier.report_interval_seconds):
+                    last_report = loop.time()
+                    message, problems = status_report_message(
+                        {ip: points}, [ip] if unreachable else [], iteration)
+                    await outputs.notify(lambda n: n.notify_status_report(
+                        message, has_problems=problems, iteration=iteration))
+
                 # Fixed period: subtract the time spent reading
                 wait = max(0.0, interval - (loop.time() - started))
                 self._post("status", f"周期実行 {iteration} 回目完了。{wait:.1f} 秒後に次回実行（停止ボタンで終了）")
                 await asyncio.sleep(wait)
+        except asyncio.CancelledError:
+            # Stopped by the user: report what was collected, then stop
+            await PLCScannerApp._notify_collect_done(outputs, ip, points, iteration, loop.time() - job_started,
+                                            interrupted=True)
+            raise
         finally:
             await collector.disconnect()
+            outputs.close()
+        await PLCScannerApp._notify_collect_done(outputs, ip, points, iteration, loop.time() - job_started)
+
+    @staticmethod
+    async def _notify_collect_done(outputs: JobOutputs, ip: str, points: List[DataPoint], iteration: int,
+                                   duration: float, interrupted: bool = False) -> None:
+        ok = sum(1 for p in points if p.status == StatusCode.OK)
+        all_ok = bool(points) and ok == len(points)
+        await outputs.notify(lambda n: n.notify_scan_complete(
+            1, 1 if all_ok else 0, 0 if all_ok else 1, duration,
+            mode="gui", interrupted=interrupted, cycles=iteration,
+            ok_points=ok, ng_points=len(points) - ok, plc_ip=ip,
+        ))
 
     def _show_data(self, points: List[DataPoint], stats: Dict, path: Optional[str], denied_path: Optional[str],
                    iteration: int) -> None:
@@ -824,6 +1336,8 @@ class PLCScannerApp:
                     self._show_discovered(item[1], item[2])
                 elif kind == "data":
                     self._show_data(*item[1:])
+                elif kind == "db_status":
+                    self.var_db_status.set(item[1])
                 elif kind == "done":
                     self._on_job_done(item[1])
         except queue.Empty:
@@ -862,8 +1376,53 @@ class PLCScannerApp:
         self.root.destroy()
 
 
+APP_NAME = "PLC Discovery"
+
+
+def set_macos_app_name(name: str) -> None:
+    """
+    Show the application as `name` instead of "Python" in the macOS menu bar
+    and Dock (Tk takes the name from the process bundle, which is Python's).
+    
+    Sets CFBundleName in the main bundle's info dictionary through the
+    Objective-C runtime (ctypes, no extra packages) before Tk starts.
+    Does nothing on other platforms or if anything fails.
+    """
+    if sys.platform != "darwin":
+        return
+    try:
+        import ctypes
+        import ctypes.util
+
+        objc = ctypes.cdll.LoadLibrary(ctypes.util.find_library("objc"))
+        ctypes.cdll.LoadLibrary(ctypes.util.find_library("Foundation"))
+        objc.objc_getClass.restype = ctypes.c_void_p
+        objc.objc_getClass.argtypes = [ctypes.c_char_p]
+        objc.sel_registerName.restype = ctypes.c_void_p
+        objc.sel_registerName.argtypes = [ctypes.c_char_p]
+        send = objc.objc_msgSend
+        msg0 = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p)(
+            ctypes.cast(send, ctypes.c_void_p).value)
+        msg_str = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_char_p)(
+            ctypes.cast(send, ctypes.c_void_p).value)
+        msg2 = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p)(
+            ctypes.cast(send, ctypes.c_void_p).value)
+        sel = objc.sel_registerName
+
+        def nsstring(text: str):
+            return msg_str(objc.objc_getClass(b"NSString"), sel(b"stringWithUTF8String:"), text.encode("utf-8"))
+
+        bundle = msg0(objc.objc_getClass(b"NSBundle"), sel(b"mainBundle"))
+        info = msg0(bundle, sel(b"infoDictionary"))   # mutable in practice
+        if info:
+            msg2(info, sel(b"setObject:forKey:"), nsstring(name), nsstring("CFBundleName"))
+    except Exception as e:   # cosmetic only: never prevent the GUI from starting
+        logging.getLogger(__name__).debug(f"Could not set the macOS application name: {e}")
+
+
 def main() -> None:
-    root = tk.Tk()
+    set_macos_app_name(APP_NAME)
+    root = tk.Tk(className=APP_NAME)
     PLCScannerApp(root)
     root.mainloop()
 

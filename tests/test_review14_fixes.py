@@ -168,6 +168,11 @@ class OfflineCollector:
     def clear_data(self):
         pass
 
+    @property
+    def is_connected(self):
+        # Like PLCDataCollector.is_connected: offline in cycle 1, then answering
+        return self.cycles > 1
+
     async def collect_range(self, device_type, start, end):
         self.cycles += 1
         status = StatusCode.OK if self.cycles > 1 else StatusCode.NG_COMM_ERROR
