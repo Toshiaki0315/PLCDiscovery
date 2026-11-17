@@ -61,6 +61,7 @@ from plc_discovery.data_types import (
     DataTypeManager, DataTypeMapping
 )
 from plc_discovery.notifications import NotificationManager
+from plc_discovery.names import BYTE_ORDER_NAMES, parse_device_type, parse_protocol
 from plc_discovery.database import (
     DatabaseExporter, DatabaseConfig, get_database_exporter
 )
@@ -89,12 +90,8 @@ DATA_TYPE_MAP = {
     "RAW": DataType.RAW,
 }
 
-BYTE_ORDER_MAP = {
-    "little": ByteOrder.LITTLE_ENDIAN,
-    "big": ByteOrder.BIG_ENDIAN,
-    "little_swap": ByteOrder.LITTLE_ENDIAN_WORD_SWAP,
-    "big_swap": ByteOrder.BIG_ENDIAN_WORD_SWAP,
-}
+# Byte order names (--byte-order choices) -> ByteOrder
+BYTE_ORDER_MAP = dict(BYTE_ORDER_NAMES)
 
 
 def parse_args():
@@ -355,39 +352,13 @@ Examples:
 
 
 def get_protocol_from_string(protocol_str: str) -> Optional[Protocol]:
-    """Convert protocol string to Protocol enum"""
-    if not protocol_str:
-        return None
-    mapping = {
-        "slmp": Protocol.SLMP,
-        "eip": Protocol.ETHERNET_IP,
-        "modbus": Protocol.MODBUS_TCP,
-        "s7": Protocol.S7,
-        "fins": Protocol.FINS,
-        "fins-tcp": Protocol.FINS_TCP,
-    }
-    return mapping.get(protocol_str.lower())
+    """Convert a protocol name or alias to Protocol (see names.PROTOCOL_NAMES)"""
+    return parse_protocol(protocol_str)
 
 
 def get_device_type_from_string(device_str: str) -> Optional[DeviceType]:
-    """Convert device string to DeviceType enum"""
-    if not device_str:
-        return None
-    mapping = {
-        "D": DeviceType.D,
-        "M": DeviceType.M,
-        "W": DeviceType.W,
-        "R": DeviceType.R,
-        "DM": DeviceType.DM,
-        "HR": DeviceType.HR,
-        "IR": DeviceType.IR,
-        "DB": DeviceType.DB,
-        "X": DeviceType.X,
-        "Y": DeviceType.Y,
-        "B": DeviceType.B,
-        "SM": DeviceType.SM,
-    }
-    return mapping.get(device_str.upper())
+    """Convert a device name such as "D" or "HR" to DeviceType"""
+    return parse_device_type(device_str)
 
 
 def parse_address_range(range_str: str) -> tuple:
@@ -1265,9 +1236,7 @@ def resolve_discovery_protocols(args, config_loader: Optional[ConfigLoader]) -> 
     if args.discover_protocols:
         protocols = []
         for name in args.discover_protocols.split(","):
-            protocol = get_protocol_from_string(name.strip()) or (
-                config_loader._parse_protocol(name.strip()) if config_loader else None
-            )
+            protocol = parse_protocol(name)
             if protocol is None:
                 raise ValueError(f"Unknown protocol in --discover-protocols: '{name.strip()}'")
             protocols.append(protocol)

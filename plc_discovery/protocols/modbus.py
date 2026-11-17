@@ -29,6 +29,18 @@ MODBUS_DEVICE_MAP = {
     DeviceType.Y: "coil",        # Coils
 }
 
+# pymodbus client method reading each Modbus table
+MODBUS_READ_METHODS = {
+    "holding": "read_holding_registers",
+    "input": "read_input_registers",
+    "coil": "read_coils",
+    "discrete": "read_discrete_inputs",
+}
+
+# Tables answered as bits (the others as 16-bit registers)
+MODBUS_BIT_TYPES = frozenset({"coil", "discrete"})
+
+
 def modbus_unit_kwargs(method, unit_id: int) -> dict:
     """
     Keyword argument selecting the unit/device for a pymodbus client call.
@@ -167,35 +179,12 @@ class ModbusHandler(BaseProtocolHandler):
         
         try:
             def _read():
-                if modbus_type == "holding":
-                    method = self._client.read_holding_registers
-                    return method(
-                        start_address,
-                        count=count,
-                        **modbus_unit_kwargs(method, self._unit_id)
-                    )
-                elif modbus_type == "input":
-                    method = self._client.read_input_registers
-                    return method(
-                        start_address,
-                        count=count,
-                        **modbus_unit_kwargs(method, self._unit_id)
-                    )
-                elif modbus_type == "coil":
-                    method = self._client.read_coils
-                    return method(
-                        start_address,
-                        count=count,
-                        **modbus_unit_kwargs(method, self._unit_id)
-                    )
-                elif modbus_type == "discrete":
-                    method = self._client.read_discrete_inputs
-                    return method(
-                        start_address,
-                        count=count,
-                        **modbus_unit_kwargs(method, self._unit_id)
-                    )
-                return None
+                method = getattr(self._client, MODBUS_READ_METHODS[modbus_type])
+                return method(
+                    start_address,
+                    count=count,
+                    **modbus_unit_kwargs(method, self._unit_id)
+                )
             
             result = await self._run_blocking(_read)
             
@@ -222,14 +211,12 @@ class ModbusHandler(BaseProtocolHandler):
                     return None, StatusCode.NG_COMM_ERROR
             
             # Extract data
-            if modbus_type in ["holding", "input"]:
-                data = list(result.registers)
-            elif modbus_type in ["coil", "discrete"]:
+            if modbus_type in MODBUS_BIT_TYPES:
                 # pymodbus pads the bit list to a multiple of 8; keep only
                 # the requested points so addresses are not duplicated
                 data = [1 if bit else 0 for bit in result.bits[:count]]
             else:
-                data = []
+                data = list(result.registers)
             
             return data, StatusCode.OK
             

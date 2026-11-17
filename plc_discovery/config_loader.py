@@ -27,6 +27,7 @@ from .config import (
 )
 from .data_types import DataType, ByteOrder, DataTypeManager, DataTypeMapping
 from .utils import ip_range_error, target_address_error
+from .names import parse_byte_order, parse_device_type, parse_protocol
 
 
 # Default configuration template
@@ -380,47 +381,12 @@ class ConfigLoader:
         return self.config.get("logging", {})
     
     def _parse_protocol(self, protocol_str: Optional[str]) -> Optional[Protocol]:
-        """Parse protocol string to Protocol enum"""
-        if not protocol_str:
-            return None
-        
-        mapping = {
-            "slmp": Protocol.SLMP,
-            "mc": Protocol.SLMP,
-            "ethernet_ip": Protocol.ETHERNET_IP,
-            "eip": Protocol.ETHERNET_IP,
-            "cip": Protocol.ETHERNET_IP,
-            "modbus": Protocol.MODBUS_TCP,
-            "modbus_tcp": Protocol.MODBUS_TCP,
-            "s7": Protocol.S7,
-            "s7comm": Protocol.S7,
-            "fins": Protocol.FINS,
-            "fins_udp": Protocol.FINS,
-            "fins_tcp": Protocol.FINS_TCP,
-            "fins-tcp": Protocol.FINS_TCP,
-        }
-        return mapping.get(protocol_str.lower())
+        """Parse a protocol name or alias (see names.PROTOCOL_NAMES)"""
+        return parse_protocol(protocol_str)
     
     def _parse_device_type(self, device_str: Optional[str]) -> Optional[DeviceType]:
-        """Parse device type string to DeviceType enum"""
-        if not device_str:
-            return None
-        
-        mapping = {
-            "D": DeviceType.D,
-            "M": DeviceType.M,
-            "W": DeviceType.W,
-            "R": DeviceType.R,
-            "DM": DeviceType.DM,
-            "HR": DeviceType.HR,
-            "IR": DeviceType.IR,
-            "DB": DeviceType.DB,
-            "X": DeviceType.X,
-            "Y": DeviceType.Y,
-            "B": DeviceType.B,
-            "SM": DeviceType.SM,
-        }
-        return mapping.get(device_str.upper())
+        """Parse a device name such as D or HR"""
+        return parse_device_type(device_str)
     
     def get_data_type_manager(self) -> Optional[DataTypeManager]:
         """
@@ -452,17 +418,9 @@ class ConfigLoader:
             return None
     
     def get_default_byte_order(self) -> ByteOrder:
-        """Get default byte order from configuration"""
-        dt_config = self.config.get("data_types", {})
-        order_str = dt_config.get("default_byte_order", "little")
-        
-        mapping = {
-            "little": ByteOrder.LITTLE_ENDIAN,
-            "big": ByteOrder.BIG_ENDIAN,
-            "little_swap": ByteOrder.LITTLE_ENDIAN_WORD_SWAP,
-            "big_swap": ByteOrder.BIG_ENDIAN_WORD_SWAP,
-        }
-        return mapping.get(order_str.lower(), ByteOrder.LITTLE_ENDIAN)
+        """Get default byte order from configuration (little if unknown)"""
+        order = self.config.get("data_types", {}).get("default_byte_order", "little")
+        return parse_byte_order(order) or ByteOrder.LITTLE_ENDIAN
     
     def save_template(self, path: str):
         """Save configuration template to file"""

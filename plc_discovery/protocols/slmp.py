@@ -28,6 +28,9 @@ SLMP_DEVICE_MAP = {
     DeviceType.SM: "SM",  # Special relay
 }
 
+# Bit devices (read with batch read in bit units)
+SLMP_BIT_DEVICES = frozenset({DeviceType.M, DeviceType.X, DeviceType.Y, DeviceType.B, DeviceType.SM})
+
 # Devices whose numbers are hexadecimal on MELSEC (pymcprotocol parses the
 # number after the device name in base 16 for these)
 SLMP_HEX_DEVICES = (DeviceType.X, DeviceType.Y, DeviceType.B, DeviceType.W)
@@ -207,23 +210,10 @@ class SLMPHandler(BaseProtocolHandler):
 
         try:
             def _read():
-                # Use batch read for word devices
-                if device_type in [DeviceType.D, DeviceType.W, DeviceType.R]:
-                    return self._client.batchread_wordunits(
-                        headdevice=headdevice,
-                        readsize=count
-                    )
-                # Use bit read for bit devices
-                elif device_type in [DeviceType.M, DeviceType.X, DeviceType.Y, DeviceType.B, DeviceType.SM]:
-                    return self._client.batchread_bitunits(
-                        headdevice=headdevice,
-                        readsize=count
-                    )
-                else:
-                    return self._client.batchread_wordunits(
-                        headdevice=headdevice,
-                        readsize=count
-                    )
+                # Bit devices are read in bit units, every other device in words
+                if device_type in SLMP_BIT_DEVICES:
+                    return self._client.batchread_bitunits(headdevice=headdevice, readsize=count)
+                return self._client.batchread_wordunits(headdevice=headdevice, readsize=count)
             
             data = await self._run_blocking(_read)
             

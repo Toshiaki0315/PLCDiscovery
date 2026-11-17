@@ -18,6 +18,7 @@ from .config import (
 from .collector import PLCDataCollector
 from .audit_log import get_audit_logger
 from .discovery import target_labels
+from .utils import success_rate_text
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +52,7 @@ class PLCScanResult:
             "error_count": total - success_count,
             "denied_addresses": len(self.denied_addresses),
             "duration_ms": self.duration_ms,
-            "success_rate": f"{(success_count / total * 100):.2f}%" if total > 0 else "N/A",
+            "success_rate": success_rate_text(success_count, total),
         }
 
 
@@ -263,7 +264,7 @@ class ParallelPLCScanner:
             "total_denied_addresses": total_denied,
             "total_duration_ms": total_duration,
             "average_duration_ms": total_duration / total_plcs if total_plcs > 0 else 0,
-            "success_rate": f"{(total_success / total_points * 100):.2f}%" if total_points > 0 else "N/A",
+            "success_rate": success_rate_text(total_success, total_points),
         }
 
 

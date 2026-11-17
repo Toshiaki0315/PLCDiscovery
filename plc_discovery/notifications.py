@@ -157,23 +157,20 @@ class NotificationHandler(ABC):
             return True  # Handle all if no specific types configured
         return event_type in self.config.events
 
+    async def _post_json(self, payload: dict, headers: Optional[Dict[str, str]] = None) -> bool:
+        """
+        POST payload as JSON to the configured URL, retrying up to
+        retry_count times (waiting 1 s, 2 s, ... in between).
 
-class WebhookHandler(NotificationHandler):
-    """HTTP Webhook notification handler"""
-    
-    async def send(self, event: NotificationEvent) -> bool:
-        """Send notification via HTTP POST"""
+        Any 2xx answer is success. Uses aiohttp when installed, otherwise
+        urllib in a worker thread (the event loop, and the PLC
+        communication on it, is never blocked).
+        """
         if not self.config.url:
-            logger.error("Webhook URL not configured")
+            logger.error(f"{self.label} URL not configured ({self.config.name})")
             return False
-        
-        headers = {
-            "Content-Type": "application/json",
-            **self.config.headers
-        }
-        
-        payload = event.to_dict()
-        
+        headers = {"Content-Type": "application/json", **(headers or {})}
+
         for attempt in range(self.config.retry_count):
             try:
                 if AIOHTTP_AVAILABLE:
@@ -184,194 +181,115 @@ class WebhookHandler(NotificationHandler):
                             headers=headers,
                             timeout=aiohttp.ClientTimeout(total=self.config.timeout_seconds)
                         ) as response:
-                            if response.status < 400:
-                                logger.debug(f"Webhook sent successfully: {self.config.name}")
-                                return True
-                            else:
-                                logger.warning(
-                                    f"Webhook failed: {response.status} - {await response.text()}"
-                                )
+                            status = response.status
+                            body = "" if _is_success(status) else await response.text()
                 else:
-                    # Fallback to urllib
                     import urllib.request
-                    import urllib.error
-                    
                     req = urllib.request.Request(
                         self.config.url,
                         data=json.dumps(payload).encode('utf-8'),
                         headers=headers,
                         method='POST'
                     )
-                    
                     status = await asyncio.to_thread(_urlopen_status, req, self.config.timeout_seconds)
-                    if status < 400:
-                        logger.debug(f"Webhook sent successfully: {self.config.name}")
-                        return True
-
+                    body = ""
+                if _is_success(status):
+                    logger.debug(f"{self.label} sent successfully: {self.config.name}")
+                    return True
+                logger.warning(f"{self.label} failed: {status} {body}".rstrip())
             except Exception as e:
-                logger.warning(f"Webhook attempt {attempt + 1} failed: {e}")
-                if attempt < self.config.retry_count - 1:
-                    await asyncio.sleep(1 * (attempt + 1))
-        
-        logger.error(f"Webhook failed after {self.config.retry_count} attempts")
+                logger.warning(f"{self.label} attempt {attempt + 1} failed: {e}")
+            if attempt < self.config.retry_count - 1:
+                await asyncio.sleep(1 * (attempt + 1))
+
+        logger.error(f"{self.label} failed after {self.config.retry_count} attempts ({self.config.name})")
         return False
+
+    # Name used in log messages
+    label = "Notification"
+
+
+class WebhookHandler(NotificationHandler):
+    """HTTP Webhook notification handler (posts the event as JSON)"""
+
+    label = "Webhook"
+
+    async def send(self, event: NotificationEvent) -> bool:
+        """Send notification via HTTP POST"""
+        return await self._post_json(event.to_dict(), self.config.headers)
 
 
 class SlackHandler(NotificationHandler):
     """Slack Incoming Webhook handler"""
-    
+
+    label = "Slack webhook"
+
     PRIORITY_COLORS = {
         NotificationPriority.LOW: "#36a64f",      # Green
         NotificationPriority.NORMAL: "#2196F3",   # Blue
         NotificationPriority.HIGH: "#ff9800",     # Orange
         NotificationPriority.CRITICAL: "#f44336", # Red
     }
-    
-    async def send(self, event: NotificationEvent) -> bool:
-        """Send notification to Slack"""
-        if not self.config.url:
-            logger.error("Slack webhook URL not configured")
-            return False
-        
-        # Build Slack message format
-        color = self.PRIORITY_COLORS.get(event.priority, "#2196F3")
-        
-        slack_payload = {
+
+    def build_payload(self, event: NotificationEvent) -> dict:
+        """Slack message (attachment with up to 5 extra data fields)"""
+        fields = [
+            {"title": "Type", "value": event.type.value, "short": True},
+            {"title": "Priority", "value": event.priority.value, "short": True},
+        ]
+        fields += [{"title": key, "value": str(value), "short": True}
+                   for key, value in list((event.data or {}).items())[:5]]
+        return {
             "attachments": [{
-                "color": color,
+                "color": self.PRIORITY_COLORS.get(event.priority, "#2196F3"),
                 "title": event.title,
                 "text": event.message,
-                "fields": [
-                    {"title": "Type", "value": event.type.value, "short": True},
-                    {"title": "Priority", "value": event.priority.value, "short": True},
-                ],
+                "fields": fields,
                 "footer": f"PLC Discovery | {event.timestamp}",
             }]
         }
-        
-        # Add extra data fields
-        if event.data:
-            for key, value in list(event.data.items())[:5]:  # Limit to 5 fields
-                slack_payload["attachments"][0]["fields"].append({
-                    "title": key,
-                    "value": str(value),
-                    "short": True
-                })
-        
-        return await self._send_request(slack_payload)
-    
-    async def _send_request(self, payload: dict) -> bool:
-        """Send request to Slack"""
-        for attempt in range(self.config.retry_count):
-            try:
-                if AIOHTTP_AVAILABLE:
-                    async with aiohttp.ClientSession() as session:
-                        async with session.post(
-                            self.config.url,
-                            json=payload,
-                            timeout=aiohttp.ClientTimeout(total=self.config.timeout_seconds)
-                        ) as response:
-                            if _is_success(response.status):
-                                return True
-                            else:
-                                logger.warning(f"Slack webhook failed: {response.status}")
-                else:
-                    import urllib.request
-                    req = urllib.request.Request(
-                        self.config.url,
-                        data=json.dumps(payload).encode('utf-8'),
-                        headers={"Content-Type": "application/json"},
-                        method='POST'
-                    )
-                    status = await asyncio.to_thread(_urlopen_status, req, self.config.timeout_seconds)
-                    if _is_success(status):
-                        return True
-                            
-            except Exception as e:
-                logger.warning(f"Slack attempt {attempt + 1} failed: {e}")
-                if attempt < self.config.retry_count - 1:
-                    await asyncio.sleep(1)
-        
-        return False
+
+    async def send(self, event: NotificationEvent) -> bool:
+        """Send notification to Slack"""
+        return await self._post_json(self.build_payload(event))
 
 
 class TeamsHandler(NotificationHandler):
     """Microsoft Teams Webhook handler"""
-    
+
+    label = "Teams webhook"
+
     PRIORITY_COLORS = {
         NotificationPriority.LOW: "00FF00",
         NotificationPriority.NORMAL: "0078D7",
         NotificationPriority.HIGH: "FFA500",
         NotificationPriority.CRITICAL: "FF0000",
     }
-    
-    async def send(self, event: NotificationEvent) -> bool:
-        """Send notification to Microsoft Teams"""
-        if not self.config.url:
-            logger.error("Teams webhook URL not configured")
-            return False
-        
-        color = self.PRIORITY_COLORS.get(event.priority, "0078D7")
-        
-        # Build Teams Adaptive Card format
-        teams_payload = {
+
+    def build_payload(self, event: NotificationEvent) -> dict:
+        """Teams MessageCard (with up to 5 extra data facts)"""
+        facts = [
+            {"name": "Type", "value": event.type.value},
+            {"name": "Timestamp", "value": event.timestamp},
+        ]
+        facts += [{"name": key, "value": str(value)}
+                  for key, value in list((event.data or {}).items())[:5]]
+        return {
             "@type": "MessageCard",
             "@context": "http://schema.org/extensions",
-            "themeColor": color,
+            "themeColor": self.PRIORITY_COLORS.get(event.priority, "0078D7"),
             "summary": event.title,
             "sections": [{
                 "activityTitle": event.title,
                 "activitySubtitle": f"Priority: {event.priority.value}",
                 "text": event.message,
-                "facts": [
-                    {"name": "Type", "value": event.type.value},
-                    {"name": "Timestamp", "value": event.timestamp},
-                ],
+                "facts": facts,
             }]
         }
-        
-        # Add extra data
-        if event.data:
-            for key, value in list(event.data.items())[:5]:
-                teams_payload["sections"][0]["facts"].append({
-                    "name": key,
-                    "value": str(value)
-                })
-        
-        return await self._send_request(teams_payload)
-    
-    async def _send_request(self, payload: dict) -> bool:
-        """Send request to Teams"""
-        for attempt in range(self.config.retry_count):
-            try:
-                if AIOHTTP_AVAILABLE:
-                    async with aiohttp.ClientSession() as session:
-                        async with session.post(
-                            self.config.url,
-                            json=payload,
-                            timeout=aiohttp.ClientTimeout(total=self.config.timeout_seconds)
-                        ) as response:
-                            if _is_success(response.status):
-                                return True
-                            logger.warning(f"Teams webhook failed: {response.status}")
-                else:
-                    import urllib.request
-                    req = urllib.request.Request(
-                        self.config.url,
-                        data=json.dumps(payload).encode('utf-8'),
-                        headers={"Content-Type": "application/json"},
-                        method='POST'
-                    )
-                    status = await asyncio.to_thread(_urlopen_status, req, self.config.timeout_seconds)
-                    if _is_success(status):
-                        return True
-                            
-            except Exception as e:
-                logger.warning(f"Teams attempt {attempt + 1} failed: {e}")
-                if attempt < self.config.retry_count - 1:
-                    await asyncio.sleep(1)
-        
-        return False
+
+    async def send(self, event: NotificationEvent) -> bool:
+        """Send notification to Microsoft Teams"""
+        return await self._post_json(self.build_payload(event))
 
 
 class CustomHandler(NotificationHandler):

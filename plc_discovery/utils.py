@@ -428,6 +428,19 @@ def sorted_addresses(addresses) -> List[str]:
     return sorted(addresses, key=address_sort_key)
 
 
+def status_counts(points) -> Dict[StatusCode, int]:
+    """Number of data points per status (every StatusCode present, 0 if unused)"""
+    counts = {status: 0 for status in StatusCode}
+    for point in points:
+        counts[point.status] = counts.get(point.status, 0) + 1
+    return counts
+
+
+def success_rate_text(success: int, total: int) -> str:
+    """Success rate as shown in statistics: "97.50%", or "N/A" without data"""
+    return f"{(success / total * 100):.2f}%" if total > 0 else "N/A"
+
+
 def get_timestamp() -> str:
     """Get current timestamp string"""
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]

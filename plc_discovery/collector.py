@@ -24,7 +24,7 @@ from .protocols.ethernet_ip import EtherNetIPHandler
 from .protocols.modbus import ModbusHandler
 from .protocols.s7 import S7Handler
 from .protocols.fins import FINSHandler
-from .utils import get_timestamp, logger
+from .utils import get_timestamp, logger, status_counts, success_rate_text
 
 # Protocol to handler mapping
 PROTOCOL_HANDLERS: Dict[Protocol, Callable[..., BaseProtocolHandler]] = {
@@ -331,20 +331,16 @@ class PLCDataCollector:
             Dictionary with statistics
         """
         total = len(self._collected_data)
-        success = sum(1 for dp in self._collected_data if dp.status == StatusCode.OK)
-        illegal = sum(1 for dp in self._collected_data if dp.status == StatusCode.NG_ILLEGAL_ADDR)
-        timeout = sum(1 for dp in self._collected_data if dp.status == StatusCode.NG_TIMEOUT)
-        error = sum(1 for dp in self._collected_data if dp.status == StatusCode.NG_COMM_ERROR)
-        unsupported = sum(1 for dp in self._collected_data if dp.status == StatusCode.NG_UNSUPPORTED)
+        counts = status_counts(self._collected_data)
         
         return {
             "total_points": total,
-            "success_count": success,
-            "illegal_address_count": illegal,
-            "timeout_count": timeout,
-            "error_count": error,
-            "unsupported_count": unsupported,
-            "success_rate": f"{(success / total * 100):.2f}%" if total > 0 else "N/A",
+            "success_count": counts[StatusCode.OK],
+            "illegal_address_count": counts[StatusCode.NG_ILLEGAL_ADDR],
+            "timeout_count": counts[StatusCode.NG_TIMEOUT],
+            "error_count": counts[StatusCode.NG_COMM_ERROR],
+            "unsupported_count": counts[StatusCode.NG_UNSUPPORTED],
+            "success_rate": success_rate_text(counts[StatusCode.OK], total),
             "denied_addresses": len(self.get_denied_addresses()),
         }
     
