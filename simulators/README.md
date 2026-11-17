@@ -231,6 +231,7 @@ python plc_scanner.py --mode range --target 127.0.0.1 --protocol eip --port 4482
 **対応ファンクション：**
 - Setup Communication
 - Read Var (DB, M領域)
+- CPU 情報の読み出し（USER_DATA の SZL 0x001C。snap7 の `get_cpu_info()`）：機種名 "CPU 1515-2 PN Sim"、システム名 "S7-1500 Sim"。探索結果のメーカー・機種に表示されます
 
 **サンプルデータ：**
 - DB1: 1000ワードのテストパターン

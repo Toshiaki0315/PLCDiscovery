@@ -533,8 +533,14 @@ class PLCDiscovery:
     
     async def _query_s7_info(self, plc_info: PLCInfo) -> PLCInfo:
         """Query Siemens S7 device for CPU information"""
+        # The probe already verified S7comm (a Siemens protocol): keep the
+        # manufacturer even when the CPU identification below fails or is
+        # too slow (unsupported SZL request, busy CPU)
+        plc_info.manufacturer = plc_info.manufacturer or "シーメンス"
+        plc_info.model = plc_info.model or "S7 PLC"
         try:
             import snap7
+            from .protocols.s7 import read_s7_identity
             
             def _query():
                 client = snap7.client.Client()
@@ -546,14 +552,11 @@ class PLCDiscovery:
                 
                 # Fields are returned, not set here: after a timeout this
                 # thread may still finish and must not change the result
-                fields = {"manufacturer": "シーメンス", "model": "S7 PLC"}
+                fields = {}
                 try:
-                    # Get CPU info
-                    info = client.get_cpu_info()
-                    fields["model"] = info.ModuleTypeName.decode('utf-8', errors='ignore').strip()
-                    fields["cpu_type"] = info.ASName.decode('utf-8', errors='ignore').strip()
-                except Exception:
-                    pass
+                    fields = read_s7_identity(client)
+                except Exception as e:
+                    logger.debug(f"S7 CPU identification failed: {e}")
                 finally:
                     client.disconnect()
                 return fields

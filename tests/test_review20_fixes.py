@@ -107,6 +107,7 @@ def test_s7_identity_query_tries_slot_2():
             raise RuntimeError("TCP : Connection refused (slot 0)")
 
     client.connect.side_effect = connect
+    client.read_szl.side_effect = RuntimeError("SZL not available")
     client.get_cpu_info.return_value = MagicMock(ModuleTypeName=b"CPU 315-2 PN/DP", ASName=b"S7-300")
     with patch("snap7.client.Client", return_value=client):
         plc = asyncio.run(discovery._query_s7_info(PLCInfo("10.0.0.1", protocol=Protocol.S7, port=102)))
@@ -129,4 +130,6 @@ def test_s7_identity_query_is_bounded():
     with patch("snap7.client.Client", return_value=client):
         plc, elapsed = asyncio.run(run())
     assert elapsed < 1.0
-    assert plc.model is None   # the late thread does not change the result
+    # The late thread does not change the result; the probe-verified
+    # protocol still names the manufacturer
+    assert (plc.manufacturer, plc.model) == ("シーメンス", "S7 PLC")

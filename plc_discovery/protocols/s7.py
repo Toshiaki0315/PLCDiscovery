@@ -10,7 +10,8 @@ Supports:
 
 import asyncio
 import re
-from typing import List, Optional, Tuple
+import struct
+from typing import Dict, List, Optional, Tuple
 import logging
 
 from .base import BaseProtocolHandler
@@ -48,6 +49,60 @@ _S7_ITEM_TEXTS = (
 )
 
 _S7_RETURN_CODE = re.compile(r"\(0x([0-9a-f]{2})\)")
+
+# SZL 0x001C (component identification): records of a 2-byte index and 32
+# bytes of text. Index 1 = automation system name, 2 = module name,
+# 5 = serial number, 7 = module type name (e.g. "CPU 1515-2 PN").
+SZL_COMPONENT_ID = 0x001C
+SZL_COMPONENT_RECORD_LENGTH = 34
+SZL_COMPONENT_INDEXES = range(0x0001, 0x000C)
+
+
+def parse_szl_component_ids(data: bytes) -> Dict[int, str]:
+    """
+    Records of an SZL 0x001C reply as {index: text}.
+
+    Accepts the records alone (snap7 1.x strips the SZL header) or preceded
+    by the LENTHDR / N_DR words (python-snap7 3.x keeps them). Returns {} if
+    the data is not in the record format.
+    """
+    record_length = SZL_COMPONENT_RECORD_LENGTH
+    if len(data) >= 4:
+        length_dr, count = struct.unpack(">HH", data[:4])
+        if length_dr >= 4 and 4 + length_dr * count <= len(data) and len(data) % length_dr != 0:
+            data, record_length = data[4:4 + length_dr * count], length_dr
+    records: Dict[int, str] = {}
+    for start in range(0, len(data) - record_length + 1, record_length):
+        index = struct.unpack(">H", data[start:start + 2])[0]
+        if index not in SZL_COMPONENT_INDEXES:
+            return {}
+        text = data[start + 2:start + record_length].split(b"\x00")[0]
+        records[index] = text.decode("ascii", errors="ignore").strip()
+    return records
+
+
+def read_s7_identity(client) -> Dict[str, str]:
+    """
+    Model ("CPU 1515-2 PN") and automation system name of a connected snap7
+    client, from SZL 0x001C. Falls back to client.get_cpu_info() when the
+    reply is not in the record format (python-snap7 3.x's own server).
+    """
+    fields: Dict[str, str] = {}
+    try:
+        szl = client.read_szl(SZL_COMPONENT_ID, 0)
+        size = int(szl.Header.LengthDR) * max(1, int(szl.Header.NDR))
+        records = parse_szl_component_ids(bytes(szl.Data[:size]))
+    except Exception as e:
+        logger.debug(f"S7 SZL 0x001C read failed: {e}")
+        records = {}
+    if records:
+        fields["model"] = records.get(0x0007) or records.get(0x0002, "")
+        fields["cpu_type"] = records.get(0x0001, "")
+        return fields
+    info = client.get_cpu_info()
+    fields["model"] = info.ModuleTypeName.decode("utf-8", errors="ignore").strip()
+    fields["cpu_type"] = info.ASName.decode("utf-8", errors="ignore").strip()
+    return fields
 
 
 def classify_s7_error(error: Exception) -> Optional[StatusCode]:
