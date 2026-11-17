@@ -6,10 +6,8 @@ Provides validation and default values for all settings.
 """
 
 import json
-import os
-from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 import logging
 
 logger = logging.getLogger(__name__)
@@ -25,7 +23,7 @@ except ImportError:
 from .config import (
     Protocol, DeviceType, DeviceRange, NetworkConfig, PLCInfo, ScanMode, range_size_error
 )
-from .data_types import DataType, ByteOrder, DataTypeManager, DataTypeMapping
+from .data_types import DataType, ByteOrder, DataTypeManager
 from .utils import ip_range_error, target_address_error
 from .names import parse_byte_order, parse_device_type, parse_protocol
 
@@ -33,7 +31,7 @@ from .names import parse_byte_order, parse_device_type, parse_protocol
 # Default configuration template
 DEFAULT_CONFIG = {
     "version": "1.0",
-    
+
     # Network settings
     "network": {
         "discovery_timeout_ms": 1000,
@@ -43,7 +41,7 @@ DEFAULT_CONFIG = {
         "request_timeout_ms": 5000,
         "max_concurrent": 1,
     },
-    
+
     # Discovery settings
     "discovery": {
         "enabled": True,
@@ -52,7 +50,7 @@ DEFAULT_CONFIG = {
         # Protocols probed during discovery (applies only when set in the file)
         "protocols": ["slmp", "ethernet_ip", "modbus", "s7", "fins", "fins_tcp"],
     },
-    
+
     # Target PLCs (for direct connection without discovery)
     "targets": [
         # Example:
@@ -63,7 +61,7 @@ DEFAULT_CONFIG = {
         #     "name": "Main PLC",
         # }
     ],
-    
+
     # Scan settings
     "scan": {
         # "range" (production-safe), "discover", or "full" (factory downtime only:
@@ -76,7 +74,7 @@ DEFAULT_CONFIG = {
         ],
         "interval_seconds": 0,  # 0 = single scan, >0 = continuous
     },
-    
+
     # Output settings
     "output": {
         "directory": "./plc_scan_results",
@@ -85,7 +83,7 @@ DEFAULT_CONFIG = {
         "format": "csv",  # "csv" or "json"
         "include_timestamp": True,
     },
-    
+
     # Logging settings
     "logging": {
         "level": "INFO",
@@ -93,7 +91,7 @@ DEFAULT_CONFIG = {
         "audit_log": None,  # Audit log file path (optional)
         "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     },
-    
+
     # Data type conversion settings
     "data_types": {
         "default_type": "WORD",
@@ -154,10 +152,10 @@ def integer_error(value: Any, minimum: int) -> Optional[str]:
 class ConfigLoader:
     """
     Configuration file loader and validator.
-    
+
     Supports YAML and JSON configuration files.
     """
-    
+
     def __init__(self, config_path: Optional[str] = None):
         self.config_path = config_path
         self.config: Dict[str, Any] = {}
@@ -165,37 +163,37 @@ class ConfigLoader:
         # tell an explicit setting apart from a default value
         self._file_config: Dict[str, Any] = {}
         self._load_defaults()
-    
+
     def _load_defaults(self):
         """Load default configuration"""
         import copy
         self.config = copy.deepcopy(DEFAULT_CONFIG)
-    
+
     def load(self, config_path: Optional[str] = None) -> Dict[str, Any]:
         """
         Load configuration from file.
-        
+
         Args:
             config_path: Path to configuration file (YAML or JSON)
-        
+
         Returns:
             Merged configuration dictionary
         """
         path = config_path or self.config_path
-        
+
         if not path:
             logger.debug("No config file specified, using defaults")
             return self.config
-        
+
         path = Path(path)
-        
+
         if not path.exists():
             logger.warning(f"Config file not found: {path}, using defaults")
             return self.config
-        
+
         # Load based on file extension
         suffix = path.suffix.lower()
-        
+
         try:
             with open(path, 'r', encoding='utf-8') as f:
                 if suffix in ['.yaml', '.yml']:
@@ -206,23 +204,23 @@ class ConfigLoader:
                     file_config = json.load(f)
                 else:
                     raise ValueError(f"Unsupported config file format: {suffix}")
-            
+
             # Merge with defaults
             self._merge_config(file_config)
             logger.info(f"Configuration loaded from: {path}")
-            
+
         except Exception as e:
             logger.error(f"Error loading config file: {e}")
             raise
-        
+
         return self.config
-    
+
     def _merge_config(self, file_config: Dict[str, Any]):
         """Recursively merge file config with defaults"""
         if not file_config:
             return
         self._file_config = file_config
-        
+
         def merge_dict(base: Dict, override: Dict) -> Dict:
             result = base.copy()
             for key, value in override.items():
@@ -235,13 +233,13 @@ class ConfigLoader:
                 else:
                     result[key] = value
             return result
-        
+
         self.config = merge_dict(self.config, file_config)
-    
+
     def is_set(self, *keys: str) -> bool:
         """
         Check whether a setting was explicitly written in the config file.
-        
+
         Example:
             loader.is_set("scan", "mode")
         """
@@ -251,11 +249,11 @@ class ConfigLoader:
                 return False
             node = node[key]
         return node is not None
-    
+
     def get_scan_interval(self) -> float:
         """Get periodic scan interval in seconds (0 = single scan)"""
         return float(self.config.get("scan", {}).get("interval_seconds", 0) or 0)
-    
+
     def _validate_notifications(self) -> List[str]:
         """Errors in notifications[] and notification_settings"""
         from .notifications import NOTIFICATION_TYPES, NotificationType
@@ -269,7 +267,7 @@ class ConfigLoader:
                 error = number_error(settings[key], 0)
                 if error:
                     errors.append(f"notification_settings.{key} {error}")
-        
+
         destinations = self.config.get("notifications") or []
         if not isinstance(destinations, list):
             return errors + ["notifications must be a list"]
@@ -303,7 +301,7 @@ class ConfigLoader:
                     if error:
                         errors.append(f"{where}.{key} {error}")
         return errors
-    
+
     def get_network_config(self) -> NetworkConfig:
         """Get NetworkConfig from loaded configuration"""
         net = self.config.get("network", {})
@@ -315,14 +313,14 @@ class ConfigLoader:
             request_timeout_ms=net.get("request_timeout_ms", 5000),
             max_concurrent=net.get("max_concurrent", 1),
         )
-    
+
     def get_targets(self) -> List[PLCInfo]:
         """Get list of target PLCs from configuration"""
         targets = []
-        
+
         for target in self.config.get("targets", []):
             protocol = self._parse_protocol(target.get("protocol"))
-            
+
             plc = PLCInfo(
                 ip_address=target.get("ip", ""),
                 protocol=protocol,
@@ -332,30 +330,30 @@ class ConfigLoader:
                 options=dict(target.get("options") or {}),
             )
             targets.append(plc)
-        
+
         return targets
-    
+
     def get_device_ranges(self) -> List[DeviceRange]:
         """Get device ranges from configuration"""
         ranges = []
-        
+
         for range_def in self.config.get("scan", {}).get("device_ranges", []):
             device_type = self._parse_device_type(range_def.get("device", "D"))
-            
+
             if device_type:
                 ranges.append(DeviceRange(
                     device_type=device_type,
                     start_address=range_def.get("start", 0),
                     end_address=range_def.get("end", 999),
                 ))
-        
+
         return ranges
-    
+
     def get_tags(self) -> List[str]:
         """EtherNet/IP (Logix) tags to read in range mode (scan.tags)"""
         tags = self.config.get("scan", {}).get("tags") or []
         return [str(t).strip() for t in tags if str(t).strip()] if isinstance(tags, list) else []
-    
+
     def get_tag_members(self) -> Dict[str, List[str]]:
         """Structure variable -> member names (scan.tag_members), see expand_tag_members()"""
         members = self.config.get("scan", {}).get("tag_members") or {}
@@ -363,21 +361,21 @@ class ConfigLoader:
             return {}
         return {str(name).strip(): [str(m).strip() for m in names if str(m).strip()]
                 for name, names in members.items() if isinstance(names, list)}
-    
+
     def get_scan_mode(self) -> ScanMode:
         """
         Get scan mode from configuration.
-        
+
         An unknown name (rejected by validate()) falls back to DISCOVER,
         which reads no PLC data - never to a full scan of every device.
         """
         mode_str = str(self.config.get("scan", {}).get("mode", "full")).strip().lower()
         return _SCAN_MODES.get(mode_str, ScanMode.DISCOVER)
-    
+
     def get_ip_ranges(self) -> List[str]:
         """Get IP ranges for discovery"""
         return self.config.get("discovery", {}).get("ip_ranges", [])
-    
+
     def get_discovery_protocols(self) -> Optional[List[Protocol]]:
         """
         Protocols to probe during discovery, or None for all.
@@ -386,62 +384,62 @@ class ConfigLoader:
         if not self.is_set("discovery", "protocols"):
             return None
         return [p for p in (self._parse_protocol(n) for n in self.config["discovery"]["protocols"]) if p]
-    
+
     def get_output_settings(self) -> Dict[str, Any]:
         """Get output settings"""
         return self.config.get("output", {})
-    
+
     def get_logging_settings(self) -> Dict[str, Any]:
         """Get logging settings"""
         return self.config.get("logging", {})
-    
+
     def _parse_protocol(self, protocol_str: Optional[str]) -> Optional[Protocol]:
         """Parse a protocol name or alias (see names.PROTOCOL_NAMES)"""
         return parse_protocol(protocol_str)
-    
+
     def _parse_device_type(self, device_str: Optional[str]) -> Optional[DeviceType]:
         """Parse a device name such as D or HR"""
         return parse_device_type(device_str)
-    
+
     def get_data_type_manager(self) -> Optional[DataTypeManager]:
         """
         Get DataTypeManager from configuration.
-        
+
         Returns:
             DataTypeManager instance or None if not configured
         """
         dt_config = self.config.get("data_types")
         if not dt_config:
             return None
-        
+
         if not dt_config.get("mappings"):
             return None
-        
+
         return DataTypeManager.from_config(dt_config)
-    
+
     def get_default_data_type(self) -> Optional[DataType]:
         """Get default data type from configuration"""
         dt_config = self.config.get("data_types", {})
         type_str = dt_config.get("default_type")
-        
+
         if not type_str:
             return None
-        
+
         try:
             return DataType(type_str.upper())
         except ValueError:
             return None
-    
+
     def get_default_byte_order(self) -> ByteOrder:
         """Get default byte order from configuration (little if unknown)"""
         order = self.config.get("data_types", {}).get("default_byte_order", "little")
         return parse_byte_order(order) or ByteOrder.LITTLE_ENDIAN
-    
+
     def save_template(self, path: str):
         """Save configuration template to file"""
         path = Path(path)
         suffix = path.suffix.lower()
-        
+
         with open(path, 'w', encoding='utf-8') as f:
             if suffix in ['.yaml', '.yml']:
                 if not YAML_AVAILABLE:
@@ -449,18 +447,18 @@ class ConfigLoader:
                 yaml.dump(DEFAULT_CONFIG, f, default_flow_style=False, allow_unicode=True)
             else:
                 json.dump(DEFAULT_CONFIG, f, indent=2, ensure_ascii=False)
-        
+
         logger.info(f"Configuration template saved to: {path}")
-    
+
     def validate(self) -> List[str]:
         """
         Validate configuration and return list of errors.
-        
+
         Returns:
             List of validation error messages (empty if valid)
         """
         errors = []
-        
+
         # Validate network settings (a non-numeric value used to crash
         # validate() itself with a TypeError)
         net = self.config.get("network", {})
@@ -471,7 +469,7 @@ class ConfigLoader:
             error = integer_error(net.get(key, minimum), minimum)
             if error:
                 errors.append(f"network.{key} {error}")
-        
+
         # Validate targets
         for i, target in enumerate(self.config.get("targets", [])):
             if not target.get("ip"):
@@ -508,18 +506,18 @@ class ConfigLoader:
                         errors.append(
                             f"targets[{i}].options.{key} must be an integer {low}-{high}, got {value!r}"
                         )
-        
+
         # Validate discovery IP ranges (syntax and size)
         for i, ip_range in enumerate(self.config.get("discovery", {}).get("ip_ranges", []) or []):
             error = ip_range_error(str(ip_range))
             if error:
                 errors.append(f"discovery.ip_ranges[{i}]: {error}")
-        
+
         # Validate discovery protocol filter
         for name in self.config.get("discovery", {}).get("protocols", []) or []:
             if self._parse_protocol(name) is None:
                 errors.append(f"discovery.protocols: unknown protocol '{name}'")
-        
+
         # Validate scan mode: a typo (e.g. "rang") must not silently become
         # a different mode such as a full scan of every device range
         if self.is_set("scan", "mode"):
@@ -528,7 +526,7 @@ class ConfigLoader:
                 errors.append(
                     f"scan.mode: unknown mode {mode!r} (allowed: {', '.join(_SCAN_MODES)})"
                 )
-        
+
         # Validate periodic interval
         interval = self.config.get("scan", {}).get("interval_seconds", 0) or 0
         if isinstance(interval, bool) or not isinstance(interval, (int, float)):
@@ -537,7 +535,7 @@ class ConfigLoader:
             errors.append(
                 f"scan.interval_seconds must be 0 (single scan) or >= {MIN_INTERVAL_SECONDS:g}"
             )
-        
+
         tags = self.config.get("scan", {}).get("tags")
         if tags is not None and (not isinstance(tags, list) or not all(isinstance(t, str) for t in tags)):
             errors.append("scan.tags must be a list of tag names")
@@ -546,7 +544,7 @@ class ConfigLoader:
                 not isinstance(members, dict)
                 or not all(isinstance(v, list) and all(isinstance(m, str) for m in v) for v in members.values())):
             errors.append("scan.tag_members must map variable names to lists of member names")
-        
+
         # Validate device ranges
         for i, range_def in enumerate(self.config.get("scan", {}).get("device_ranges", []) or []):
             where = f"scan.device_ranges[{i}]"
@@ -573,7 +571,7 @@ class ConfigLoader:
         hex_addresses = (self.config.get("output") or {}).get("hex_addresses", False)
         if not isinstance(hex_addresses, bool):
             errors.append(f"output.hex_addresses must be true or false, got {hex_addresses!r}")
-        
+
         # Database retention (0 = keep everything / no size limit)
         database = (self.config.get("output") or {}).get("database") or {}
         if isinstance(database, dict):
@@ -587,9 +585,9 @@ class ConfigLoader:
                     error = number_error(database[key], minimum, exclusive)
                     if error:
                         errors.append(f"output.database.{key} {error}")
-        
+
         errors.extend(self._validate_notifications())
-        
+
         # Validate data type settings (default type/byte order and mappings)
         try:
             DataTypeManager.from_config(self.config.get("data_types"))
@@ -611,10 +609,10 @@ def number_error(value: Any, minimum: float, exclusive: bool = False) -> Optiona
 def load_config(config_path: Optional[str] = None) -> ConfigLoader:
     """
     Convenience function to load configuration.
-    
+
     Args:
         config_path: Path to configuration file
-    
+
     Returns:
         ConfigLoader instance with loaded configuration
     """
@@ -626,7 +624,7 @@ def load_config(config_path: Optional[str] = None) -> ConfigLoader:
 def generate_config_template(path: str = "plc_config.yaml", overwrite: bool = False):
     """
     Generate a configuration template file.
-    
+
     Raises:
         FileExistsError: if the file exists and overwrite is False, so an
             edited configuration is never replaced by accident
@@ -639,4 +637,3 @@ def generate_config_template(path: str = "plc_config.yaml", overwrite: bool = Fa
     loader = ConfigLoader()
     loader.save_template(path)
     print(f"Configuration template saved to: {path}")
-

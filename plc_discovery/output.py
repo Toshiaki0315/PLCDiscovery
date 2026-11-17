@@ -8,7 +8,6 @@ Provides CSV file generation for:
 """
 
 import csv
-import os
 from pathlib import Path
 from typing import Dict, List, Mapping, Optional, Set
 import logging
@@ -24,13 +23,14 @@ DEFAULT_OUTPUT_DIR = "./plc_scan_results"
 # CSV column headers
 DISCOVERY_HEADERS = [
     "ip_address",
-    "mac_address", 
+    "mac_address",
     "manufacturer",
     "model",
     "protocol",
     "port",
     "cpu_type",
     "firmware_version",
+    "read_method",
     "discovered_at"
 ]
 
@@ -89,7 +89,7 @@ def csv_safe(value):
 
 class _SafeDictWriter(csv.DictWriter):
     """csv.DictWriter that applies csv_safe() to every cell"""
-    
+
     def writerow(self, rowdict):
         return super().writerow({k: csv_safe(v) for k, v in rowdict.items()})
 
@@ -126,11 +126,11 @@ def _unique_path(path: Path) -> Path:
 class CSVExporter:
     """
     CSV Exporter for PLC scan results.
-    
+
     Handles all file output operations with proper encoding
     and error handling.
     """
-    
+
     def __init__(
         self,
         output_dir: str = DEFAULT_OUTPUT_DIR,
@@ -146,11 +146,11 @@ class CSVExporter:
         # (append to one file per day, see append_plc_data)
         self.periodic_csv = "per_cycle"
         self._ensure_output_dir()
-    
+
     def _open_csv(self, filepath: Path, mode: str = "w"):
         """
         Open a CSV file for writing.
-        
+
         - CP932: characters that cannot be represented (e.g. "ü" in a device
           name) are replaced with "?" instead of failing the whole file.
         - UTF-8 with BOM (Excel-friendly): the BOM is written only when the
@@ -161,7 +161,7 @@ class CSVExporter:
             encoding = "utf-8"
         errors = "replace" if encoding == "cp932" else "strict"
         return open(filepath, mode, newline="", encoding=encoding, errors=errors)
-    
+
     def _ensure_output_dir(self):
         """Create output directory if it doesn't exist"""
         try:
@@ -169,7 +169,7 @@ class CSVExporter:
         except Exception as e:
             logger.error(f"Failed to create output directory: {e}")
             raise
-    
+
     def export_discovery_results(
         self,
         plc_list: List[PLCInfo],
@@ -177,11 +177,11 @@ class CSVExporter:
     ) -> str:
         """
         Export PLC discovery results to CSV.
-        
+
         Args:
             plc_list: List of discovered PLCs
             filename: Optional custom filename
-        
+
         Returns:
             Path to the created file
         """
@@ -191,26 +191,26 @@ class CSVExporter:
             filepath = _unique_path(self.output_dir / filename)
         else:
             filepath = self.output_dir / filename
-        
+
         try:
             with self._open_csv(filepath, 'w') as f:
                 writer = _SafeDictWriter(f, fieldnames=DISCOVERY_HEADERS)
                 writer.writeheader()
-                
+
                 discovered_at = get_timestamp()
-                
+
                 for plc in plc_list:
                     row = plc.to_dict()
                     row["discovered_at"] = discovered_at
                     writer.writerow(row)
-            
+
             logger.info(f"Discovery results exported to: {filepath}")
             return str(filepath)
-            
+
         except Exception as e:
             logger.error(f"Failed to export discovery results: {e}")
             raise
-    
+
     def export_plc_data(
         self,
         data_points: List[DataPoint],
@@ -222,7 +222,7 @@ class CSVExporter:
     ) -> str:
         """
         Export PLC device data to CSV.
-        
+
         Args:
             data_points: List of collected data points
             plc_ip: IP address of the PLC
@@ -233,7 +233,7 @@ class CSVExporter:
                 can be told apart
             hex_addresses: add an "address_hex" column with the address in
                 MELSEC notation (X/Y/B/W in hexadecimal, e.g. X31 -> X1F)
-        
+
         Returns:
             Path to the created file
         """
@@ -246,37 +246,37 @@ class CSVExporter:
             filepath = _unique_path(self.output_dir / filename)
         else:
             filepath = self.output_dir / filename
-        
+
         # Check if any data point has type conversion info
         has_type_info = any(
             dp.data_type is not None or dp.converted_value is not None
             for dp in data_points
         )
-        
+
         # Use extended headers if type info is present
         use_extended = include_type_info and has_type_info
         headers = list(DATA_HEADERS_EXTENDED if use_extended else DATA_HEADERS)
         if hex_addresses:
             headers.insert(1, "address_hex")
-        
+
         try:
             with self._open_csv(filepath, 'w') as f:
                 writer = _SafeDictWriter(f, fieldnames=headers, extrasaction='ignore')
                 writer.writeheader()
-                
+
                 for dp in data_points:
                     row = dp.to_dict()
                     if hex_addresses:
                         row["address_hex"] = melsec_address(dp.address)
                     writer.writerow(row)
-            
+
             logger.info(f"PLC data exported to: {filepath}")
             return str(filepath)
-            
+
         except Exception as e:
             logger.error(f"Failed to export PLC data: {e}")
             raise
-    
+
     def append_plc_data(
         self,
         data_points: List[DataPoint],
@@ -286,7 +286,7 @@ class CSVExporter:
     ) -> str:
         """
         Append PLC data to one file per day: plc_data_<IP>[_<tag>]_YYYYMMDD.csv
-        
+
         For periodic scans (output.periodic_csv: daily): one file per cycle
         meant 1440 files a day at 60 s. Every row keeps its own timestamp,
         so cycles can be told apart; the columns are always the extended
@@ -320,7 +320,7 @@ class CSVExporter:
         except Exception as e:
             logger.error(f"Failed to append PLC data: {e}")
             raise
-    
+
     def export_denied_addresses(
         self,
         denied_addresses: Set[str],
@@ -331,35 +331,35 @@ class CSVExporter:
     ) -> str:
         """
         Export inaccessible addresses log to CSV.
-        
+
         Args:
             denied_addresses: Set of address strings
             plc_ip: IP address of the PLC
             status: Status code for addresses missing from ``statuses``
             filename: Optional custom filename
             statuses: Per-address status (e.g. NG_UNSUPPORTED)
-        
+
         Returns:
             Path to the created file
         """
         if not filename:
             filename = "access_denied_log.csv"
-        
+
         filepath = self.output_dir / filename
-        
+
         # Check if file exists for append mode
         file_exists = filepath.exists()
-        
+
         try:
             mode = 'a' if file_exists else 'w'
             with self._open_csv(filepath, mode) as f:
                 writer = _SafeDictWriter(f, fieldnames=DENIED_HEADERS)
-                
+
                 if not file_exists:
                     writer.writeheader()
-                
+
                 timestamp = get_timestamp()
-                
+
                 for address in sorted(denied_addresses):
                     address_status = (statuses or {}).get(address) or status
                     writer.writerow({
@@ -368,14 +368,14 @@ class CSVExporter:
                         "last_attempt": timestamp,
                         "plc_ip": plc_ip
                     })
-            
+
             logger.info(f"Denied addresses exported to: {filepath}")
             return str(filepath)
-            
+
         except Exception as e:
             logger.error(f"Failed to export denied addresses: {e}")
             raise
-    
+
     def export_summary_report(
         self,
         plc_list: List[PLCInfo],
@@ -384,12 +384,12 @@ class CSVExporter:
     ) -> str:
         """
         Export summary report with collection statistics.
-        
+
         Args:
             plc_list: List of scanned PLCs
             collection_stats: Dictionary mapping IP to statistics
             filename: Optional custom filename
-        
+
         Returns:
             Path to the created file
         """
@@ -399,7 +399,7 @@ class CSVExporter:
             filepath = _unique_path(self.output_dir / filename)
         else:
             filepath = self.output_dir / filename
-        
+
         summary_headers = [
             "ip_address",
             "manufacturer",
@@ -411,12 +411,12 @@ class CSVExporter:
             "success_rate",
             "denied_addresses"
         ]
-        
+
         try:
             with self._open_csv(filepath, 'w') as f:
                 writer = _SafeDictWriter(f, fieldnames=summary_headers)
                 writer.writeheader()
-                
+
                 for plc in plc_list:
                     stats = collection_stats.get(plc.ip_address, {})
                     writer.writerow({
@@ -430,10 +430,10 @@ class CSVExporter:
                         "success_rate": stats.get("success_rate", "N/A"),
                         "denied_addresses": stats.get("denied_addresses", 0),
                     })
-            
+
             logger.info(f"Summary report exported to: {filepath}")
             return str(filepath)
-            
+
         except Exception as e:
             logger.error(f"Failed to export summary report: {e}")
             raise
@@ -445,16 +445,16 @@ def load_denied_addresses(
 ) -> Set[str]:
     """
     Load previously recorded denied addresses from CSV.
-    
+
     Args:
         filepath: Path to denied addresses log file
         plc_ip: Optional filter by PLC IP
-    
+
     Returns:
         Set of address strings
     """
     denied = set()
-    
+
     try:
         with open(filepath, 'r', encoding='utf-8-sig') as f:   # also strips a BOM
             reader = csv.DictReader(f)
@@ -465,5 +465,5 @@ def load_denied_addresses(
         logger.debug(f"Denied addresses file not found: {filepath}")
     except Exception as e:
         logger.warning(f"Error loading denied addresses: {e}")
-    
+
     return denied

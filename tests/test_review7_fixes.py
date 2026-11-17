@@ -3,7 +3,6 @@ Regression tests for the seventh review's finding (X1): automatic discovery
 must not spend tens of minutes on virtual or very large networks.
 """
 
-import asyncio
 import logging
 import time
 from unittest.mock import AsyncMock, patch

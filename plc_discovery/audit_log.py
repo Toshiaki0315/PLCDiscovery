@@ -52,11 +52,11 @@ class AuditEvent:
     duration_ms: Optional[float] = None
     data_points: Optional[int] = None
     metadata: Optional[Dict[str, Any]] = None
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary, excluding None values"""
         return {k: v for k, v in asdict(self).items() if v is not None}
-    
+
     def to_json(self) -> str:
         """Convert to JSON string"""
         return json.dumps(self.to_dict(), ensure_ascii=False)
@@ -65,15 +65,15 @@ class AuditEvent:
 class AuditLogger:
     """
     Audit logger for PLC operations.
-    
+
     Logs all operations to file in JSON Lines format for easy parsing.
     Thread-safe implementation.
     """
-    
+
     # The process-wide instance is managed by init_audit_logger() /
     # get_audit_logger(). The class itself is not a singleton: a singleton
     # silently ignored the log file passed to a later init_audit_logger().
-    
+
     def __init__(
         self,
         log_file: Optional[str] = None,
@@ -87,14 +87,14 @@ class AuditLogger:
         self._file_handle = None
         self._write_lock = threading.Lock()
         self._initialized = True
-        
+
         if log_file and enabled:
             self._open_log_file()
-    
+
     def _generate_session_id(self) -> str:
         """Generate unique session ID"""
         return datetime.now().strftime("%Y%m%d_%H%M%S_") + os.urandom(4).hex()
-    
+
     def _open_log_file(self):
         """Open log file for writing"""
         try:
@@ -105,25 +105,25 @@ class AuditLogger:
         except Exception as e:
             logger.error(f"Failed to open audit log file: {e}")
             self._file_handle = None
-    
+
     def _write_event(self, event: AuditEvent):
         """Write event to log file"""
         if not self.enabled:
             return
-        
+
         with self._write_lock:
             line = event.to_json() + "\n"
-            
+
             if self._file_handle:
                 try:
                     self._file_handle.write(line)
                     self._file_handle.flush()
                 except Exception as e:
                     logger.error(f"Failed to write audit log: {e}")
-            
+
             if self.console_output:
                 print(f"[AUDIT] {line.strip()}")
-    
+
     def _create_event(
         self,
         event_type: AuditEventType,
@@ -136,7 +136,7 @@ class AuditLogger:
             session_id=self._session_id,
             **kwargs
         )
-    
+
     def log_session_start(self, metadata: Optional[Dict] = None):
         """Log session start"""
         event = self._create_event(
@@ -144,7 +144,7 @@ class AuditLogger:
             metadata=metadata
         )
         self._write_event(event)
-    
+
     def log_session_end(self, metadata: Optional[Dict] = None):
         """Log session end"""
         event = self._create_event(
@@ -152,7 +152,7 @@ class AuditLogger:
             metadata=metadata
         )
         self._write_event(event)
-    
+
     def log_discovery_start(self, ip_ranges: List[str]):
         """Log discovery start"""
         event = self._create_event(
@@ -160,7 +160,7 @@ class AuditLogger:
             metadata={"ip_ranges": ip_ranges}
         )
         self._write_event(event)
-    
+
     def log_discovery_result(self, plc_count: int, plcs: List[Dict]):
         """Log discovery result"""
         event = self._create_event(
@@ -169,7 +169,7 @@ class AuditLogger:
             metadata={"discovered_plcs": plcs}
         )
         self._write_event(event)
-    
+
     def log_connect(
         self,
         plc_ip: str,
@@ -188,7 +188,7 @@ class AuditLogger:
             metadata={"port": port}
         )
         self._write_event(event)
-    
+
     def log_disconnect(self, plc_ip: str, protocol: str):
         """Log disconnection"""
         event = self._create_event(
@@ -197,7 +197,7 @@ class AuditLogger:
             protocol=protocol
         )
         self._write_event(event)
-    
+
     def log_read_request(
         self,
         plc_ip: str,
@@ -217,7 +217,7 @@ class AuditLogger:
             count=address_end - address_start + 1
         )
         self._write_event(event)
-    
+
     def log_read_success(
         self,
         plc_ip: str,
@@ -242,7 +242,7 @@ class AuditLogger:
             status="SUCCESS"
         )
         self._write_event(event)
-    
+
     def log_read_error(
         self,
         plc_ip: str,
@@ -266,7 +266,7 @@ class AuditLogger:
             status="ERROR"
         )
         self._write_event(event)
-    
+
     def log_scan_start(
         self,
         plc_ip: str,
@@ -280,7 +280,7 @@ class AuditLogger:
             metadata={"mode": mode, "device_ranges": device_ranges}
         )
         self._write_event(event)
-    
+
     def log_scan_complete(
         self,
         plc_ip: str,
@@ -302,7 +302,7 @@ class AuditLogger:
             }
         )
         self._write_event(event)
-    
+
     def log_error(self, message: str, metadata: Optional[Dict] = None):
         """Log general error"""
         event = self._create_event(
@@ -311,7 +311,7 @@ class AuditLogger:
             metadata=metadata
         )
         self._write_event(event)
-    
+
     def log_warning(self, message: str, metadata: Optional[Dict] = None):
         """Log warning"""
         event = self._create_event(
@@ -320,7 +320,7 @@ class AuditLogger:
             metadata=metadata
         )
         self._write_event(event)
-    
+
     def close(self):
         """Close audit log file"""
         if self._file_handle:
@@ -331,15 +331,15 @@ class AuditLogger:
                 logger.error(f"Error closing audit log: {e}")
             finally:
                 self._file_handle = None
-    
+
     def get_session_id(self) -> str:
         """Get current session ID"""
         return self._session_id
-    
+
     def set_enabled(self, enabled: bool):
         """Enable or disable audit logging"""
         self.enabled = enabled
-    
+
     def set_log_file(self, log_file: str):
         """Set or change log file"""
         if self._file_handle:
@@ -384,5 +384,3 @@ def close_audit_logger():
     if _audit_logger:
         _audit_logger.close()
         _audit_logger = None
-
-

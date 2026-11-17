@@ -23,7 +23,6 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional
-from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +78,7 @@ class NotificationEvent:
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
     data: Dict[str, Any] = field(default_factory=dict)
     source: str = "plc_discovery"
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary"""
         return {
@@ -91,7 +90,7 @@ class NotificationEvent:
             "data": self.data,
             "source": self.source,
         }
-    
+
     def to_json(self) -> str:
         """Convert to JSON string"""
         return json.dumps(self.to_dict(), ensure_ascii=False)
@@ -135,23 +134,23 @@ def _urlopen_status(req, timeout: float) -> int:
 
 class NotificationHandler(ABC):
     """Abstract base class for notification handlers"""
-    
+
     def __init__(self, config: NotificationConfig):
         self.config = config
-    
+
     @abstractmethod
     async def send(self, event: NotificationEvent) -> bool:
         """
         Send notification.
-        
+
         Args:
             event: Notification event to send
-        
+
         Returns:
             True if successful, False otherwise
         """
         pass
-    
+
     def should_handle(self, event_type: NotificationType) -> bool:
         """Check if this handler should handle the event type"""
         if not self.config.enabled:
@@ -231,7 +230,7 @@ class SlackHandler(NotificationHandler):
         NotificationPriority.LOW: "#36a64f",      # Green
         NotificationPriority.NORMAL: "#2196F3",   # Blue
         NotificationPriority.HIGH: "#ff9800",     # Orange
-        NotificationPriority.CRITICAL: "#f44336", # Red
+        NotificationPriority.CRITICAL: "#f44336",  # Red
     }
 
     def build_payload(self, event: NotificationEvent) -> dict:
@@ -276,20 +275,20 @@ class TeamsHandler(NotificationHandler):
         NotificationPriority.HIGH: "warning",
         NotificationPriority.CRITICAL: "attention",
     }
-    
+
     @staticmethod
     def _facts(event: NotificationEvent) -> List[tuple]:
         """(name, value) pairs shown with the message: type, time, up to 5 data items"""
         facts = [("Type", event.type.value), ("Timestamp", event.timestamp)]
         facts += [(key, str(value)) for key, value in list((event.data or {}).items())[:5]]
         return facts
-    
+
     def build_payload(self, event: NotificationEvent) -> dict:
         """Message for the configured format (Adaptive Card by default)"""
         if self.config.card_format == "messagecard":
             return self.build_message_card(event)
         return self.build_adaptive_card(event)
-    
+
     def build_adaptive_card(self, event: NotificationEvent) -> dict:
         """
         Adaptive Card message, the format Teams workflow webhooks ("Post to
@@ -318,7 +317,7 @@ class TeamsHandler(NotificationHandler):
                 },
             }],
         }
-    
+
     def build_message_card(self, event: NotificationEvent) -> dict:
         """Legacy Teams MessageCard (Office 365 connector webhooks)"""
         return {
@@ -333,7 +332,7 @@ class TeamsHandler(NotificationHandler):
                 "facts": [{"name": name, "value": value} for name, value in self._facts(event)],
             }]
         }
-    
+
     async def send(self, event: NotificationEvent) -> bool:
         """Send notification to Microsoft Teams"""
         return await self._post_json(self.build_payload(event))
@@ -341,13 +340,13 @@ class TeamsHandler(NotificationHandler):
 
 class CustomHandler(NotificationHandler):
     """Custom notification handler using user-provided function"""
-    
+
     async def send(self, event: NotificationEvent) -> bool:
         """Call custom handler function"""
         if not self.config.handler:
             logger.error("Custom handler function not configured")
             return False
-        
+
         try:
             result = self.config.handler(event)
             if asyncio.iscoroutine(result):
@@ -361,19 +360,19 @@ class CustomHandler(NotificationHandler):
 class NotificationManager:
     """
     Manages multiple notification handlers and dispatches events.
-    
+
     Usage:
         manager = NotificationManager()
         manager.add_webhook("alerts", "https://example.com/webhook")
         manager.add_slack("slack", "https://hooks.slack.com/...")
-        
+
         await manager.notify(NotificationEvent(
             type=NotificationType.SCAN_COMPLETE,
             title="Scan Complete",
             message="Scanned 10 PLCs successfully"
         ))
     """
-    
+
     def __init__(self, min_interval_seconds: float = 0, report_interval_seconds: float = 0):
         """
         Args:
@@ -387,12 +386,12 @@ class NotificationManager:
         self.min_interval_seconds = max(0.0, float(min_interval_seconds or 0))
         self.report_interval_seconds = max(0.0, float(report_interval_seconds or 0))
         self._last_sent: Dict[NotificationType, float] = {}
-    
+
     @property
     def has_handlers(self) -> bool:
         """True when at least one destination is enabled"""
         return any(h.config.enabled for h in self._handlers.values())
-    
+
     def add_handler(self, config: NotificationConfig) -> None:
         """Add a notification handler"""
         handler_class = {
@@ -401,14 +400,14 @@ class NotificationManager:
             "teams": TeamsHandler,
             "custom": CustomHandler,
         }.get(config.type.lower())
-        
+
         if not handler_class:
             logger.error(f"Unknown notification type: {config.type}")
             return
-        
+
         self._handlers[config.name] = handler_class(config)
         logger.info(f"Added notification handler: {config.name} ({config.type})")
-    
+
     def add_webhook(
         self,
         name: str,
@@ -425,7 +424,7 @@ class NotificationManager:
             headers=headers or {}
         )
         self.add_handler(config)
-    
+
     def add_slack(
         self,
         name: str,
@@ -440,7 +439,7 @@ class NotificationManager:
             events=events or []
         )
         self.add_handler(config)
-    
+
     def add_teams(
         self,
         name: str,
@@ -455,7 +454,7 @@ class NotificationManager:
             events=events or []
         )
         self.add_handler(config)
-    
+
     def add_custom(
         self,
         name: str,
@@ -470,14 +469,14 @@ class NotificationManager:
             events=events or []
         )
         self.add_handler(config)
-    
+
     def remove_handler(self, name: str) -> bool:
         """Remove a notification handler"""
         if name in self._handlers:
             del self._handlers[name]
             return True
         return False
-    
+
     async def notify(
         self,
         event: NotificationEvent,
@@ -485,19 +484,19 @@ class NotificationManager:
     ) -> Dict[str, bool]:
         """
         Send notification to all applicable handlers.
-        
+
         Args:
             event: Notification event to send
             handlers: Optional list of handler names to use
-        
+
         Returns:
             Dictionary mapping handler names to success status
         """
         results = {}
-        
+
         tasks = []
         handler_names = []
-        
+
         now = time.monotonic()
         last = self._last_sent.get(event.type)
         if self.min_interval_seconds and last is not None and now - last < self.min_interval_seconds:
@@ -506,32 +505,32 @@ class NotificationManager:
                 f"{now - last:.0f}s ago (minimum interval {self.min_interval_seconds:.0f}s)"
             )
             return results
-        
+
         for name, handler in self._handlers.items():
             # Filter by specific handlers if provided
             if handlers and name not in handlers:
                 continue
-            
+
             # Check if handler should handle this event type
             if not handler.should_handle(event.type):
                 continue
-            
+
             tasks.append(handler.send(event))
             handler_names.append(name)
-        
+
         if tasks:
             self._last_sent[event.type] = now
             outcomes = await asyncio.gather(*tasks, return_exceptions=True)
-            
+
             for name, outcome in zip(handler_names, outcomes):
                 if isinstance(outcome, Exception):
                     logger.error(f"Handler {name} failed: {outcome}")
                     results[name] = False
                 else:
                     results[name] = outcome
-        
+
         return results
-    
+
     async def notify_scan_complete(
         self,
         plc_count: int,
@@ -555,7 +554,7 @@ class NotificationManager:
             }
         )
         return await self.notify(event)
-    
+
     async def notify_error(
         self,
         error_message: str,
@@ -574,7 +573,7 @@ class NotificationManager:
             }
         )
         return await self.notify(event)
-    
+
     async def notify_discovery(
         self,
         plcs_found: int,
@@ -594,7 +593,7 @@ class NotificationManager:
             }
         )
         return await self.notify(event)
-    
+
     async def notify_status_report(
         self,
         message: str,
@@ -610,12 +609,12 @@ class NotificationManager:
             data=extra_data,
         )
         return await self.notify(event)
-    
+
     @classmethod
     def from_config(cls, config: Dict) -> 'NotificationManager':
         """
         Create NotificationManager from configuration dictionary.
-        
+
         Config format:
             notifications:
               - name: my_webhook
@@ -631,7 +630,7 @@ class NotificationManager:
             min_interval_seconds=60 * float(settings.get("min_interval_minutes", 0) or 0),
             report_interval_seconds=60 * float(settings.get("report_interval_minutes", 0) or 0),
         )
-        
+
         notifications = config.get("notifications", []) or []
         for notif_config in notifications:
             try:
@@ -642,7 +641,7 @@ class NotificationManager:
                         events.append(NotificationType(event_str))
                     except ValueError:
                         logger.warning(f"Unknown event type: {event_str}")
-                
+
                 config = NotificationConfig(
                     name=notif_config.get("name", "unnamed"),
                     type=notif_config.get("type", "webhook"),
@@ -657,7 +656,7 @@ class NotificationManager:
                 manager.add_handler(config)
             except Exception as e:
                 logger.error(f"Failed to configure notification: {e}")
-        
+
         return manager
 
 
@@ -668,12 +667,12 @@ _notification_manager: Optional[NotificationManager] = None
 def init_notifications(config: Dict = None) -> NotificationManager:
     """Initialize global notification manager"""
     global _notification_manager
-    
+
     if config:
         _notification_manager = NotificationManager.from_config(config)
     else:
         _notification_manager = NotificationManager()
-    
+
     return _notification_manager
 
 
@@ -687,5 +686,3 @@ async def notify(event: NotificationEvent) -> Dict[str, bool]:
     if _notification_manager:
         return await _notification_manager.notify(event)
     return {}
-
-

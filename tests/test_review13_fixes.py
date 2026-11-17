@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 import plc_scanner
-from plc_discovery.config import DataPoint, MANUFACTURER_OUI, PLCInfo, Protocol, StatusCode
+from plc_discovery.config import DataPoint, MANUFACTURER_OUI, StatusCode
 from plc_discovery.report import create_report
 from plc_discovery.utils import get_manufacturer_from_mac
 

@@ -9,9 +9,7 @@ Tests for the notification / database settings added with the GUI tabs.
 """
 
 import asyncio
-import sqlite3
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -20,9 +18,7 @@ from plc_discovery import database, settings_file
 from plc_discovery.config import DataPoint, StatusCode
 from plc_discovery.config_loader import ConfigLoader
 from plc_discovery.database import DatabaseConfig, DatabaseExporter
-from plc_discovery.notifications import (
-    NotificationConfig, NotificationEvent, NotificationManager, NotificationType,
-)
+from plc_discovery.notifications import NotificationEvent, NotificationManager, NotificationType
 from plc_discovery.utils import get_timestamp
 
 

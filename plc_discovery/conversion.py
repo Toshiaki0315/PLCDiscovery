@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 def load_type_mapping(path: str, overrides: Optional[Dict[str, str]] = None) -> DataTypeManager:
     """
     Load type mapping from file.
-    
+
     ``overrides`` (default_type / default_byte_order from the command line)
     replace the file's defaults before the mappings are built, so mappings
     without their own byte_order follow --byte-order.
@@ -40,7 +40,7 @@ def load_type_mapping(path: str, overrides: Optional[Dict[str, str]] = None) -> 
                     config = yaml.safe_load(f)
                 except ImportError:
                     raise ImportError("PyYAML required for YAML type mapping files")
-        
+
         if overrides and isinstance(config, dict):
             config = {**config, **overrides}
         return DataTypeManager.from_config(config, prefix=Path(path).name)
@@ -65,38 +65,38 @@ def apply_data_type_conversion(
 ) -> List[DataPoint]:
     """
     Apply data type conversion to data points.
-    
+
     Multi-word types (DWORD, FLOAT, DOUBLE, ...) combine consecutive,
     successfully read words. Values are aligned to a fixed grid so a failed
     or missing word never shifts the pairing of the following values:
     - with a type mapping: relative to the mapping's start address
     - otherwise: relative to the start of each contiguous address run
       (normally the start of the requested range)
-    
+
     The combined value is stored on the first address (all words in
     raw_words). The other words stay in the output with their own raw
     value/hex and a display_value pointing to the first address, so no raw
     data is lost. Multi-word types are never applied to bit devices.
-    
+
     Args:
         data_points: List of data points to convert
         data_type: Default data type (if type_manager not used)
         byte_order: Byte order for conversion
         type_manager: Type manager for address-specific mappings
             (takes precedence over data_type)
-    
+
     Returns:
         New list of data points with converted values
     """
     if not data_type and not type_manager:
         return data_points
-    
+
     # Parse addresses and find the start/end of each contiguous run
     parsed: List[Optional[tuple]] = [_split_address(dp.address) for dp in data_points]
-    
+
     def continues(prev, addr) -> bool:
         return bool(addr and prev and prev[0] == addr[0] and prev[1] + 1 == addr[1])
-    
+
     run_start: List[Optional[int]] = []
     for idx, addr in enumerate(parsed):
         if idx and continues(parsed[idx - 1], addr):
@@ -110,20 +110,20 @@ def apply_data_type_conversion(
             run_end[idx] = run_end[idx + 1]
         else:
             run_end[idx] = addr[1] if addr else None
-    
+
     result: List[DataPoint] = []
     i = 0
     while i < len(data_points):
         dp = data_points[i]
         addr = parsed[i]
-        
+
         if addr is None or dp.value is None or dp.status != StatusCode.OK:
             result.append(dp)
             i += 1
             continue
-        
+
         prefix, number = addr
-        
+
         # Determine data type, value size and alignment base for this address
         align_base = run_start[i]
         mapping = type_manager.get_mapping_for_address(number, prefix) if type_manager else None
@@ -141,12 +141,12 @@ def apply_data_type_conversion(
             else:
                 word_count = DataTypeConverter.get_word_count(dt) if dt else 1
         word_count = max(word_count or 1, 1)
-        
+
         if dt is None or (word_count > 1 and prefix.upper() in BIT_DEVICES):
             result.append(dp)
             i += 1
             continue
-        
+
         offset = (number - align_base) % word_count
         if offset:
             # Second/later word of a value whose first word failed or is missing
@@ -156,7 +156,7 @@ def apply_data_type_conversion(
             ))
             i += 1
             continue
-        
+
         # Collect the following consecutive, successfully read words
         group = [dp]
         for j in range(1, word_count):
@@ -167,7 +167,7 @@ def apply_data_type_conversion(
                     or parsed[i + j] != (prefix, number + j)):
                 break
             group.append(nxt)
-        
+
         if len(group) < word_count:
             # Not all words of this value were read: keep the raw point
             result.append(dataclasses.replace(
@@ -176,7 +176,7 @@ def apply_data_type_conversion(
             ))
             i += 1
             continue
-        
+
         words = [g.value for g in group]
         converted = DataTypeConverter.convert(words, dt, bo)
         result.append(dataclasses.replace(
@@ -194,19 +194,19 @@ def apply_data_type_conversion(
                 display_value=f"(part of {dp.address})",
             ))
         i += word_count
-    
+
     return result
 
 
 def resolve_data_types(args, config_loader: Optional[ConfigLoader]) -> tuple:
     """
     Data type conversion settings: (data_type, byte_order, type_manager).
-    
+
     --data-type / --byte-order win over the config file. With a type mapping
     (file or config) they replace its default_type / default_byte_order:
     the type of unmapped addresses, and the byte order of mappings that do
     not set their own byte_order. An explicit mapping byte_order still wins.
-    
+
     Raises:
         Exception: if the --type-mapping file cannot be loaded
     """
@@ -218,7 +218,7 @@ def resolve_data_types(args, config_loader: Optional[ConfigLoader]) -> tuple:
     if args.byte_order:
         overrides["default_byte_order"] = args.byte_order
     type_manager = None
-    
+
     if args.type_mapping:
         type_manager = load_type_mapping(args.type_mapping, overrides)
     elif config_loader:
@@ -229,5 +229,5 @@ def resolve_data_types(args, config_loader: Optional[ConfigLoader]) -> tuple:
             data_type = config_loader.get_default_data_type()
         if byte_order is None and config_loader.is_set("data_types", "default_byte_order"):
             byte_order = config_loader.get_default_byte_order()
-    
+
     return data_type, byte_order or ByteOrder.LITTLE_ENDIAN, type_manager

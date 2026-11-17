@@ -135,7 +135,6 @@ jobs:
     - name: Run linting with flake8
       run: |
         flake8 plc_discovery tests simulators --max-line-length=120 --ignore=E501,W503,E402
-      continue-on-error: true
     
     - name: Check code formatting with Black
       run: |

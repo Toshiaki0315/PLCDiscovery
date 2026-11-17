@@ -125,7 +125,8 @@ def tcp_server(respond):
         srv.close()
 
 
-HTTP = lambda req: b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n"
+def HTTP(req):
+    return b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n"
 
 
 class TestR3Probes:

@@ -45,7 +45,7 @@ SLC_MAX_READ_WORDS = 100   # 200 bytes (byte size field max 255)
 def is_slc_identity(identity: Optional[Dict]) -> bool:
     """
     True if a ListIdentity reply looks like a Rockwell PLC-5/SLC/MicroLogix.
-    
+
     Requires vendor Rockwell, product type PLC, and a product name that is
     not a Control/CompactLogix controller (those use symbolic tags and are
     handled by LogixDriver). MicroLogix names are accepted.
@@ -64,16 +64,15 @@ def is_slc_identity(identity: Optional[Dict]) -> bool:
     return vendor_ok and type_ok and not is_logix
 
 
-
 class EtherNetIPHandler(BaseProtocolHandler):
     """
     EtherNet/IP (CIP) Protocol Handler
-    
+
     Implements communication with EtherNet/IP compatible PLCs.
     """
-    
+
     protocol = Protocol.ETHERNET_IP
-    
+
     def __init__(
         self,
         ip_address: str,
@@ -105,11 +104,11 @@ class EtherNetIPHandler(BaseProtocolHandler):
         if self._plc_type == "slc":
             return min(size, SLC_MAX_READ_WORDS)
         return size
-    
+
     async def connect(self) -> bool:
         """
         Establish EtherNet/IP connection.
-        
+
         The first connection tries Logix, then SLC, then generic CIP. A
         reconnect (e.g. after a timeout) goes straight to the driver that
         worked before instead of repeating the whole fallback chain.
@@ -119,24 +118,24 @@ class EtherNetIPHandler(BaseProtocolHandler):
         if self._plc_type == "generic":
             return await self._connect_generic()
         return await self._connect_logix_first()
-    
+
     async def _connect_logix_first(self) -> bool:
         """Try LogixDriver, falling back to SLC and generic CIP"""
         try:
             from pycomm3 import LogixDriver
-            
+
             def _connect():
                 client = LogixDriver(self._connection_path(include_slot=True))
                 client.open()
                 return client
-            
+
             loop = asyncio.get_running_loop()
             self._client = await loop.run_in_executor(None, _connect)
             self._connected = True
             self._plc_type = 'logix'
             logger.info(f"EtherNet/IP (Logix) connected to {self.ip_address}:{self.port}")
             return True
-            
+
         except ImportError:
             logger.error("pycomm3 library not installed")
             return False
@@ -146,12 +145,12 @@ class EtherNetIPHandler(BaseProtocolHandler):
             if await self._connect_slc():
                 return True
             return await self._connect_generic()
-    
+
     async def _connect_slc(self) -> bool:
         """Connect using the PLC-5/SLC/MicroLogix driver (data-file addressing)"""
         try:
             from pycomm3 import SLCDriver
-            
+
             def _connect():
                 client = SLCDriver(self._connection_path(include_slot=True))
                 client.open()
@@ -169,7 +168,7 @@ class EtherNetIPHandler(BaseProtocolHandler):
                         f"not an SLC/PLC-5/MicroLogix controller (identity: {identity})"
                     )
                 return client
-            
+
             loop = asyncio.get_running_loop()
             self._client = await loop.run_in_executor(None, _connect)
             self._connected = True
@@ -180,36 +179,36 @@ class EtherNetIPHandler(BaseProtocolHandler):
             logger.info(f"Not an SLC/PLC-5/MicroLogix controller ({e}); using generic CIP")
             self._client = None
             return False
-    
+
     async def _connect_generic(self) -> bool:
         """Connect using generic CIP driver"""
         try:
             from pycomm3 import CIPDriver
-            
+
             def _connect():
                 client = CIPDriver(self._connection_path(include_slot=False))
                 client.open()
                 return client
-            
+
             loop = asyncio.get_running_loop()
             self._client = await loop.run_in_executor(None, _connect)
             self._connected = True
             self._plc_type = 'generic'
             logger.info(f"EtherNet/IP (Generic) connected to {self.ip_address}:{self.port}")
             return True
-            
+
         except Exception as e:
             logger.error(f"EtherNet/IP connection failed: {e}")
             self._connected = False
             return False
-    
+
     async def disconnect(self):
         """Close EtherNet/IP connection"""
         if self._client:
             try:
                 def _disconnect():
                     self._client.close()
-                
+
                 loop = asyncio.get_running_loop()
                 await loop.run_in_executor(None, _disconnect)
             except Exception as e:
@@ -218,7 +217,7 @@ class EtherNetIPHandler(BaseProtocolHandler):
                 self._client = None
                 self._connected = False
                 logger.info(f"EtherNet/IP disconnected from {self.ip_address}")
-    
+
     async def read_device_raw(
         self,
         device_type: DeviceType,
@@ -227,7 +226,7 @@ class EtherNetIPHandler(BaseProtocolHandler):
     ) -> Tuple[Optional[List[int]], StatusCode]:
         """
         Read device data using EtherNet/IP protocol.
-        
+
         For Allen-Bradley, uses tag-based reading.
         For generic CIP, uses object-based reading.
         """
@@ -235,7 +234,7 @@ class EtherNetIPHandler(BaseProtocolHandler):
             return None, StatusCode.NG_COMM_ERROR
         if not self._connected or not self._client:
             return None, StatusCode.NG_COMM_ERROR
-        
+
         try:
             if self._plc_type == 'slc':
                 return await self._read_ab_style(device_type, start_address, count)
@@ -247,9 +246,9 @@ class EtherNetIPHandler(BaseProtocolHandler):
                 f"{self._plc_type} EtherNet/IP devices (symbolic tags only)"
             )
             return None, StatusCode.NG_UNSUPPORTED
-                
+
         except asyncio.TimeoutError:
-            logger.debug(f"EtherNet/IP read timeout")
+            logger.debug("EtherNet/IP read timeout")
             return None, StatusCode.NG_TIMEOUT
         except Exception as e:
             error_str = str(e).lower()
@@ -261,7 +260,7 @@ class EtherNetIPHandler(BaseProtocolHandler):
             self._needs_reconnect = True
             logger.debug(f"EtherNet/IP read error: {e}")
             return None, StatusCode.NG_COMM_ERROR
-    
+
     async def _read_ab_style(
         self,
         device_type: DeviceType,
@@ -270,7 +269,7 @@ class EtherNetIPHandler(BaseProtocolHandler):
     ) -> Tuple[Optional[List[int]], StatusCode]:
         """
         Read data using Allen-Bradley tag style.
-        
+
         Constructs tag names like "N7:0", "B3:0", etc.
         """
         mapping = EIP_DEVICE_MAP.get(device_type)
@@ -290,7 +289,7 @@ class EtherNetIPHandler(BaseProtocolHandler):
         try:
             file_letter, file_number = mapping
             tag_name = f"{file_letter}{file_number}:{start_address}"
-            
+
             def _read():
                 if count == 1:
                     result = self._client.read(tag_name)
@@ -302,24 +301,24 @@ class EtherNetIPHandler(BaseProtocolHandler):
                 if result.error:
                     raise LookupError(f"{tag_name}{{{count}}}: {result.error}")
                 return list(result.value)
-            
+
             data = await self._run_blocking(_read)
-            
+
             if data is not None:
                 # pycomm3 decodes N/B file words as signed INT; report raw
                 # 16-bit values (0-65535) like the other protocols
                 return [int(v) & 0xFFFF for v in data], StatusCode.OK
             return None, StatusCode.NG_COMM_ERROR
-            
+
         except Exception as e:
             logger.debug(f"AB-style read error: {e}")
             raise
-    
+
     # ------------------------------------------------------------------
     # Symbolic tags (Logix controllers; Omron NJ/NX and other generic CIP
     # devices that accept Read Tag on symbolic names)
     # ------------------------------------------------------------------
-    
+
     @property
     def supports_tags(self) -> bool:
         """
@@ -327,7 +326,7 @@ class EtherNetIPHandler(BaseProtocolHandler):
         with raw Read Tag requests on a generic CIP connection (Omron NJ/NX).
         """
         return self._plc_type in ("logix", "generic") and self._client is not None
-    
+
     def tag_scan_list(self) -> List[str]:
         """
         Tags for a full scan, from the tag list the LogixDriver read when
@@ -349,11 +348,11 @@ class EtherNetIPHandler(BaseProtocolHandler):
             else:
                 names.append(name)
         return names
-    
+
     async def read_tags(self, tags: List[str]) -> List[DataPoint]:
         """
         Read symbolic tags (read-only) and report one data point per value.
-        
+
         Goes through the same safeguards as address reads: packet interval
         (one request per batch of TAG_BATCH_SIZE tags), request timeout with
         reconnect before the next request, and per-tag errors reported as
@@ -389,7 +388,7 @@ class EtherNetIPHandler(BaseProtocolHandler):
             for name, reply in zip(batch, replies):
                 results += _tag_points(name, reply)
         return results
-    
+
     async def _read_tags_generic(self, tags: List[str]) -> List[DataPoint]:
         """
         Read tags with raw symbolic Read Tag (Omron NJ/NX: published
@@ -405,10 +404,11 @@ class EtherNetIPHandler(BaseProtocolHandler):
                 continue
             await self._rate_limiter.wait()
             client = self._client
-            if group[0].rstrip().endswith("}"):           # element-count read: alone, fragmented
-                read = lambda: [_capture(read_symbolic, client, group[0])]
-            else:
-                read = lambda: read_symbolic_batch(client, group)
+
+            def read(client=client, group=group):
+                if group[0].rstrip().endswith("}"):       # element-count read: alone, fragmented
+                    return [_capture(read_symbolic, client, group[0])]
+                return read_symbolic_batch(client, group)
             try:
                 outcomes = await self._run_blocking(read)
             except asyncio.TimeoutError:
@@ -454,6 +454,7 @@ def _generic_request_groups(tags: List[str]) -> List[List[str]]:
     if batch:
         groups.append(batch)
     return groups
+
 
 # Tags per read request batch (LogixDriver packs them into multi-service packets)
 TAG_BATCH_SIZE = 20

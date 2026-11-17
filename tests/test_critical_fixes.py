@@ -3,7 +3,6 @@ Regression tests for critical review findings (C1-C9).
 """
 
 import asyncio
-import logging
 import subprocess
 import sys
 import time

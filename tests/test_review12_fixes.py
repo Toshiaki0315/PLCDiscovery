@@ -7,7 +7,6 @@ C2: broadcast replies use the shared CIP identity parser, and TCP results
 Minor: EtherNet/IP (SLC) words are reported unsigned like other protocols.
 """
 
-import asyncio
 import struct
 from unittest.mock import AsyncMock, MagicMock, patch
 

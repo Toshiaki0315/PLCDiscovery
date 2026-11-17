@@ -4,7 +4,6 @@ Integration Test Fixtures
 Provides fixtures for starting/stopping PLC simulators for integration testing.
 """
 
-import asyncio
 import os
 import socket
 import sys
@@ -39,38 +38,79 @@ def wait_for_port(host: str, port: int, timeout: float = 10.0) -> bool:
     return False
 
 
+def _port_free(port: int, udp: bool = False) -> bool:
+    """True if the loopback port can be bound (TCP, and also UDP when asked)"""
+    kinds = [socket.SOCK_STREAM] + ([socket.SOCK_DGRAM] if udp else [])
+    for kind in kinds:
+        with socket.socket(socket.AF_INET, kind) as sock:
+            try:
+                sock.bind(("127.0.0.1", port))
+            except OSError:
+                return False
+    return True
+
+
+def pick_port(preferred: int, udp: bool = False) -> int:
+    """
+    The simulator's usual port when it is free, otherwise a free ephemeral
+    port: the tests then run next to simulators/run_all.py (which holds the
+    usual ports) instead of talking to it.
+    """
+    if _port_free(preferred, udp):
+        return preferred
+    for _ in range(50):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+        if _port_free(port, udp):
+            return port
+    raise RuntimeError(f"No free port for a simulator (preferred {preferred})")
+
+
+# Ports of the test simulators, chosen once per test session. Each
+# simulator process gets its port as an argument (child processes re-import
+# this module, so they must not rely on these values).
+SIMULATOR_PORTS = {
+    "slmp": pick_port(5001),
+    "modbus": pick_port(5502),
+    "ethernet_ip": pick_port(44818),
+    "logix": pick_port(44819),
+    "omron": pick_port(44820),
+    "s7": pick_port(1102),
+    "fins": pick_port(9600, udp=True),
+}
+
+
 class SimulatorProcess:
     """Wrapper for simulator process management"""
-    
+
     def __init__(self, name: str, port: int, start_func):
         self.name = name
         self.port = port
         self.start_func = start_func
         self.process: Optional[Process] = None
-    
+
     def start(self):
         """Start the simulator process"""
         if self.is_running():
             return
-        # Another process (typically simulators/run_all.py) already listens:
-        # the tests would talk to it, with other data / denied ranges, and
-        # fail confusingly. Stop with a clear message instead.
+        # The port was free when chosen (pick_port); if another process took
+        # it since, the tests would talk to that process: stop clearly
         if is_port_open("127.0.0.1", self.port, timeout=0.5):
             pytest.fail(
-                f"Port {self.port} is already in use, so the {self.name} test simulator "
-                f"cannot start (is simulators/run_all.py or start_simulators.sh running?). "
-                f"Stop it and run the integration tests again.",
+                f"Port {self.port} was taken after it was chosen for the {self.name} test simulator. "
+                f"Run the integration tests again.",
                 pytrace=False,
             )
 
-        self.process = Process(target=self.start_func, daemon=True)
+        self.process = Process(target=self.start_func, args=(self.port,), daemon=True)
         self.process.start()
 
         # Wait for port to be available
         if not wait_for_port("127.0.0.1", self.port, timeout=10.0):
             self.stop()
             raise RuntimeError(f"Failed to start {self.name} simulator on port {self.port}")
-    
+
     def stop(self):
         """Stop the simulator process"""
         if self.process and self.process.is_alive():
@@ -79,79 +119,79 @@ class SimulatorProcess:
             if self.process.is_alive():
                 self.process.kill()
         self.process = None
-    
+
     def is_running(self) -> bool:
         """Check if simulator is running"""
         return self.process is not None and self.process.is_alive()
 
 
-def run_slmp_simulator():
+def run_slmp_simulator(port: int):
     """Run SLMP simulator in separate process"""
     import asyncio
     from simulators.slmp_simulator import run_server
-    
-    asyncio.run(run_server("127.0.0.1", 5001, [(5000, 5100), (7000, 7050)]))
+
+    asyncio.run(run_server("127.0.0.1", port, [(5000, 5100), (7000, 7050)]))
 
 
-def run_modbus_simulator():
+def run_modbus_simulator(port: int):
     """Run Modbus simulator in separate process"""
     import asyncio
     from simulators.modbus_simulator import run_server
-    
-    asyncio.run(run_server("127.0.0.1", 5502, [(5000, 5100), (8000, 8050)]))
+
+    asyncio.run(run_server("127.0.0.1", port, [(5000, 5100), (8000, 8050)]))
 
 
-def run_ethernet_ip_simulator():
+def run_ethernet_ip_simulator(port: int):
     """Run EtherNet/IP simulator in separate process"""
     import asyncio
     from simulators.ethernet_ip_simulator import run_server
-    
-    asyncio.run(run_server("127.0.0.1", 44818, [(100, 150)]))
+
+    asyncio.run(run_server("127.0.0.1", port, [(100, 150)]))
 
 
-def run_logix_simulator():
+def run_logix_simulator(port: int):
     """Run the EtherNet/IP simulator in Logix mode (symbolic tags)"""
     import asyncio
     from simulators.ethernet_ip_simulator import run_server
-    
-    asyncio.run(run_server("127.0.0.1", 44819, [], mode="logix"))
+
+    asyncio.run(run_server("127.0.0.1", port, [], mode="logix"))
 
 
-def run_omron_simulator():
+def run_omron_simulator(port: int):
     """Run the EtherNet/IP simulator in Omron NJ/NX mode (variables by name)"""
     import asyncio
     from simulators.ethernet_ip_simulator import run_server
-    
-    asyncio.run(run_server("127.0.0.1", 44820, [], mode="omron"))
+
+    asyncio.run(run_server("127.0.0.1", port, [], mode="omron"))
 
 
-def run_s7_simulator():
+def run_s7_simulator(port: int):
     """Run S7 simulator in separate process"""
     import asyncio
     from simulators.s7_simulator import run_server
-    
+
     # Denied byte offsets 1000-1101 = word addresses 500-550 (byte = word * 2)
-    asyncio.run(run_server("127.0.0.1", 1102, [(1000, 1101)]))
+    asyncio.run(run_server("127.0.0.1", port, [(1000, 1101)]))
 
 
-def run_fins_simulator():
+def run_fins_simulator(port: int):
     """Run FINS simulator in separate process"""
     import asyncio
     from simulators.fins_simulator import run_fins_simulator as run_sim
-    
-    asyncio.run(run_sim(host="127.0.0.1", port=9600))
+
+    asyncio.run(run_sim(host="127.0.0.1", port=port))
 
 
 @pytest.fixture(scope="session")
 def slmp_simulator() -> Generator[SimulatorProcess, None, None]:
     """
     Fixture that starts SLMP simulator for the test session.
-    
+
     Yields:
         SimulatorProcess: The running simulator
     """
-    simulator = SimulatorProcess("SLMP", 5001, run_slmp_simulator)
-    
+    simulator = SimulatorProcess("SLMP", SIMULATOR_PORTS["slmp"], run_slmp_simulator)
+
     try:
         simulator.start()
         yield simulator
@@ -163,12 +203,12 @@ def slmp_simulator() -> Generator[SimulatorProcess, None, None]:
 def modbus_simulator() -> Generator[SimulatorProcess, None, None]:
     """
     Fixture that starts Modbus simulator for the test session.
-    
+
     Yields:
         SimulatorProcess: The running simulator
     """
-    simulator = SimulatorProcess("Modbus", 5502, run_modbus_simulator)
-    
+    simulator = SimulatorProcess("Modbus", SIMULATOR_PORTS["modbus"], run_modbus_simulator)
+
     try:
         simulator.start()
         yield simulator
@@ -180,12 +220,12 @@ def modbus_simulator() -> Generator[SimulatorProcess, None, None]:
 def ethernet_ip_simulator() -> Generator[SimulatorProcess, None, None]:
     """
     Fixture that starts EtherNet/IP simulator for the test session.
-    
+
     Yields:
         SimulatorProcess: The running simulator
     """
-    simulator = SimulatorProcess("EtherNet/IP", 44818, run_ethernet_ip_simulator)
-    
+    simulator = SimulatorProcess("EtherNet/IP", SIMULATOR_PORTS["ethernet_ip"], run_ethernet_ip_simulator)
+
     try:
         simulator.start()
         yield simulator
@@ -197,12 +237,12 @@ def ethernet_ip_simulator() -> Generator[SimulatorProcess, None, None]:
 def s7_simulator() -> Generator[SimulatorProcess, None, None]:
     """
     Fixture that starts S7 simulator for the test session.
-    
+
     Yields:
         SimulatorProcess: The running simulator
     """
-    simulator = SimulatorProcess("S7", 1102, run_s7_simulator)
-    
+    simulator = SimulatorProcess("S7", SIMULATOR_PORTS["s7"], run_s7_simulator)
+
     try:
         simulator.start()
         yield simulator
@@ -212,15 +252,15 @@ def s7_simulator() -> Generator[SimulatorProcess, None, None]:
 
 class UDPSimulatorProcess(SimulatorProcess):
     """Wrapper for UDP simulator process management"""
-    
+
     def start(self):
         """Start the simulator process without TCP wait_for_port"""
         if self.is_running():
             return
-        
-        self.process = Process(target=self.start_func, daemon=True)
+
+        self.process = Process(target=self.start_func, args=(self.port,), daemon=True)
         self.process.start()
-        
+
         # UDP uses connectionless socket, just sleep for a short time to let it bind
         time.sleep(0.5)
 
@@ -229,14 +269,14 @@ class UDPSimulatorProcess(SimulatorProcess):
 def fins_simulator() -> Generator[SimulatorProcess, None, None]:
     """
     Fixture that starts FINS simulator for the test session.
-    
+
     Yields:
         SimulatorProcess: The running simulator
     """
     # The simulator serves UDP and TCP on 9600; waiting for the TCP port
     # also confirms the process (and its UDP endpoint) is up
-    simulator = SimulatorProcess("FINS", 9600, run_fins_simulator)
-    
+    simulator = SimulatorProcess("FINS", SIMULATOR_PORTS["fins"], run_fins_simulator)
+
     try:
         simulator.start()
         yield simulator
@@ -251,7 +291,7 @@ def all_simulators(
 ) -> dict:
     """
     Fixture that starts all simulators.
-    
+
     Yields:
         Dict of simulator name to SimulatorProcess
     """
@@ -268,7 +308,7 @@ def slmp_plc_info():
     return PLCInfo(
         ip_address="127.0.0.1",
         protocol=Protocol.SLMP,
-        port=5001,
+        port=SIMULATOR_PORTS["slmp"],
         manufacturer="Test Simulator",
     )
 
@@ -280,7 +320,7 @@ def modbus_plc_info():
     return PLCInfo(
         ip_address="127.0.0.1",
         protocol=Protocol.MODBUS_TCP,
-        port=5502,
+        port=SIMULATOR_PORTS["modbus"],
         manufacturer="Test Simulator",
     )
 
@@ -292,7 +332,7 @@ def fins_plc_info():
     return PLCInfo(
         ip_address="127.0.0.1",
         protocol=Protocol.FINS,
-        port=9600,
+        port=SIMULATOR_PORTS["fins"],
         manufacturer="Test Simulator",
     )
 
@@ -301,13 +341,13 @@ def fins_plc_info():
 def fins_tcp_handler(network_config):
     """FINSHandler using FINS/TCP against the simulator (not yet connected)"""
     from plc_discovery.protocols.fins import FINSHandler
-    return FINSHandler("127.0.0.1", 9600, config=network_config, use_tcp=True)
+    return FINSHandler("127.0.0.1", SIMULATOR_PORTS["fins"], config=network_config, use_tcp=True)
 
 
 @pytest.fixture(scope="session")
 def logix_simulator() -> Generator[SimulatorProcess, None, None]:
     """EtherNet/IP simulator in Logix mode (tags) for the test session"""
-    simulator = SimulatorProcess("EtherNet/IP Logix", 44819, run_logix_simulator)
+    simulator = SimulatorProcess("EtherNet/IP Logix", SIMULATOR_PORTS["logix"], run_logix_simulator)
     try:
         simulator.start()
         yield simulator
@@ -319,13 +359,13 @@ def logix_simulator() -> Generator[SimulatorProcess, None, None]:
 def logix_plc_info():
     """PLCInfo for the Logix-mode EtherNet/IP simulator"""
     from plc_discovery.config import PLCInfo, Protocol
-    return PLCInfo(ip_address="127.0.0.1", protocol=Protocol.ETHERNET_IP, port=44819)
+    return PLCInfo(ip_address="127.0.0.1", protocol=Protocol.ETHERNET_IP, port=SIMULATOR_PORTS["logix"])
 
 
 @pytest.fixture(scope="session")
 def omron_simulator() -> Generator[SimulatorProcess, None, None]:
     """EtherNet/IP simulator in Omron NJ/NX mode for the test session"""
-    simulator = SimulatorProcess("EtherNet/IP Omron NJ/NX", 44820, run_omron_simulator)
+    simulator = SimulatorProcess("EtherNet/IP Omron NJ/NX", SIMULATOR_PORTS["omron"], run_omron_simulator)
     try:
         simulator.start()
         yield simulator
@@ -337,7 +377,7 @@ def omron_simulator() -> Generator[SimulatorProcess, None, None]:
 def omron_plc_info():
     """PLCInfo for the Omron NJ/NX-mode EtherNet/IP simulator"""
     from plc_discovery.config import PLCInfo, Protocol
-    return PLCInfo(ip_address="127.0.0.1", protocol=Protocol.ETHERNET_IP, port=44820)
+    return PLCInfo(ip_address="127.0.0.1", protocol=Protocol.ETHERNET_IP, port=SIMULATOR_PORTS["omron"])
 
 
 @pytest.fixture
@@ -347,7 +387,7 @@ def ethernet_ip_plc_info():
     return PLCInfo(
         ip_address="127.0.0.1",
         protocol=Protocol.ETHERNET_IP,
-        port=44818,
+        port=SIMULATOR_PORTS["ethernet_ip"],
         manufacturer="Test Simulator",
     )
 
@@ -359,7 +399,7 @@ def s7_plc_info():
     return PLCInfo(
         ip_address="127.0.0.1",
         protocol=Protocol.S7,
-        port=1102,
+        port=SIMULATOR_PORTS["s7"],
         manufacturer="Test Simulator",
     )
 
@@ -376,5 +416,3 @@ def network_config():
         request_timeout_ms=3000,
         max_concurrent=1,
     )
-
-

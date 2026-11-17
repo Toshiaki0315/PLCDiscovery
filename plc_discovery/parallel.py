@@ -6,15 +6,12 @@ and proper error isolation.
 """
 
 import asyncio
-from typing import Callable, Dict, List, Optional, Tuple, Any
+from typing import Callable, Dict, List, Optional, Any
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from .config import (
-    Protocol, DeviceType, DeviceRange, DataPoint, PLCInfo,
-    NetworkConfig, ScanMode, StatusCode
-)
+from .config import DeviceRange, DataPoint, PLCInfo, NetworkConfig, ScanMode, StatusCode
 from .collector import PLCDataCollector, collect_item
 from .audit_log import get_audit_logger
 from .discovery import target_labels
@@ -34,18 +31,18 @@ class PLCScanResult:
     start_time: datetime
     end_time: datetime
     denied_statuses: Dict[str, StatusCode] = field(default_factory=dict)
-    
+
     @property
     def duration_ms(self) -> float:
         """Get scan duration in milliseconds"""
         return (self.end_time - self.start_time).total_seconds() * 1000
-    
+
     @property
     def statistics(self) -> Dict[str, Any]:
         """Get statistics for this scan"""
         total = len(self.data_points)
         success_count = sum(1 for dp in self.data_points if dp.status == StatusCode.OK)
-        
+
         return {
             "total_points": total,
             "success_count": success_count,
@@ -59,11 +56,11 @@ class PLCScanResult:
 class ParallelPLCScanner:
     """
     Parallel PLC scanner with concurrency control.
-    
+
     Scans multiple PLCs concurrently with configurable max_concurrent limit.
     Each PLC scan is isolated so errors in one don't affect others.
     """
-    
+
     def __init__(
         self,
         config: Optional[NetworkConfig] = None,
@@ -74,14 +71,14 @@ class ParallelPLCScanner:
         self._semaphore: Optional[asyncio.Semaphore] = None
         self._results: Dict[str, PLCScanResult] = {}
         self._audit = get_audit_logger()
-    
+
     def _report_progress(self, message: str, current: int = 0, total: int = 0):
         """Report progress"""
         if self.progress_callback:
             self.progress_callback(message, current, total)
         else:
             logger.info(f"{message} ({current}/{total})" if total else message)
-    
+
     async def scan_multiple_plcs(
         self,
         plcs: List[PLCInfo],
@@ -90,36 +87,36 @@ class ParallelPLCScanner:
     ) -> Dict[str, PLCScanResult]:
         """
         Scan multiple PLCs concurrently.
-        
+
         Args:
             plcs: List of PLCs to scan
             mode: Scan mode (FULL or RANGE)
             device_ranges: Device ranges for RANGE mode
-        
+
         Returns:
             Dictionary mapping each target's label (see target_labels) to its result
         """
         if not plcs:
             return {}
-        
+
         # Create semaphore for concurrency control
         max_concurrent = self.config.max_concurrent
         self._semaphore = asyncio.Semaphore(max_concurrent)
-        
+
         self._report_progress(
             f"Starting parallel scan of {len(plcs)} PLCs (max {max_concurrent} concurrent)",
             0, len(plcs)
         )
-        
+
         # Create tasks for each PLC
         tasks = [
             self._scan_single_plc_with_semaphore(plc, mode, device_ranges, i, len(plcs))
             for i, plc in enumerate(plcs)
         ]
-        
+
         # Run all tasks and gather results
         results = await asyncio.gather(*tasks, return_exceptions=True)
-        
+
         # Process results (keyed by IP, or "IP (PROTOCOL:port)" when several
         # targets share an IP, so no result is overwritten)
         for plc, label, result in zip(plcs, target_labels(plcs), results):
@@ -135,16 +132,16 @@ class ParallelPLCScanner:
                 )
             else:
                 self._results[label] = result
-        
+
         # Report completion
         successful = sum(1 for r in self._results.values() if r.success)
         self._report_progress(
             f"Parallel scan complete: {successful}/{len(plcs)} successful",
             len(plcs), len(plcs)
         )
-        
+
         return self._results
-    
+
     async def _scan_single_plc_with_semaphore(
         self,
         plc: PLCInfo,
@@ -156,7 +153,7 @@ class ParallelPLCScanner:
         """Scan a single PLC with semaphore for concurrency control"""
         async with self._semaphore:
             return await self._scan_single_plc(plc, mode, device_ranges, index, total)
-    
+
     async def _scan_single_plc(
         self,
         plc: PLCInfo,
@@ -172,9 +169,9 @@ class ParallelPLCScanner:
         denied_statuses: Dict[str, StatusCode] = {}
         error_message = None
         success = False
-        
+
         self._report_progress(f"Scanning {plc.ip_address}", index + 1, total)
-        
+
         try:
             async with PLCDataCollector(plc, self.config) as collector:
                 connected = collector.is_connected
@@ -184,7 +181,7 @@ class ParallelPLCScanner:
                     plc.port or 0,
                     connected
                 )
-                
+
                 if not connected:
                     reason = getattr(collector, "connect_error", None)
                     raise ConnectionError(
@@ -192,24 +189,24 @@ class ParallelPLCScanner:
                         f"({plc.protocol.name if plc.protocol else 'UNKNOWN'})"
                         + (f": {reason}" if reason else "")
                     )
-                
+
                 if mode == ScanMode.FULL:
                     data_points = await collector.collect_full_scan()
                 elif mode == ScanMode.RANGE and device_ranges:
                     for device_range in device_ranges:
                         data_points.extend(await collect_item(collector, device_range))
-                
+
                 denied_addresses = collector.get_denied_addresses()
                 denied_statuses = collector.get_denied_statuses()
                 success = True
-                
+
         except Exception as e:
             error_message = str(e)
             logger.error(f"Error scanning {plc.ip_address}: {e}")
             self._audit.log_error(f"Scan failed: {e}", {"plc_ip": plc.ip_address})
-        
+
         end_time = datetime.now()
-        
+
         result = PLCScanResult(
             plc_info=plc,
             data_points=data_points,
@@ -220,7 +217,7 @@ class ParallelPLCScanner:
             end_time=end_time,
             denied_statuses=denied_statuses,
         )
-        
+
         # Log scan completion
         stats = result.statistics
         self._audit.log_scan_complete(
@@ -230,13 +227,13 @@ class ParallelPLCScanner:
             stats["error_count"],
             result.duration_ms
         )
-        
+
         return result
-    
+
     def get_results(self) -> Dict[str, PLCScanResult]:
         """Get all scan results"""
         return self._results
-    
+
     def get_aggregate_statistics(self) -> Dict[str, Any]:
         """Get aggregate statistics across all PLCs"""
         total_plcs = len(self._results)
@@ -248,7 +245,7 @@ class ParallelPLCScanner:
         )
         total_denied = sum(len(r.denied_addresses) for r in self._results.values())
         total_duration = sum(r.duration_ms for r in self._results.values())
-        
+
         return {
             "total_plcs": total_plcs,
             "successful_plcs": successful_plcs,
@@ -272,14 +269,14 @@ async def scan_plcs_parallel(
 ) -> Dict[str, PLCScanResult]:
     """
     Convenience function to scan multiple PLCs in parallel.
-    
+
     Args:
         plcs: List of PLCs to scan
         mode: Scan mode
         device_ranges: Device ranges for RANGE mode
         config: Network configuration
         progress_callback: Progress callback
-    
+
     Returns:
         Dictionary mapping each target's label to its scan result: the IP,
         or "IP (PROTOCOL:port)" when several targets share an IP (see
@@ -287,5 +284,3 @@ async def scan_plcs_parallel(
     """
     scanner = ParallelPLCScanner(config, progress_callback)
     return await scanner.scan_multiple_plcs(plcs, mode, device_ranges)
-
-

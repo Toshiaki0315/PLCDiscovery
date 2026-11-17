@@ -45,6 +45,7 @@ from plc_gui_settings import JobOutputs, SettingsTabsMixin  # noqa: F401  (JobOu
 from plc_discovery.discovery import PLCDiscovery, discover_plcs, merge_discovery_results
 from plc_discovery.output import DEFAULT_OUTPUT_DIR, CSVExporter
 from plc_discovery.cli_args import parse_tag_list
+from plc_gui_tags import TagPickerDialog, fetch_tag_list
 from plc_discovery.utils import MAX_IP_RANGE_HOSTS, ip_range_error, melsec_address, target_address_error
 from plc_scanner import BYTE_ORDER_MAP, DATA_TYPE_MAP, apply_data_type_conversion, status_report_message
 
@@ -158,7 +159,11 @@ class PLCScannerApp(SettingsTabsMixin):
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title(APP_TITLE)
-        self.root.geometry("1080x760")
+        # Fits the collect tab (tag field) and the discovery table; capped to
+        # the screen so small laptop displays still show the whole window
+        width = min(1160, self.root.winfo_screenwidth() - 40)
+        height = min(860, self.root.winfo_screenheight() - 80)
+        self.root.geometry(f"{width}x{height}")
         self.root.minsize(900, 620)
 
         self.ui_queue: "queue.Queue" = queue.Queue()
@@ -334,9 +339,10 @@ class PLCScannerApp(SettingsTabsMixin):
         self.lbl_discover_count = ttk.Label(btns, text="")
         self.lbl_discover_count.pack(side=tk.RIGHT)
 
-        cols = ("ip", "manufacturer", "model", "cpu", "firmware", "protocol", "port", "mac")
-        headings = ("IPアドレス", "メーカー", "機種", "型式・CPU", "ファームウェア", "プロトコル", "ポート", "MACアドレス")
-        widths = (120, 140, 180, 150, 90, 110, 60, 130)
+        cols = ("ip", "manufacturer", "model", "cpu", "firmware", "protocol", "port", "read", "mac")
+        headings = ("IPアドレス", "メーカー", "機種", "型式・CPU", "ファームウェア", "プロトコル", "ポート",
+                    "読み方", "MACアドレス")
+        widths = (100, 130, 170, 140, 80, 100, 50, 170, 110)
         self.tree_plc = self._make_tree(f, cols, headings, widths)
         self.tree_plc.bind("<<TreeviewSelect>>", lambda e: self.btn_to_collect.configure(
             state=tk.NORMAL if self.tree_plc.selection() else tk.DISABLED))
@@ -394,6 +400,8 @@ class PLCScannerApp(SettingsTabsMixin):
         ttk.Label(tag_row, text="タグ（EtherNet/IP）").pack(side=tk.LEFT)
         self.ent_tags = ttk.Entry(tag_row, textvariable=self.var_tags, width=24)
         self.ent_tags.pack(side=tk.LEFT, padx=(4, 0))
+        self.btn_tag_list = ttk.Button(tag_row, text="一覧…", width=5, command=self._pick_tags)
+        self.btn_tag_list.pack(side=tk.LEFT, padx=(4, 0))
         ttk.Label(mode, text="カンマ区切り。入力するとアドレスの代わりに読みます",
                   style="Hint.TLabel").grid(row=4, column=0, columnspan=4, sticky=tk.W, padx=(20, 0))
 
@@ -518,7 +526,7 @@ class PLCScannerApp(SettingsTabsMixin):
     def _on_mode_change(self) -> None:
         is_range = self.var_mode.get() == "range"
         st = tk.NORMAL if is_range else tk.DISABLED
-        for w in (self.ent_start, self.ent_end, self.chk_periodic, self.ent_tags):
+        for w in (self.ent_start, self.ent_end, self.chk_periodic, self.ent_tags, self.btn_tag_list):
             w.configure(state=st)
         self.cb_device.configure(state="readonly" if is_range else tk.DISABLED)
         self.ent_interval.configure(state=tk.NORMAL if is_range and self.var_periodic.get() else tk.DISABLED)
@@ -697,7 +705,7 @@ class PLCScannerApp(SettingsTabsMixin):
             self.tree_plc.insert("", tk.END, iid=str(i), values=(
                 d["ip_address"], d["manufacturer"] or "-", d["model"] or "-",
                 d.get("cpu_type") or "-", d.get("firmware_version") or "-",
-                d["protocol"] or "-", d["port"], d["mac_address"] or "-"))
+                d["protocol"] or "-", d["port"], d.get("read_method") or "-", d["mac_address"] or "-"))
         if plcs:
             hosts = len({p.ip_address for p in plcs})
             count = f"{len(plcs)} 件を検出" + (f"（{hosts} 台）" if hosts != len(plcs) else "")
@@ -710,6 +718,41 @@ class PLCScannerApp(SettingsTabsMixin):
             if self.var_scope.get() == "segment":
                 hint = "（このPCで動かしているシミュレータは「IP範囲を指定」に 127.0.0.1 と入力して探索してください）"
             self.var_status.set("探索完了: PLCは見つかりませんでした" + hint)
+
+    # ----- タグ一覧 -----------------------------------------
+
+    def _pick_tags(self) -> None:
+        """Logix のタグ一覧を読み、選んだタグをタグ欄に入れる（読み取りのみ）"""
+        try:
+            config = self._network_config()
+            ip = self.var_target.get().strip()
+            if not ip or target_address_error(ip):
+                raise ValueError("タグ一覧を読むには、接続先PLCのIPアドレスを入力してください。")
+            proto_name = self.var_protocol.get()
+            if proto_name in Protocol.__members__ and proto_name != Protocol.ETHERNET_IP.name:
+                raise ValueError("タグ一覧を読めるのは EtherNet/IP（Logix）だけです。プロトコルを確認してください。")
+            port = self._int_field(self.var_port, "ポート", 1) if self.var_port.get().strip() else None
+        except ValueError as e:
+            messagebox.showwarning("入力エラー", str(e))
+            return
+
+        async def job():
+            tags, reason = await fetch_tag_list(ip, port, config)
+            self._post("tag_list", tags, reason)
+
+        self._run_job(job(), f"{ip} のタグ一覧を読んでいます...")
+
+    def _show_tag_list(self, tags: Optional[List[str]], reason: str) -> None:
+        if not tags:
+            self.var_status.set("タグ一覧を取得できませんでした")
+            messagebox.showinfo("タグ一覧", reason)
+            return
+        self.var_status.set(f"タグ一覧: {len(tags)} 件")
+
+        def apply(selected: List[str]) -> None:
+            self.var_tags.set(", ".join(selected))
+
+        TagPickerDialog(self.root, tags, parse_tag_list(self.var_tags.get()), apply)
 
     # ----- データ収集 -----------------------------------------
 
@@ -978,6 +1021,8 @@ class PLCScannerApp(SettingsTabsMixin):
                     self._show_discovered(item[1], item[2])
                 elif kind == "data":
                     self._show_data(*item[1:])
+                elif kind == "tag_list":
+                    self._show_tag_list(item[1], item[2])
                 elif kind == "db_status":
                     self.var_db_status.set(item[1])
                 elif kind == "done":

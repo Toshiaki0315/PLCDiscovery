@@ -7,7 +7,7 @@ A2: a collector whose reconnect failed recovers once the PLC is back,
 """
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 

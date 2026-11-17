@@ -11,8 +11,7 @@ This module provides comprehensive data collection from PLCs with:
 
 import asyncio
 import functools
-from typing import Dict, List, Optional, Callable, Type
-import logging
+from typing import Dict, List, Optional, Callable
 
 from .config import (
     Protocol, DeviceType, DeviceRange, DataPoint, StatusCode,
@@ -40,11 +39,11 @@ PROTOCOL_HANDLERS: Dict[Protocol, Callable[..., BaseProtocolHandler]] = {
 class PLCDataCollector:
     """
     PLC Data Collector
-    
+
     Collects device data from PLCs with automatic error recovery
     using binary search algorithm.
     """
-    
+
     def __init__(
         self,
         plc_info: PLCInfo,
@@ -59,27 +58,27 @@ class PLCDataCollector:
         self._denied_addresses: set = set()
         self._denied_statuses: Dict[str, StatusCode] = {}
         self._progress_callback: Optional[Callable[[str, int, int], None]] = None
-    
+
     def set_progress_callback(self, callback: Callable[[str, int, int], None]):
         """Set callback for progress updates"""
         self._progress_callback = callback
-    
+
     def _report_progress(self, message: str, current: int = 0, total: int = 0):
         """Report progress to callback if set"""
         if self._progress_callback:
             self._progress_callback(message, current, total)
         else:
             logger.info(f"{message} ({current}/{total})" if total else message)
-    
+
     @property
     def is_connected(self) -> bool:
         """True when a protocol handler is connected to the PLC"""
         return self._handler is not None and self._handler.is_connected
-    
+
     async def connect(self) -> bool:
         """
         Connect to PLC using appropriate protocol handler.
-        
+
         Returns:
             True if connection successful
         """
@@ -87,12 +86,12 @@ class PLCDataCollector:
         if not protocol:
             logger.error(f"No protocol specified for {self.plc_info.ip_address}")
             return False
-        
+
         handler_class = PROTOCOL_HANDLERS.get(protocol)
         if not handler_class:
             logger.error(f"No handler for protocol: {protocol}")
             return False
-        
+
         try:
             self._handler = handler_class(
                 ip_address=self.plc_info.ip_address,
@@ -106,9 +105,9 @@ class PLCDataCollector:
             self.connect_error = f"invalid options {self.plc_info.options}: {e}"
             logger.error(f"Invalid options for {protocol.name}: {self.plc_info.options} ({e})")
             return False
-        
+
         return await self._handler.connect()
-    
+
     async def disconnect(self):
         """Disconnect from PLC"""
         if self._handler:
@@ -117,11 +116,11 @@ class PLCDataCollector:
             self._denied_statuses = self._handler.get_denied_statuses()
             await self._handler.disconnect()
             self._handler = None
-    
+
     async def _ensure_link(self) -> bool:
         """
         Make sure the handler is connected before reading.
-        
+
         A handler whose reconnect failed (PLC power-cycled, cable pulled)
         stays disconnected; it is reconnected here on every collection so a
         periodic scan recovers as soon as the PLC is reachable again.
@@ -138,7 +137,7 @@ class PLCDataCollector:
         self._handler.reset_circuit_breaker()
         logger.info(f"Reconnected to {self.plc_info.ip_address}")
         return True
-    
+
     def _unreachable_points(self, device_range: DeviceRange) -> List[DataPoint]:
         """NG_COMM_ERROR points for a range that could not be read (not learned)"""
         logger.warning(
@@ -150,23 +149,23 @@ class PLCDataCollector:
             device_range.device_type, device_range.start_address, device_range.end_address,
             StatusCode.NG_COMM_ERROR, learn=False
         )
-    
+
     async def collect_full_scan(self) -> List[DataPoint]:
         """
         Perform full scan of all default device ranges.
-        
+
         This mode is intended for factory downtime and collects
         all available device data.
-        
+
         Returns:
             List of DataPoint objects
         """
         if not self._handler:
             logger.error("Not connected to PLC")
             return []
-        
+
         protocol = self.plc_info.protocol
-        
+
         # Logix (symbolic tags, no numeric addresses): read every tag of the
         # controller's tag list instead of the data-file ranges. Devices
         # without a tag list (Omron NJ/NX) fall through: their variables are
@@ -180,49 +179,49 @@ class PLCDataCollector:
             self._report_progress(
                 f"Full scan complete. Collected {len(self._collected_data)} data points.", 1, 1)
             return self._collected_data
-        
+
         device_ranges = DEFAULT_DEVICE_RANGES.get(protocol, [])
-        
+
         if not device_ranges:
             logger.warning(f"No default device ranges for protocol: {protocol}")
             return []
-        
+
         self._collected_data = []
         total_ranges = len(device_ranges)
-        
+
         if not await self._ensure_link():
             # Report every address as a communication error instead of
             # returning nothing, so the output shows the PLC was unreachable
             for device_range in device_ranges:
                 self._collected_data.extend(self._unreachable_points(device_range))
             return self._collected_data
-        
+
         self._report_progress(
             f"Starting full scan of {self.plc_info.ip_address}",
             0, total_ranges
         )
-        
+
         for i, device_range in enumerate(device_ranges):
             self._report_progress(
                 f"Scanning {device_range.device_type.value} "
                 f"({device_range.start_address}-{device_range.end_address})",
                 i + 1, total_ranges
             )
-            
+
             try:
                 data_points = await self._handler.read_device_range(device_range)
                 self._collected_data.extend(data_points)
             except Exception as e:
                 logger.error(f"Error scanning {device_range.device_type.value}: {e}")
                 # Continue with next range - don't stop on errors
-        
+
         self._report_progress(
             f"Full scan complete. Collected {len(self._collected_data)} data points.",
             total_ranges, total_ranges
         )
-        
+
         return self._collected_data
-    
+
     async def collect_range(
         self,
         device_type: DeviceType,
@@ -231,44 +230,44 @@ class PLCDataCollector:
     ) -> List[DataPoint]:
         """
         Collect data from a specific device range.
-        
+
         Args:
             device_type: Type of device to read (D, M, etc.)
             start_address: Starting address
             end_address: Ending address
-        
+
         Returns:
             List of DataPoint objects
         """
         if not self._handler:
             logger.error("Not connected to PLC")
             return []
-        
+
         device_range = DeviceRange(device_type, start_address, end_address)
-        
+
         if not await self._ensure_link():
             data_points = self._unreachable_points(device_range)
             self._collected_data.extend(data_points)
             return data_points
-        
+
         self._report_progress(
             f"Reading {device_type.value}{start_address}-{device_type.value}{end_address}"
         )
-        
+
         try:
             data_points = await self._handler.read_device_range(device_range)
             self._collected_data.extend(data_points)
-            
+
             self._report_progress(
                 f"Collected {len(data_points)} data points from "
                 f"{device_type.value}{start_address}-{device_type.value}{end_address}"
             )
-            
+
             return data_points
         except Exception as e:
             logger.error(f"Error collecting range: {e}")
             return []
-    
+
     async def collect_tags(self, tags: List[str]) -> List[DataPoint]:
         """
         Read symbolic tags (EtherNet/IP Logix controllers). On other
@@ -287,7 +286,7 @@ class PLCDataCollector:
                       for t in tags]
         self._collected_data.extend(points)
         return points
-    
+
     async def collect_with_interval(
         self,
         device_type: DeviceType,
@@ -299,7 +298,7 @@ class PLCDataCollector:
     ) -> List[List[DataPoint]]:
         """
         Collect data repeatedly at specified intervals.
-        
+
         Args:
             device_type: Type of device to read
             start_address: Starting address
@@ -307,7 +306,7 @@ class PLCDataCollector:
             interval_seconds: Interval between reads
             duration_seconds: Total duration (optional)
             max_iterations: Maximum number of iterations (optional)
-        
+
         Returns:
             List of DataPoint lists (one per iteration)
         """
@@ -315,58 +314,58 @@ class PLCDataCollector:
         iteration = 0
         loop = asyncio.get_running_loop()
         start_time = loop.time()
-        
+
         while True:
             iteration += 1
             self._report_progress(f"Iteration {iteration}")
-            
+
             # Collect data (keep only this iteration in _collected_data)
             self.clear_data()
             data_points = await self.collect_range(
                 device_type, start_address, end_address
             )
             all_results.append(data_points)
-            
+
             # Check termination conditions before waiting
             if max_iterations and iteration >= max_iterations:
                 break
-            
+
             # Fixed-rate schedule: the next iteration starts interval_seconds
             # after the previous one started, regardless of read duration
             next_start = start_time + iteration * interval_seconds
             if duration_seconds and next_start - start_time >= duration_seconds:
                 break
-            
+
             await asyncio.sleep(max(0.0, next_start - loop.time()))
-        
+
         return all_results
-    
+
     def get_collected_data(self) -> List[DataPoint]:
         """Get all collected data points"""
         return self._collected_data
-    
+
     def get_denied_addresses(self) -> set:
         """Get addresses that were marked as inaccessible"""
         if self._handler:
             return self._handler.get_denied_addresses()
         return self._denied_addresses
-    
+
     def get_denied_statuses(self) -> Dict[str, StatusCode]:
         """Get inaccessible addresses with their status"""
         if self._handler:
             return self._handler.get_denied_statuses()
         return dict(self._denied_statuses)
-    
+
     def get_statistics(self) -> Dict:
         """
         Get collection statistics.
-        
+
         Returns:
             Dictionary with statistics
         """
         total = len(self._collected_data)
         counts = status_counts(self._collected_data)
-        
+
         return {
             "total_points": total,
             "success_count": counts[StatusCode.OK],
@@ -377,16 +376,16 @@ class PLCDataCollector:
             "success_rate": success_rate_text(counts[StatusCode.OK], total),
             "denied_addresses": len(self.get_denied_addresses()),
         }
-    
+
     def clear_data(self):
         """Clear collected data"""
         self._collected_data = []
-    
+
     async def __aenter__(self):
         """Async context manager entry"""
         await self.connect()
         return self
-    
+
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Async context manager exit"""
         await self.disconnect()
@@ -405,7 +404,7 @@ async def collect_plc_data(
 ) -> List[DataPoint]:
     """
     Convenience function to collect PLC data.
-    
+
     Args:
         plc_info: PLC information (IP, protocol, etc.)
         mode: Scan mode (full or range)
@@ -415,14 +414,14 @@ async def collect_plc_data(
         interval_seconds: Interval for repeated collection
         config: Network configuration
         progress_callback: Progress callback function
-    
+
     Returns:
         List of DataPoint objects
     """
     async with PLCDataCollector(plc_info, config) as collector:
         if progress_callback:
             collector.set_progress_callback(progress_callback)
-        
+
         if mode == ScanMode.FULL:
             return await collector.collect_full_scan()
         elif mode == ScanMode.RANGE and device_type:
@@ -451,5 +450,3 @@ async def collect_item(collector, item) -> List[DataPoint]:
 def get_handler_for_protocol(protocol: Protocol) -> Optional[Callable[..., BaseProtocolHandler]]:
     """Get the handler factory (class or partial) for a given protocol"""
     return PROTOCOL_HANDLERS.get(protocol)
-
-

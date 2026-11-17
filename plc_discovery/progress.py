@@ -23,8 +23,6 @@ try:
     )
     from rich.table import Table
     from rich.panel import Panel
-    from rich.live import Live
-    from rich.layout import Layout
     from rich.text import Text
     from rich import box
     from rich.markup import escape
@@ -51,25 +49,25 @@ def _cell(value: Any) -> "Text":
 
 class SimpleProgress:
     """Simple fallback progress display"""
-    
+
     def __init__(self):
         self._current = 0
         self._total = 0
         self._message = ""
         self._last_update = 0
-    
+
     def update(self, message: str, current: int = 0, total: int = 0):
         """Update progress"""
         self._message = message
         self._current = current
         self._total = total
-        
+
         # Rate limit updates
         now = time.time()
         if now - self._last_update < 0.1:
             return
         self._last_update = now
-        
+
         if total > 0:
             percent = current / total * 100
             bar_width = 30
@@ -79,11 +77,11 @@ class SimpleProgress:
             print(f"\r[{bar}] {percent:5.1f}% {message}", end="", flush=True)
         else:
             print(f"\r{message}...", end="", flush=True)
-    
+
     def complete(self, message: str = "Complete"):
         """Mark as complete"""
         print(f"\r{message}" + " " * 50)
-    
+
     def error(self, message: str):
         """Display error"""
         marker = "✗" if _stream_can_encode("✗") else "[ERROR]"
@@ -109,7 +107,7 @@ _ASCII_MARKERS = {"ok": "[OK]", "info": "[INFO]", "warning": "[WARN]", "error": 
 
 class RichProgressDisplay:
     """Rich progress display with detailed status"""
-    
+
     def __init__(self, title: str = "PLC Scanner", use_rich: bool = True):
         """
         Args:
@@ -124,14 +122,14 @@ class RichProgressDisplay:
         self._progress = None
         self._task_id = None
         self._status_table = None
-    
+
     def print(self, message: str, style: str = ""):
         """Print message"""
         if self.console:
             self.console.print(_safe(message), style=style, markup=False)
         else:
             print(_safe(message))
-    
+
     def print_header(self):
         """Print application header"""
         if self.console:
@@ -145,13 +143,13 @@ class RichProgressDisplay:
             print("PLC Discovery Tool")
             print("Factory PLC Auto-Detection and Data Collection")
             print("=" * 60)
-    
+
     def print_discovery_results(self, plcs: List[Dict[str, Any]]):
         """Print discovery results as table"""
         if not plcs:
             self.print("No PLCs discovered.", style="yellow")
             return
-        
+
         if self.console:
             table = Table(title="Discovered PLCs", box=box.ROUNDED)
             table.add_column("IP Address", style="cyan")
@@ -159,7 +157,7 @@ class RichProgressDisplay:
             table.add_column("Manufacturer", style="magenta")
             table.add_column("Model", style="blue")
             table.add_column("Port", justify="right")
-            
+
             for plc in plcs:
                 table.add_row(
                     _cell(plc.get("ip_address", "")),
@@ -168,13 +166,13 @@ class RichProgressDisplay:
                     _cell(plc.get("model", "Unknown")),
                     _cell(plc.get("port", "")),
                 )
-            
+
             self.console.print(table)
         else:
             print(f"\nDiscovered {len(plcs)} PLCs:")
             for plc in plcs:
                 print(_safe(f"  {plc.get('ip_address')}: {plc.get('protocol')} - {plc.get('manufacturer', 'Unknown')}"))
-    
+
     def print_scan_results(self, results: Dict[str, Any]):
         """Print scan results"""
         if self.console:
@@ -185,13 +183,13 @@ class RichProgressDisplay:
             table.add_column("Success", justify="right")
             table.add_column("Errors", justify="right", style="red")
             table.add_column("Duration", justify="right")
-            
+
             for ip, result in results.items():
                 stats = result.get("statistics", {})
                 status = (f"{self.markers['ok']} OK" if result.get("success")
                           else f"{self.markers['error']} Failed")
                 status_style = "green" if result.get("success") else "red"
-                
+
                 table.add_row(
                     _cell(ip),
                     Text(status, style=status_style),
@@ -200,7 +198,7 @@ class RichProgressDisplay:
                     str(stats.get("error_count", 0)),
                     f"{stats.get('duration_ms', 0):.0f}ms",
                 )
-            
+
             self.console.print(table)
         else:
             print("\nScan Results:")
@@ -208,25 +206,25 @@ class RichProgressDisplay:
                 stats = result.get("statistics", {})
                 status = "OK" if result.get("success") else "Failed"
                 print(f"  {ip}: {status} - {stats.get('total_points', 0)} points")
-    
+
     def print_statistics(self, stats: Dict[str, Any]):
         """Print statistics summary"""
         if self.console:
             table = Table(title="Summary Statistics", box=box.SIMPLE)
             table.add_column("Metric", style="cyan")
             table.add_column("Value", justify="right", style="green")
-            
+
             for key, value in stats.items():
                 # Format key
                 formatted_key = key.replace("_", " ").title()
                 table.add_row(_cell(formatted_key), _cell(value))
-            
+
             self.console.print(table)
         else:
             print("\nStatistics:")
             for key, value in stats.items():
                 print(f"  {key}: {value}")
-    
+
     @contextmanager
     def progress_context(self, description: str = "Processing"):
         """Context manager for progress tracking"""
@@ -246,13 +244,13 @@ class RichProgressDisplay:
         else:
             simple = SimpleProgress()
             yield simple
-    
+
     def create_task(self, description: str, total: int = 100) -> int:
         """Create a progress task"""
         if self._progress:
             return self._progress.add_task(description, total=total)
         return 0
-    
+
     def update_task(self, task_id: int, advance: int = 1, description: str = None):
         """Update progress task"""
         if self._progress:
@@ -260,7 +258,7 @@ class RichProgressDisplay:
             if description:
                 kwargs["description"] = description
             self._progress.update(task_id, **kwargs)
-    
+
     def _print_marked(self, kind: str, style: str, message: str, label: str = "") -> None:
         marker = self.markers[kind]
         if self.markers is _ASCII_MARKERS:
@@ -270,19 +268,19 @@ class RichProgressDisplay:
             self.console.print(f"[{style}]{escape(prefix)}[/{style}] {escape(_safe(message))}")
         else:
             print(f"{prefix} {_safe(message)}")
-    
+
     def print_error(self, message: str):
         """Print error message"""
         self._print_marked("error", "bold red", message, "Error:")
-    
+
     def print_warning(self, message: str):
         """Print warning message"""
         self._print_marked("warning", "yellow", message, "Warning:")
-    
+
     def print_success(self, message: str):
         """Print success message"""
         self._print_marked("ok", "bold green", message)
-    
+
     def print_info(self, message: str):
         """Print info message"""
         self._print_marked("info", "blue", message)
@@ -316,5 +314,3 @@ def get_display() -> RichProgressDisplay:
 def is_rich_available() -> bool:
     """Check if rich library is available"""
     return RICH_AVAILABLE
-
-

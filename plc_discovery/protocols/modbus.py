@@ -44,7 +44,7 @@ MODBUS_BIT_TYPES = frozenset({"coil", "discrete"})
 def modbus_unit_kwargs(method, unit_id: int) -> dict:
     """
     Keyword argument selecting the unit/device for a pymodbus client call.
-    
+
     The name changed across pymodbus 3.x: ``slave=`` (3.0 - 3.9) became
     ``device_id=`` (3.10+). Pick whichever the installed version accepts.
     """
@@ -73,18 +73,17 @@ MODBUS_MAX_READ_REGISTERS = 125  # Protocol maximum (reads use SAFE_READ_WORDS =
 MODBUS_MAX_READ_COILS = 2000     # Maximum coils per request
 
 
-
 class ModbusHandler(BaseProtocolHandler):
     """
     Modbus/TCP Protocol Handler
-    
+
     Implements communication with Modbus/TCP compatible PLCs
     using the pymodbus library.
     """
-    
+
     protocol = Protocol.MODBUS_TCP
     MAX_ADDRESS = 0xFFFF  # 16-bit register/coil address
-    
+
     def __init__(
         self,
         ip_address: str,
@@ -95,12 +94,12 @@ class ModbusHandler(BaseProtocolHandler):
         super().__init__(ip_address, port or PROTOCOL_PORTS.get(Protocol.MODBUS_TCP, MODBUS_PORT), **kwargs)
         self._client = None
         self._unit_id = unit_id
-    
+
     async def connect(self) -> bool:
         """Establish Modbus/TCP connection"""
         try:
             from pymodbus.client import ModbusTcpClient
-            
+
             def _connect():
                 client = ModbusTcpClient(
                     host=self.ip_address,
@@ -113,10 +112,10 @@ class ModbusHandler(BaseProtocolHandler):
                 if client.connect():
                     return client
                 return None
-            
+
             loop = asyncio.get_running_loop()
             self._client = await loop.run_in_executor(None, _connect)
-            
+
             if self._client:
                 self._connected = True
                 logger.info(f"Modbus connected to {self.ip_address}:{self.port}")
@@ -124,7 +123,7 @@ class ModbusHandler(BaseProtocolHandler):
             else:
                 logger.error(f"Modbus connection failed: {self.ip_address}:{self.port}")
                 return False
-            
+
         except ImportError:
             logger.error("pymodbus library not installed")
             return False
@@ -132,14 +131,14 @@ class ModbusHandler(BaseProtocolHandler):
             logger.error(f"Modbus connection failed: {e}")
             self._connected = False
             return False
-    
+
     async def disconnect(self):
         """Close Modbus/TCP connection"""
         if self._client:
             try:
                 def _disconnect():
                     self._client.close()
-                
+
                 loop = asyncio.get_running_loop()
                 await loop.run_in_executor(None, _disconnect)
             except Exception as e:
@@ -148,7 +147,7 @@ class ModbusHandler(BaseProtocolHandler):
                 self._client = None
                 self._connected = False
                 logger.info(f"Modbus disconnected from {self.ip_address}")
-    
+
     async def read_device_raw(
         self,
         device_type: DeviceType,
@@ -157,12 +156,12 @@ class ModbusHandler(BaseProtocolHandler):
     ) -> Tuple[Optional[List[int]], StatusCode]:
         """
         Read device data using Modbus/TCP protocol.
-        
+
         Args:
             device_type: Device type (D, HR, IR, M, etc.)
             start_address: Starting address
             count: Number of points to read
-        
+
         Returns:
             Tuple of (data list or None, status code)
         """
@@ -170,13 +169,13 @@ class ModbusHandler(BaseProtocolHandler):
             return None, StatusCode.NG_COMM_ERROR
         if not self._connected or not self._client:
             return None, StatusCode.NG_COMM_ERROR
-        
+
         # Get Modbus device type
         modbus_type = MODBUS_DEVICE_MAP.get(device_type)
         if not modbus_type:
             logger.warning(f"Unsupported device type for Modbus: {device_type}")
             return None, StatusCode.NG_UNSUPPORTED
-        
+
         try:
             def _read():
                 method = getattr(self._client, MODBUS_READ_METHODS[modbus_type])
@@ -185,12 +184,12 @@ class ModbusHandler(BaseProtocolHandler):
                     count=count,
                     **modbus_unit_kwargs(method, self._unit_id)
                 )
-            
+
             result = await self._run_blocking(_read)
-            
+
             if result is None:
                 return None, StatusCode.NG_COMM_ERROR
-            
+
             # Check for errors
             if result.isError():
                 # Get exception code if available
@@ -209,7 +208,7 @@ class ModbusHandler(BaseProtocolHandler):
                 else:
                     logger.debug(f"Modbus error: exception_code={exception_code}")
                     return None, StatusCode.NG_COMM_ERROR
-            
+
             # Extract data
             if modbus_type in MODBUS_BIT_TYPES:
                 # pymodbus pads the bit list to a multiple of 8; keep only
@@ -217,9 +216,9 @@ class ModbusHandler(BaseProtocolHandler):
                 data = [1 if bit else 0 for bit in result.bits[:count]]
             else:
                 data = list(result.registers)
-            
+
             return data, StatusCode.OK
-            
+
         except asyncio.TimeoutError:
             logger.debug(f"Modbus read timeout: {device_type.value}{start_address}")
             return None, StatusCode.NG_TIMEOUT
@@ -231,13 +230,13 @@ class ModbusHandler(BaseProtocolHandler):
 class ModbusRTUOverTCPHandler(ModbusHandler):
     """
     Modbus RTU over TCP Handler
-    
+
     For devices that use Modbus RTU framing over TCP
     (common in serial-to-Ethernet converters).
     """
-    
+
     def __init__(self, ip_address: str, port: Optional[int] = None, **kwargs):
         super().__init__(ip_address, port or 502, **kwargs)
-    
+
     # Note: RTU over TCP uses the same client as standard Modbus TCP
     # The framing is handled by some serial gateways transparently

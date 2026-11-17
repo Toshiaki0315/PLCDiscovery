@@ -2,7 +2,6 @@
 Regression tests for the fourth review's minor findings.
 """
 
-import asyncio
 import json
 import socket
 import threading

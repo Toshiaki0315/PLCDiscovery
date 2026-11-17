@@ -100,7 +100,7 @@ def _last_octet(address: str) -> int:
 def probe_fins_udp(ip: str, port: int, timeout: float) -> bool:
     """
     FINS/UDP memory area read of DM0 (1 word); any matching FINS reply counts.
-    
+
     Node numbers follow the same rule as FINSHandler (Omron automatic address
     conversion): DA1 = last octet of the PLC address, SA1 = last octet of
     the local address used to reach it.
@@ -135,7 +135,7 @@ def probe_fins_udp(ip: str, port: int, timeout: float) -> bool:
 def parse_eip_identity(reply: bytes) -> Optional[dict]:
     """
     Parse an EtherNet/IP ListIdentity reply (CIP identity item 0x0C).
-    
+
     Returns vendor_id, device_type, product_code, revision ("major.minor"),
     serial, product_name and - when names are known to pycomm3 - vendor and
     product_type. The trailing State byte is optional (some devices and the

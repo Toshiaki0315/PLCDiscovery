@@ -8,13 +8,9 @@ connects to any port). Addresses are word indexes (byte offset =
 address * 2), so the simulator denies bytes 1000-1101 = words 500-550.
 """
 
-import asyncio
 import pytest
 
-from plc_discovery.config import (
-    Protocol, DeviceType, ScanMode, PLCInfo, DataPoint,
-    NetworkConfig, DeviceRange, StatusCode
-)
+from plc_discovery.config import DeviceType, StatusCode
 from plc_discovery.collector import PLCDataCollector
 
 pytestmark = [
@@ -22,17 +18,19 @@ pytestmark = [
     pytest.mark.asyncio,
 ]
 
+
 class TestS7Connection:
     """Test S7 connection handling"""
-    
+
     async def test_connect_success(self, s7_simulator, s7_plc_info, network_config):
         """Test successful connection"""
         async with PLCDataCollector(s7_plc_info, network_config) as collector:
             assert collector._handler.is_connected is True
 
+
 class TestS7DataRead:
     """Test S7 data reading"""
-    
+
     async def test_read_data_block(self, s7_simulator, s7_plc_info, network_config):
         """Test reading data blocks"""
         async with PLCDataCollector(s7_plc_info, network_config) as collector:
@@ -41,9 +39,10 @@ class TestS7DataRead:
         ok_count = sum(1 for dp in data_points if dp.status == StatusCode.OK)
         assert ok_count == 100
 
+
 class TestS7DeniedAddresses:
     """Test S7 denied address handling"""
-    
+
     async def test_denied_address_range(self, s7_simulator, s7_plc_info, network_config):
         """Test handling of denied address range (500-550)"""
         async with PLCDataCollector(s7_plc_info, network_config) as collector:
@@ -56,10 +55,10 @@ class TestS7DeniedAddresses:
         """Test binary search with mixed valid/invalid addresses"""
         async with PLCDataCollector(s7_plc_info, network_config) as collector:
             data_points = await collector.collect_range(DeviceType.DB, 480, 570)
-        
+
         assert len(data_points) == 91
         ok_count = sum(1 for dp in data_points if dp.status == StatusCode.OK)
         denied_count = sum(1 for dp in data_points if dp.status == StatusCode.NG_ILLEGAL_ADDR)
-        
+
         assert ok_count == 40  # 480-499 (20) and 551-570 (20)
-        assert denied_count == 51 # 500-550 (51)
+        assert denied_count == 51  # 500-550 (51)

@@ -120,6 +120,7 @@ def test_s7_identity_query_is_bounded():
     discovery = PLCDiscovery(NetworkConfig(discovery_timeout_ms=100))
     client = MagicMock()
     client.connect.side_effect = lambda *a: time.sleep(2)   # host that never answers
+
     async def run():
         # Timed inside the loop: asyncio.run() itself waits for the worker
         # thread when it shuts down, discovery does not

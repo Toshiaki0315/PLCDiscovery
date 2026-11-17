@@ -2,18 +2,25 @@
 Tests for config module
 """
 
-import pytest
 from plc_discovery.config import (
-    Protocol, DeviceType, StatusCode, ScanMode,
-    NetworkConfig, DeviceRange, PLCInfo, DataPoint,
-    PROTOCOL_PORTS, MAX_READ_WORDS, SAFE_READ_WORDS,
-    MANUFACTURER_OUI, DEFAULT_DEVICE_RANGES
+    Protocol,
+    DeviceType,
+    StatusCode,
+    NetworkConfig,
+    DeviceRange,
+    PLCInfo,
+    DataPoint,
+    PROTOCOL_PORTS,
+    MAX_READ_WORDS,
+    SAFE_READ_WORDS,
+    MANUFACTURER_OUI,
+    DEFAULT_DEVICE_RANGES,
 )
 
 
 class TestProtocolEnum:
     """Tests for Protocol enum"""
-    
+
     def test_protocol_values(self):
         """Test all protocol values exist"""
         assert Protocol.SLMP
@@ -21,7 +28,7 @@ class TestProtocolEnum:
         assert Protocol.MODBUS_TCP
         assert Protocol.S7
         assert Protocol.FINS
-    
+
     def test_protocol_ports_mapping(self):
         """Test protocol to port mapping"""
         assert PROTOCOL_PORTS[Protocol.SLMP] == 5001
@@ -32,7 +39,7 @@ class TestProtocolEnum:
 
 class TestDeviceTypeEnum:
     """Tests for DeviceType enum"""
-    
+
     def test_device_types_exist(self):
         """Test all device types exist"""
         assert DeviceType.D.value == "D"
@@ -47,7 +54,7 @@ class TestDeviceTypeEnum:
 
 class TestStatusCodeEnum:
     """Tests for StatusCode enum"""
-    
+
     def test_status_codes(self):
         """Test all status codes exist"""
         assert StatusCode.OK.value == "OK"
@@ -59,7 +66,7 @@ class TestStatusCodeEnum:
 
 class TestNetworkConfig:
     """Tests for NetworkConfig dataclass"""
-    
+
     def test_default_values(self):
         """Test default configuration values"""
         config = NetworkConfig()
@@ -69,7 +76,7 @@ class TestNetworkConfig:
         assert config.retry_interval_ms == 200
         assert config.request_timeout_ms == 5000
         assert config.max_concurrent == 1
-    
+
     def test_custom_values(self):
         """Test custom configuration values"""
         config = NetworkConfig(
@@ -84,33 +91,33 @@ class TestNetworkConfig:
 
 class TestDeviceRange:
     """Tests for DeviceRange dataclass"""
-    
+
     def test_device_range_creation(self):
         """Test DeviceRange creation"""
         dr = DeviceRange(DeviceType.D, 0, 999)
         assert dr.device_type == DeviceType.D
         assert dr.start_address == 0
         assert dr.end_address == 999
-    
+
     def test_device_range_count(self):
         """Test DeviceRange count property"""
         dr = DeviceRange(DeviceType.D, 0, 99)
         assert dr.count == 100
-        
+
         dr2 = DeviceRange(DeviceType.M, 100, 100)
         assert dr2.count == 1
 
 
 class TestPLCInfo:
     """Tests for PLCInfo dataclass"""
-    
+
     def test_plc_info_creation(self):
         """Test PLCInfo creation"""
         plc = PLCInfo(ip_address="192.168.1.10")
         assert plc.ip_address == "192.168.1.10"
         assert plc.mac_address is None
         assert plc.manufacturer is None
-    
+
     def test_plc_info_full(self):
         """Test PLCInfo with all fields"""
         plc = PLCInfo(
@@ -123,7 +130,7 @@ class TestPLCInfo:
         )
         assert plc.manufacturer == "三菱電機"
         assert plc.protocol == Protocol.SLMP
-    
+
     def test_plc_info_to_dict(self):
         """Test PLCInfo to_dict method"""
         plc = PLCInfo(
@@ -132,7 +139,7 @@ class TestPLCInfo:
             port=5001
         )
         d = plc.to_dict()
-        
+
         assert d["ip_address"] == "192.168.1.10"
         assert d["protocol"] == "SLMP"
         assert d["port"] == 5001
@@ -141,7 +148,7 @@ class TestPLCInfo:
 
 class TestDataPoint:
     """Tests for DataPoint dataclass"""
-    
+
     def test_data_point_creation(self):
         """Test DataPoint creation"""
         dp = DataPoint(
@@ -155,7 +162,7 @@ class TestDataPoint:
         assert dp.value == 1234
         assert dp.raw_hex == "0x04D2"
         assert dp.status == StatusCode.OK
-    
+
     def test_data_point_error(self):
         """Test DataPoint with error status"""
         dp = DataPoint(
@@ -166,7 +173,7 @@ class TestDataPoint:
         assert dp.value is None
         assert dp.raw_hex is None
         assert dp.status == StatusCode.NG_ILLEGAL_ADDR
-    
+
     def test_data_point_to_dict(self):
         """Test DataPoint to_dict method"""
         dp = DataPoint(
@@ -177,7 +184,7 @@ class TestDataPoint:
             timestamp="2024-01-01 10:00:00"
         )
         d = dp.to_dict()
-        
+
         assert d["address"] == "D100"
         assert d["value"] == 1234
         assert d["status"] == "OK"
@@ -185,34 +192,32 @@ class TestDataPoint:
 
 class TestConstants:
     """Tests for module constants"""
-    
+
     def test_max_read_words(self):
         """Test MAX_READ_WORDS values"""
         assert MAX_READ_WORDS[Protocol.SLMP] == 960
         assert MAX_READ_WORDS[Protocol.MODBUS_TCP] == 125
         assert MAX_READ_WORDS[Protocol.ETHERNET_IP] == 252
-    
+
     def test_safe_read_words(self):
         """Test SAFE_READ_WORDS values are less than MAX"""
         for protocol in Protocol:
             if protocol in MAX_READ_WORDS and protocol in SAFE_READ_WORDS:
                 assert SAFE_READ_WORDS[protocol] < MAX_READ_WORDS[protocol]
-    
+
     def test_manufacturer_oui(self):
         """Test manufacturer OUI mapping"""
         assert "00:26:92" in MANUFACTURER_OUI
         assert MANUFACTURER_OUI["00:26:92"] == "三菱電機"
         assert "00:00:0A" in MANUFACTURER_OUI
         assert MANUFACTURER_OUI["00:00:0A"] == "オムロン"
-    
+
     def test_default_device_ranges(self):
         """Test default device ranges exist for protocols"""
         assert Protocol.SLMP in DEFAULT_DEVICE_RANGES
         assert Protocol.MODBUS_TCP in DEFAULT_DEVICE_RANGES
-        
+
         # Check SLMP has D device range
         slmp_ranges = DEFAULT_DEVICE_RANGES[Protocol.SLMP]
         device_types = [r.device_type for r in slmp_ranges]
         assert DeviceType.D in device_types
-
-

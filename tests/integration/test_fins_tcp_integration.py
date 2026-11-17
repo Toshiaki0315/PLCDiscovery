@@ -2,7 +2,7 @@
 FINS/TCP Integration Tests
 
 Tests FINSHandler(use_tcp=True) and the FINS/TCP discovery probe against
-the FINS simulator's TCP server (same port 9600 as UDP).
+the FINS simulator's TCP server (same port as UDP).
 """
 
 import asyncio
@@ -11,7 +11,7 @@ import struct
 
 import pytest
 
-from plc_discovery.config import DeviceRange, DeviceType, NetworkConfig, Protocol, StatusCode
+from plc_discovery.config import DeviceRange, DeviceType, Protocol, StatusCode
 from plc_discovery.probes import probe_fins_tcp, verify_protocol
 from plc_discovery.protocols.fins import FINSHandler
 
@@ -33,8 +33,8 @@ class TestFINSTCPConnection:
         assert not fins_tcp_handler.is_connected
 
     async def test_each_connection_gets_own_node(self, fins_simulator, network_config):
-        a = FINSHandler("127.0.0.1", 9600, config=network_config, use_tcp=True)
-        b = FINSHandler("127.0.0.1", 9600, config=network_config, use_tcp=True)
+        a = FINSHandler("127.0.0.1", fins_simulator.port, config=network_config, use_tcp=True)
+        b = FINSHandler("127.0.0.1", fins_simulator.port, config=network_config, use_tcp=True)
         assert await a.connect() and await b.connect()
         try:
             assert a.source_node != b.source_node
@@ -65,8 +65,8 @@ class TestFINSTCPRead:
 
     async def test_matches_udp_results(self, fins_simulator, network_config):
         """UDP and TCP share one simulated memory image"""
-        udp = FINSHandler("127.0.0.1", 9600, config=network_config)
-        tcp = FINSHandler("127.0.0.1", 9600, config=network_config, use_tcp=True)
+        udp = FINSHandler("127.0.0.1", fins_simulator.port, config=network_config)
+        tcp = FINSHandler("127.0.0.1", fins_simulator.port, config=network_config, use_tcp=True)
         assert await udp.connect() and await tcp.connect()
         try:
             udp_data, _ = await udp.read_device_raw(DeviceType.DM, 0, 50)
@@ -125,8 +125,9 @@ class TestFINSTCPRead:
 class TestFINSTCPFraming:
     """Raw socket checks of the simulator's FINS/TCP framing"""
 
-    def _connect(self):
-        sock = socket.create_connection(("127.0.0.1", 9600), timeout=2)
+    @staticmethod
+    def _connect(port):
+        sock = socket.create_connection(("127.0.0.1", port), timeout=2)
         sock.settimeout(2)
         return sock
 
@@ -144,7 +145,7 @@ class TestFINSTCPFraming:
     def test_frame_split_across_packets(self, fins_simulator):
         """The server reassembles frames that arrive in pieces"""
         handshake = b"FINS" + struct.pack(">IIII", 12, 0, 0, 0)
-        with self._connect() as sock:
+        with self._connect(fins_simulator.port) as sock:
             sock.sendall(handshake[:5])
             sock.sendall(handshake[5:])
             header, body = self._recv_frame(sock)
@@ -155,14 +156,14 @@ class TestFINSTCPFraming:
     def test_fins_frame_before_handshake_rejected(self, fins_simulator):
         fins = bytes([0x80, 0, 2, 0, 1, 0, 0, 10, 0, 1, 0x01, 0x01, 0x82, 0, 0, 0, 0, 1])
         frame = b"FINS" + struct.pack(">III", 8 + len(fins), 2, 0) + fins
-        with self._connect() as sock:
+        with self._connect(fins_simulator.port) as sock:
             sock.sendall(frame)
             header, _ = self._recv_frame(sock)
         command, error = struct.unpack(">II", header[8:16])
         assert command == 3 and error == 3   # error notification: unsupported
 
     def test_bad_magic_closes_connection(self, fins_simulator):
-        with self._connect() as sock:
+        with self._connect(fins_simulator.port) as sock:
             sock.sendall(b"XXXX" + b"\x00" * 12)
             header, _ = self._recv_frame(sock)
             assert struct.unpack(">II", header[8:16]) == (3, 1)
@@ -175,15 +176,15 @@ FINS_VARIANTS = (Protocol.FINS, Protocol.FINS_TCP)
 class TestFINSTCPProbe:
 
     def test_probe_detects_simulator(self, fins_simulator):
-        assert probe_fins_tcp("127.0.0.1", 9600, 2.0)
+        assert probe_fins_tcp("127.0.0.1", fins_simulator.port, 2.0)
 
     @pytest.mark.parametrize("protocol", FINS_VARIANTS)
     def test_both_fins_transports_verified(self, fins_simulator, protocol):
-        assert verify_protocol("127.0.0.1", 9600, protocol, 2.0)
+        assert verify_protocol("127.0.0.1", fins_simulator.port, protocol, 2.0)
 
     @pytest.mark.parametrize("protocol", [p for p in Protocol if p not in FINS_VARIANTS])
     def test_other_probes_do_not_match(self, fins_simulator, protocol):
-        assert not verify_protocol("127.0.0.1", 9600, protocol, 1.0)
+        assert not verify_protocol("127.0.0.1", fins_simulator.port, protocol, 1.0)
 
 
 class TestFINSTCPSelection:
@@ -193,7 +194,7 @@ class TestFINSTCPSelection:
         from plc_discovery.collector import PLCDataCollector
         from plc_discovery.config import PLCInfo
 
-        plc = PLCInfo("127.0.0.1", protocol=Protocol.FINS_TCP, port=9600)
+        plc = PLCInfo("127.0.0.1", protocol=Protocol.FINS_TCP, port=fins_simulator.port)
         async with PLCDataCollector(plc, network_config) as collector:
             assert collector._handler.use_tcp is True
             assert collector._handler._writer is not None   # TCP stream, not UDP

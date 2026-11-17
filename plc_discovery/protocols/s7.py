@@ -150,7 +150,7 @@ def classify_s7_error(error: Exception) -> Optional[StatusCode]:
     """
     Status for an error the CPU reported about the requested item, or None
     for a transport failure.
-    
+
     snap7 3.x raises "Read operation failed: Object does not exist (0x0a)";
     snap7 1.x "CPU : Item not available". Neither mentions "address" or
     "area", so such answers (e.g. a read past the end of a DB) used to be
@@ -182,19 +182,18 @@ S7_DEVICE_MAP = {
 }
 
 
-
 class S7Handler(BaseProtocolHandler):
     """
     Siemens S7 Protocol Handler
-    
+
     Implements communication with Siemens S7 PLCs using snap7.
     """
-    
+
     protocol = Protocol.S7
     # snap7 sends the start as a bit address in 3 bytes: byte offsets above
     # 0x1FFFFF wrap around (word 1048581 read DB1.DBW10). Word index limit:
     MAX_ADDRESS = 0xFFFFF
-    
+
     def __init__(
         self,
         ip_address: str,
@@ -215,12 +214,12 @@ class S7Handler(BaseProtocolHandler):
         self._rack = rack
         self._slot = slot
         self._db_number = db_number
-    
+
     async def connect(self) -> bool:
         """Establish S7 connection"""
         try:
             import snap7
-            
+
             def _connect():
                 client = snap7.client.Client()
                 # Try different slot configurations for different S7 series
@@ -234,7 +233,7 @@ class S7Handler(BaseProtocolHandler):
                     alt_slot = 2 if self._slot == 0 else 0
                     client.connect(self.ip_address, self._rack, alt_slot, self.port)
                     return client, alt_slot
-            
+
             loop = asyncio.get_running_loop()
             self._client, used_slot = await loop.run_in_executor(None, _connect)
             self._connected = True
@@ -243,7 +242,7 @@ class S7Handler(BaseProtocolHandler):
                 f"(rack={self._rack}, slot={used_slot})"
             )
             return True
-            
+
         except ImportError:
             logger.error("snap7 library not installed")
             return False
@@ -251,14 +250,14 @@ class S7Handler(BaseProtocolHandler):
             logger.error(f"S7 connection failed: {e}")
             self._connected = False
             return False
-    
+
     async def disconnect(self):
         """Close S7 connection"""
         if self._client:
             try:
                 def _disconnect():
                     self._client.disconnect()
-                
+
                 loop = asyncio.get_running_loop()
                 await loop.run_in_executor(None, _disconnect)
             except Exception as e:
@@ -267,7 +266,7 @@ class S7Handler(BaseProtocolHandler):
                 self._client = None
                 self._connected = False
                 logger.info(f"S7 disconnected from {self.ip_address}")
-    
+
     async def read_device_raw(
         self,
         device_type: DeviceType,
@@ -276,12 +275,12 @@ class S7Handler(BaseProtocolHandler):
     ) -> Tuple[Optional[List[int]], StatusCode]:
         """
         Read device data using S7 protocol.
-        
+
         Args:
             device_type: Device type (DB, M, X, Y)
             start_address: Starting word index (byte offset = address * 2)
             count: Number of words to read
-        
+
         Returns:
             Tuple of (data list or None, status code)
         """
@@ -289,17 +288,17 @@ class S7Handler(BaseProtocolHandler):
             return None, StatusCode.NG_COMM_ERROR
         if not self._connected or not self._client:
             return None, StatusCode.NG_COMM_ERROR
-        
+
         area = S7_DEVICE_MAP.get(device_type)
         if area is None:
             logger.warning(f"Unsupported device type for S7: {device_type}")
             return None, StatusCode.NG_UNSUPPORTED
-        
+
         try:
             # Addresses are word indexes: byte offset = address * 2
             byte_offset = start_address * 2
             byte_count = count * 2
-            
+
             def _read():
                 if area == S7_AREA_DB:
                     return self._client.db_read(self._db_number, byte_offset, byte_count)
@@ -310,9 +309,9 @@ class S7Handler(BaseProtocolHandler):
                 if area == S7_AREA_PA:
                     return self._client.ab_read(byte_offset, byte_count)
                 raise ValueError(f"Unsupported S7 area: {area}")
-            
+
             data_bytes = await self._run_blocking(_read)
-            
+
             if data_bytes:
                 # Convert bytes to word list (big-endian for S7)
                 words = []
@@ -320,9 +319,9 @@ class S7Handler(BaseProtocolHandler):
                     word = (data_bytes[i] << 8) | data_bytes[i + 1]
                     words.append(word)
                 return words, StatusCode.OK
-            
+
             return None, StatusCode.NG_COMM_ERROR
-                
+
         except asyncio.TimeoutError:
             logger.debug(f"S7 read timeout: {device_type.value}{start_address}")
             return None, StatusCode.NG_TIMEOUT

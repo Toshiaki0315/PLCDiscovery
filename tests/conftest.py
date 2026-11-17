@@ -4,9 +4,7 @@ Pytest Configuration and Shared Fixtures
 
 import pytest
 import tempfile
-import os
-from pathlib import Path
-from unittest.mock import MagicMock, AsyncMock
+from unittest.mock import MagicMock
 
 from plc_discovery.config import (
     Protocol, DeviceType, PLCInfo, DataPoint, StatusCode,
@@ -142,12 +140,12 @@ def mock_modbus_client():
     mock = MagicMock()
     mock.connect = MagicMock(return_value=True)
     mock.close = MagicMock()
-    
+
     # Mock read response
     read_response = MagicMock()
     read_response.isError = MagicMock(return_value=False)
     read_response.registers = [100, 200, 300]
-    
+
     mock.read_holding_registers = MagicMock(return_value=read_response)
     mock.read_input_registers = MagicMock(return_value=read_response)
     return mock
@@ -160,7 +158,7 @@ def mock_s7_client():
     mock.connect = MagicMock()
     mock.disconnect = MagicMock()
     mock.db_read = MagicMock(return_value=bytearray([0x00, 0x64, 0x00, 0xC8]))
-    
+
     # Mock CPU info
     cpu_info = MagicMock()
     cpu_info.ModuleTypeName = b"CPU 1515-2 PN"
@@ -168,7 +166,5 @@ def mock_s7_client():
     cpu_info.SerialNumber = b"S C-12345"
     cpu_info.OrderCode = b"6ES7 515-2AM02-0AB0"
     mock.get_cpu_info = MagicMock(return_value=cpu_info)
-    
+
     return mock
-
-

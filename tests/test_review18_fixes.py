@@ -140,7 +140,10 @@ from plc_discovery.protocols.base import BaseProtocolHandler
 ALLOWED_PUBLIC_COROUTINES = {"connect", "disconnect", "read_device_raw", "read_device_range",
                              # EtherNet/IP symbolic tags: packet interval, timeout with
                              # reconnect, per-tag errors (see EtherNetIPHandler.read_tags)
-                             "read_tags"}
+                             "read_tags",
+                             # FINS CPU model for discovery: one read-only request
+                             # (Controller Data Read) after the packet interval, no data
+                             "read_controller_data"}
 
 
 @pytest.mark.parametrize("handler_class", sorted(

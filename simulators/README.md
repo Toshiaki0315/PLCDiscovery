@@ -250,6 +250,7 @@ python simulators/fins_simulator.py --port 9600 --transport tcp  # TCP のみ
 
 **対応コマンド：**
 - Memory Area Read (0x0101)
+- Controller Data Read (0x0501)：CPU の機種 "CJ2M-CPU33 Sim"、バージョン "02.01"（探索結果の機種・ファームウェアに表示）
 - FINS/TCP: ノードアドレス要求（コマンド 0 → 応答 1）、FINS フレーム送信（コマンド 2）
   - クライアントノードは要求値が 0 のとき 10〜249 から自動割り当て、PLC ノードは 1
   - ノードアドレス交換前の FINS フレーム、未対応コマンド、"FINS" 以外のヘッダーには

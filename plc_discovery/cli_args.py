@@ -54,7 +54,7 @@ Examples:
   # Discover PLCs on same network segment
   python plc_scanner.py --mode discover
 
-  # Discover PLCs in specific IP range  
+  # Discover PLCs in specific IP range
   python plc_scanner.py --mode discover --ip-range "192.168.1.0/24"
 
   # Full scan of a specific PLC
@@ -79,13 +79,13 @@ Examples:
   python plc_scanner.py --generate-config
         """
     )
-    
+
     # Configuration file
     parser.add_argument(
         "--config", "-c",
         help="Path to configuration file (YAML or JSON)"
     )
-    
+
     parser.add_argument(
         "--generate-config",
         nargs="?",
@@ -94,7 +94,7 @@ Examples:
         help="Write a configuration template to PATH (default: plc_config.yaml); "
              "an existing file is never overwritten"
     )
-    
+
     # Mode selection
     parser.add_argument(
         "--mode", "-m",
@@ -103,18 +103,18 @@ Examples:
         help="Operation mode: discover, full, or range "
              "(default: scan.mode from --config, otherwise discover)"
     )
-    
+
     # Target specification
     parser.add_argument(
         "--target", "-t",
         help="Target PLC IP address(es), comma-separated for multiple"
     )
-    
+
     parser.add_argument(
         "--ip-range", "-r",
         help="IP range to scan (CIDR or hyphen notation, e.g., 192.168.1.0/24)"
     )
-    
+
     # Protocol selection
     parser.add_argument(
         "--protocol", "-p",
@@ -122,19 +122,19 @@ Examples:
         help="Force specific protocol (auto-detected if not specified); "
              "fins = FINS/UDP, fins-tcp = FINS/TCP"
     )
-    
+
     parser.add_argument(
         "--discover-protocols",
         help="Comma-separated protocols to probe in discover mode, e.g. slmp,modbus "
              "(default: discovery.protocols from --config, otherwise all)"
     )
-    
+
     parser.add_argument(
         "--port",
         type=int,
         help="Override default port for the protocol"
     )
-    
+
     # Device/range specification
     parser.add_argument(
         "--device", "-d",
@@ -142,7 +142,7 @@ Examples:
         default="D",
         help="Device type to read (default: D)"
     )
-    
+
     parser.add_argument(
         "--tags",
         help="EtherNet/IP tags (Logix) / variables (Omron NJ/NX) to read in range mode, "
@@ -150,19 +150,19 @@ Examples:
              "({n} = n array elements; structures are reported per member); "
              "default: scan.tags from --config"
     )
-    
+
     parser.add_argument(
         "--range",
         help="Address range to read (e.g., 0-1000)"
     )
-    
+
     # Data type conversion options
     parser.add_argument(
         "--data-type",
         choices=list(DATA_TYPE_MAP.keys()),
         help="Data type for conversion (e.g., FLOAT, DWORD, INT32)"
     )
-    
+
     parser.add_argument(
         "--byte-order",
         choices=["little", "big", "little_swap", "big_swap"],
@@ -171,12 +171,12 @@ Examples:
              "little_swap=DCBA, big_swap=BADC "
              "(default: data_types.default_byte_order from --config, otherwise little)"
     )
-    
+
     parser.add_argument(
         "--type-mapping",
         help="Path to type mapping file (JSON/YAML) for address-specific conversions"
     )
-    
+
     # Timing parameters
     parser.add_argument(
         "--interval", "-i",
@@ -185,35 +185,35 @@ Examples:
         help="Interval between scans in seconds for continuous range mode, >= 1 "
              "(default: scan.interval_seconds from --config, otherwise 0 = single scan)"
     )
-    
+
     parser.add_argument(
         "--packet-interval",
         type=int,
         default=None,
         help="Wait time between packets in ms (default: 50, or network.packet_interval_ms from --config)"
     )
-    
+
     parser.add_argument(
         "--retry-interval",
         type=int,
         default=None,
         help="Wait time before retry in ms (default: 200, or network.retry_interval_ms from --config)"
     )
-    
+
     parser.add_argument(
         "--request-timeout",
         type=int,
         default=None,
         help="Request timeout in ms (default: 5000, or network.request_timeout_ms from --config)"
     )
-    
+
     parser.add_argument(
         "--max-concurrent",
         type=int,
         default=None,
         help="Maximum concurrent PLC connections (default: 1, or network.max_concurrent from --config)"
     )
-    
+
     # Output options
     parser.add_argument(
         "--output-dir", "-o",
@@ -221,7 +221,7 @@ Examples:
         help=f"Output directory for CSV files "
              f"(default: output.directory from --config, otherwise {DEFAULT_OUTPUT_DIR})"
     )
-    
+
     parser.add_argument(
         "--periodic-csv",
         choices=["per_cycle", "daily"],
@@ -230,7 +230,7 @@ Examples:
              "cycle to one file per day and PLC (default: output.periodic_csv from --config, "
              "otherwise per_cycle)"
     )
-    
+
     parser.add_argument(
         "--hex-addresses",
         action="store_true",
@@ -239,7 +239,7 @@ Examples:
              "as in GX Works (X31 -> X1F); addresses stay decimal "
              "(default: output.hex_addresses from --config, otherwise off)"
     )
-    
+
     parser.add_argument(
         "--encoding",
         choices=["utf-8-sig", "utf-8", "shift-jis"],
@@ -248,82 +248,82 @@ Examples:
              "or output.encoding from --config); "
              "utf-8 = without BOM; shift-jis = CP932, unrepresentable characters become '?'"
     )
-    
+
     # Audit logging
     parser.add_argument(
         "--audit-log",
         help="Path to audit log file"
     )
-    
+
     # Database output
     parser.add_argument(
         "--database",
         help="Enable SQLite database output (specify path, e.g., ./plc_data.db)"
     )
-    
+
     parser.add_argument(
         "--no-database",
         action="store_true",
         help="Disable database output (overrides config file)"
     )
-    
+
     parser.add_argument(
         "--db-track-history",
         action=argparse.BooleanOptionalAction,
         default=True,
         help="Track value changes in database (disable with --no-db-track-history)"
     )
-    
+
     # Report generation
     parser.add_argument(
         "--report",
         choices=["html", "pdf", "json"],
         help="Generate report in specified format"
     )
-    
+
     parser.add_argument(
         "--report-output",
         help="Report output path, used as given (default: plc_report_<timestamp> in the output directory)"
     )
-    
+
     parser.add_argument(
         "--report-title",
         default="PLC Discovery レポート",
         help="Report title"
     )
-    
+
     parser.add_argument(
         "--report-company",
         default="",
         help="Company name for report header"
     )
-    
+
     parser.add_argument(
         "--report-theme",
         choices=["default", "dark", "light"],
         default="default",
         help="Report theme (default: default)"
     )
-    
+
     # Verbosity
     parser.add_argument(
         "--verbose", "-v",
         action="store_true",
         help="Enable verbose output"
     )
-    
+
     parser.add_argument(
         "--quiet", "-q",
         action="store_true",
         help="Suppress progress output"
     )
-    
+
     parser.add_argument(
         "--no-rich",
         action="store_true",
         help="Disable rich console output"
     )
-    
+
     return parser.parse_args()
 
 
@@ -340,13 +340,13 @@ def get_device_type_from_string(device_str: str) -> Optional[DeviceType]:
 def parse_address_range(range_str: str) -> tuple:
     """
     Parse address range string (e.g., '0-1000' or '100') to (start, end).
-    
+
     Raises:
         ValueError: if the range is malformed, negative or start > end
     """
     if not range_str:
         return 0, 999
-    
+
     parts = [p.strip() for p in range_str.split("-")]
     try:
         if len(parts) == 2:
@@ -359,7 +359,7 @@ def parse_address_range(range_str: str) -> tuple:
         raise ValueError(
             f"Invalid address range '{range_str}' (expected e.g. '0-999' or '100')"
         ) from None
-    
+
     if start > end:
         raise ValueError(f"Invalid address range '{range_str}': start must be <= end")
     size_error = range_size_error(start, end)
@@ -408,7 +408,7 @@ def parse_targets(target_str: str) -> List[str]:
     """
     Parse comma-separated target IPs (empty entries such as a trailing
     comma are ignored).
-    
+
     Raises:
         ValueError: if an entry is not an IPv4 address
     """
@@ -431,7 +431,7 @@ def resolve_mode_and_interval(args, config_loader: Optional[ConfigLoader]) -> tu
     if not mode_name and config_loader and config_loader.is_set("scan", "mode"):
         mode_name = config_loader.get_scan_mode().value
     mode_name = mode_name or "discover"
-    
+
     interval = args.interval
     if interval is None:
         interval = config_loader.get_scan_interval() if config_loader else 0.0

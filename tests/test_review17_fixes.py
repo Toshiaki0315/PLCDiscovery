@@ -8,7 +8,6 @@ Regression tests for the seventeenth review.
    cleanup script accepts only a positive number of days.
 """
 
-import sqlite3
 import subprocess
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -151,7 +150,7 @@ def test_cleanup_script_rejects_bad_days(tmp_path, days):
 # ---------------------------------------------------------------------------
 
 from plc_discovery.protocols.s7 import S7Handler
-from plc_discovery.report import ReportGenerator, create_report
+from plc_discovery.report import create_report
 from plc_discovery.utils import address_sort_key, sorted_addresses
 
 

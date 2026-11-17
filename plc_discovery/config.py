@@ -27,15 +27,14 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
 from enum import Enum, auto
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 
 
 class Protocol(Enum):
     """
     サポートされるPLC通信プロトコル
-    
+
     Attributes:
         SLMP: 三菱電機 SLMP/MCプロトコル (3Eフレーム)
         ETHERNET_IP: EtherNet/IP (CIP)
@@ -43,7 +42,7 @@ class Protocol(Enum):
         S7: Siemens S7通信
         FINS: Omron FINS/UDP
         FINS_TCP: Omron FINS/TCP
-    
+
     Example:
         >>> protocol = Protocol.SLMP
         >>> port = PROTOCOL_PORTS[protocol]
@@ -59,7 +58,7 @@ class Protocol(Enum):
 class DeviceType(Enum):
     """
     PLCデバイス/レジスタタイプ
-    
+
     ワードデバイス:
         D: データレジスタ
         W: リンクレジスタ
@@ -68,7 +67,7 @@ class DeviceType(Enum):
         HR: 保持レジスタ (Modbus)
         IR: 入力レジスタ (Modbus)
         DB: データブロック (Siemens)
-    
+
     ビットデバイス:
         M: 内部リレー
         X: 入力
@@ -84,7 +83,7 @@ class DeviceType(Enum):
     HR = "HR"
     IR = "IR"
     DB = "DB"
-    
+
     # Bit devices
     M = "M"
     X = "X"
@@ -96,7 +95,7 @@ class DeviceType(Enum):
 class StatusCode(Enum):
     """
     データ収集ステータスコード
-    
+
     Attributes:
         OK: 正常に読み取り完了
         NG_ILLEGAL_ADDR: アドレスが無効または未定義
@@ -114,7 +113,7 @@ class StatusCode(Enum):
 class ScanMode(Enum):
     """
     スキャン操作モード
-    
+
     Attributes:
         DISCOVER: 探索のみ（PLCの検出）
         FULL: フルスキャンモード（工場停止時）
@@ -218,10 +217,10 @@ MANUFACTURER_OUI: Dict[str, str] = {
 class NetworkConfig:
     """
     ネットワークスキャン設定
-    
+
     ネットワーク通信のタイミングと制限を設定します。
     PLCへの負荷を制御するため、適切な値を設定してください。
-    
+
     Attributes:
         discovery_timeout_ms: 探索タイムアウト（ミリ秒）
         discovery_retry_count: 探索リトライ回数
@@ -229,7 +228,7 @@ class NetworkConfig:
         retry_interval_ms: リトライ待機時間（ミリ秒）
         request_timeout_ms: リクエストタイムアウト（ミリ秒）
         max_concurrent: 最大同時接続数
-    
+
     Example:
         >>> config = NetworkConfig(
         ...     packet_interval_ms=100,  # 100ms間隔
@@ -248,17 +247,17 @@ class NetworkConfig:
 class DeviceRange:
     """
     デバイスアドレス範囲指定
-    
+
     スキャンするデバイスの範囲を指定します。
-    
+
     Attributes:
         device_type: デバイスタイプ（D, M, W など）
         start_address: 開始アドレス
         end_address: 終了アドレス
-    
+
     Properties:
         count: 範囲内のアドレス数
-    
+
     Example:
         >>> device_range = DeviceRange(DeviceType.D, 0, 999)
         >>> print(device_range.count)  # 1000
@@ -266,7 +265,7 @@ class DeviceRange:
     device_type: DeviceType
     start_address: int
     end_address: int
-    
+
     @property
     def count(self) -> int:
         """範囲内のアドレス数を返す"""
@@ -281,7 +280,7 @@ class TagRange:
     read with "Tag[0]{10}" (10 elements from index 0).
     """
     tags: List[str]
-    
+
     @property
     def label(self) -> str:
         shown = ", ".join(self.tags[:3]) + (f", ... ({len(self.tags)} tags)" if len(self.tags) > 3 else "")
@@ -338,9 +337,9 @@ _DEVICE_TEXT_FIELDS = frozenset({"mac_address", "manufacturer", "model", "cpu_ty
 class PLCInfo:
     """
     検出されたPLC情報
-    
+
     PLCの識別情報と接続情報を保持します。
-    
+
     Attributes:
         ip_address: IPアドレス
         mac_address: MACアドレス（オプション）
@@ -350,7 +349,8 @@ class PLCInfo:
         port: ポート番号（オプション）
         cpu_type: CPUタイプ（オプション）
         firmware_version: ファームウェアバージョン（オプション）
-    
+        read_method: データの読み方（アドレス／タグなど。探索で判定）
+
     Example:
         >>> plc = PLCInfo(
         ...     ip_address="192.168.1.10",
@@ -366,21 +366,24 @@ class PLCInfo:
     port: Optional[int] = None
     cpu_type: Optional[str] = None
     firmware_version: Optional[str] = None
+    # How this tool reads the device's data (e.g. "アドレス", "タグ（一覧あり）"),
+    # decided from the protocol and the identity during discovery
+    read_method: Optional[str] = None
     # Protocol-specific handler options (e.g. FINS node numbers, S7 rack/slot);
     # passed to the protocol handler, not exported
     options: Dict[str, Any] = field(default_factory=dict)
-    
+
     def __setattr__(self, name: str, value: Any) -> None:
         # Device-reported text never carries control characters, however
         # it is set (constructor, discovery, merge, database)
         if name in _DEVICE_TEXT_FIELDS:
             value = clean_device_text(value)
         super().__setattr__(name, value)
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """
         辞書形式に変換
-        
+
         Returns:
             PLC情報の辞書表現
         """
@@ -393,6 +396,7 @@ class PLCInfo:
             "port": self.port or "",
             "cpu_type": self.cpu_type or "",
             "firmware_version": self.firmware_version or "",
+            "read_method": self.read_method or "",
         }
 
 
@@ -400,11 +404,11 @@ class PLCInfo:
 class DataPoint:
     """
     PLCから取得した単一データポイント
-    
+
     1つのアドレスから読み取った値とそのメタデータを保持します。
     データ型変換が適用された場合、converted_valueとdisplay_valueに
     変換結果が格納されます。
-    
+
     Attributes:
         address: アドレス文字列（例: "D100", "HR0"）
         value: 生の整数値（16ビットワード）
@@ -415,7 +419,7 @@ class DataPoint:
         converted_value: 型変換後の値
         display_value: 人間が読みやすい表示形式
         raw_words: マルチワード型の生ワード値リスト
-    
+
     Example:
         >>> dp = DataPoint(
         ...     address="D100",
@@ -433,11 +437,11 @@ class DataPoint:
     converted_value: Optional[Any] = None
     display_value: Optional[str] = None
     raw_words: Optional[List[int]] = None
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """
         辞書形式に変換
-        
+
         Returns:
             データポイントの辞書表現（拡張フィールド含む）
         """
@@ -488,4 +492,3 @@ DEFAULT_DEVICE_RANGES: Dict[Protocol, List[DeviceRange]] = {
 }
 # FINS/TCP reads the same memory areas as FINS/UDP
 DEFAULT_DEVICE_RANGES[Protocol.FINS_TCP] = DEFAULT_DEVICE_RANGES[Protocol.FINS]
-

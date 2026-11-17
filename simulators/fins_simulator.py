@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 # FINS Constants
 FINS_ICF_RESPONSE = 0xC0  # Response frame
 FINS_CMD_MEMORY_READ = (0x01, 0x01)
+FINS_CMD_CONTROLLER_DATA_READ = (0x05, 0x01)   # CPU model / version
 
 # FINS/TCP constants
 FINS_TCP_MAGIC = b"FINS"
@@ -71,6 +72,10 @@ class FINSSimulator:
         self._dm_area: Dict[int, int] = {}  # DM area (0x82)
         self._hr_area: Dict[int, int] = {}  # HR area (0xB2)
         self._w_area: Dict[int, int] = {}   # W area (0xB1)
+
+        # Answer to Controller Data Read (05 01)
+        self.cpu_model = "CJ2M-CPU33 Sim"
+        self.cpu_version = "02.01"
 
         # Initialize with sample data
         self._initialize_sample_data()
@@ -136,6 +141,11 @@ class FINSSimulator:
 
         if (cmd_main, cmd_sub) == FINS_CMD_MEMORY_READ:
             return self._handle_read_command(data, client_addr)
+        if (cmd_main, cmd_sub) == FINS_CMD_CONTROLLER_DATA_READ:
+            # CPU unit model (20) + version (20) + system use (40) + area data (12)
+            reply = (self.cpu_model.encode().ljust(20, b" ") + self.cpu_version.encode().ljust(20, b" ")
+                     + bytes(40) + bytes(12))
+            return self._build_success_response(data, reply)
 
         logger.warning(f"Unknown command: {cmd_main:02X} {cmd_sub:02X}")
         return self._build_error_response(data, 0x0401)

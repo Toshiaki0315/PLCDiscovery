@@ -6,7 +6,6 @@ import ipaddress
 import logging
 import re
 import socket
-import struct
 from datetime import datetime
 from typing import Dict, Generator, List, Optional, Tuple
 
@@ -70,7 +69,7 @@ def parse_interfaces(text: str) -> List[Tuple[str, str, str]]:
             name = ip_o.group(1)
         elif "|" in line:   # PowerShell: InterfaceAlias|address/prefix
             name = line.split("|", 1)[0].strip()
-        
+
         match = _IFCONFIG_INET.search(line)
         if match:
             address, mask = match.groups()
@@ -118,7 +117,7 @@ def _networks_from_os() -> List[Tuple[str, str, str]]:
     """IPv4 interfaces via the OS's own tools (no extra packages, no admin rights)"""
     import subprocess
     import sys
-    
+
     if sys.platform.startswith("win"):
         commands = [[
             "powershell", "-NoProfile", "-NonInteractive", "-Command",
@@ -146,7 +145,7 @@ def _networks_from_os() -> List[Tuple[str, str, str]]:
 def get_local_networks(include_virtual: bool = False) -> List[Tuple[str, str]]:
     """
     All IPv4 networks this PC is connected to, as (local IP, netmask).
-    
+
     Considers every interface (e.g. an office LAN and a separate control
     LAN) and works without a default gateway (isolated factory networks).
     Excluded: loopback, link-local (169.254.x.x, an unconfigured interface),
@@ -160,7 +159,7 @@ def get_local_networks(include_virtual: bool = False) -> List[Tuple[str, str]]:
     if not candidates:
         # Last resort: the interface of the default route, assuming /24
         candidates = [("", get_local_ip(), "255.255.255.0")]
-    
+
     networks: List[Tuple[str, str]] = []
     seen = set()
     for name, address, netmask in candidates:
@@ -211,7 +210,7 @@ MAX_IP_RANGE_HOSTS = 65536
 def _ip_range_hosts(ip_range: str):
     """
     Hosts of an IP range specification as an iterable plus its size.
-    
+
     Raises:
         ValueError: invalid specification
     """
@@ -223,7 +222,7 @@ def _ip_range_hosts(ip_range: str):
             raise ValueError(f"Invalid CIDR notation: {ip_range} - {e}") from None
         size = network.num_addresses - 2 if network.prefixlen < 31 else network.num_addresses
         return (str(host) for host in network.hosts()), size
-    
+
     if "-" in ip_range:
         try:
             first, last = (p.strip() for p in ip_range.split("-", 1))
@@ -241,7 +240,7 @@ def _ip_range_hosts(ip_range: str):
             raise ValueError(f"Invalid hyphen notation: {ip_range} - {e}") from None
         return (str(ipaddress.IPv4Address(i)) for i in range(int(start), int(end) + 1)), \
             int(end) - int(start) + 1
-    
+
     try:
         ipaddress.IPv4Address(ip_range)
     except ValueError as e:
@@ -266,13 +265,13 @@ def ip_range_error(ip_range: str) -> Optional[str]:
 def parse_ip_range(ip_range: str) -> List[str]:
     """
     Parse IP range specification and return list of IPs
-    
+
     Supports:
     - CIDR notation: "192.168.1.0/24"
     - Last-octet range: "192.168.1.1-254"
     - Full range: "192.168.1.10-192.168.1.20"
     - Single IP: "192.168.1.10"
-    
+
     Invalid specifications and ranges larger than MAX_IP_RANGE_HOSTS are
     logged and return an empty list.
     """
@@ -292,7 +291,7 @@ def target_address_error(address: str) -> Optional[str]:
     Why a scan target is not a usable IPv4 address or host name (None when
     it is). Host names are accepted for setups such as docker-compose,
     where the simulators are reached as "simulators".
-    
+
     Checked before connecting: an empty entry (e.g. "10.0.0.1,,") was
     passed to the protocol libraries, some of which treat an empty host as
     this PC, and an invalid one such as 192.168.1.300 only failed later as
@@ -318,11 +317,11 @@ def get_manufacturer_from_mac(mac_address: str) -> Optional[str]:
     """Get manufacturer name from MAC address OUI"""
     if not mac_address:
         return None
-    
+
     # Normalize MAC address format
     mac = mac_address.upper().replace("-", ":")
     oui = mac[:8]  # First 3 bytes (XX:XX:XX)
-    
+
     return MANUFACTURER_OUI.get(oui)
 
 
@@ -374,14 +373,14 @@ def read_arp_cache(timeout: float = 5.0) -> Dict[str, str]:
     """
     import subprocess
     import sys
-    
+
     if sys.platform.startswith("linux"):
         try:
             with open("/proc/net/arp", encoding="ascii", errors="ignore") as f:
                 return parse_arp_table(f.read())
         except OSError:
             pass  # fall back to the arp command
-    
+
     command = ["arp", "-a"] if sys.platform.startswith("win") else ["arp", "-an"]
     try:
         result = subprocess.run(command, capture_output=True, timeout=timeout)
@@ -493,60 +492,60 @@ def async_sleep(ms: int):
 
 class RateLimiter:
     """Simple rate limiter for network requests"""
-    
+
     def __init__(self, interval_ms: int):
         self.interval_ms = interval_ms
         self._last_call = 0
-    
+
     async def wait(self):
         """Wait for the required interval"""
         import asyncio
         import time
-        
+
         # Monotonic clock: unaffected by system clock changes (NTP, DST)
         now = time.monotonic() * 1000
         elapsed = now - self._last_call
-        
+
         if self._last_call and elapsed < self.interval_ms:
             await asyncio.sleep((self.interval_ms - elapsed) / 1000.0)
-        
+
         self._last_call = time.monotonic() * 1000
 
 
 class SessionCache:
     """
     Cache for inaccessible addresses within a session.
-    
+
     Stores the status that made each address inaccessible
     (NG_ILLEGAL_ADDR or NG_UNSUPPORTED) so it can be reported accurately.
     """
-    
+
     def __init__(self):
         self._denied_addresses: Dict[str, Optional[StatusCode]] = {}
-    
+
     def add_denied(self, address: str, status: Optional[StatusCode] = None):
         """Mark an address as inaccessible (status defaults to NG_ILLEGAL_ADDR)"""
         self._denied_addresses[address] = status or StatusCode.NG_ILLEGAL_ADDR
-    
+
     def is_denied(self, address: str) -> bool:
         """Check if an address is known to be inaccessible"""
         return address in self._denied_addresses
-    
+
     def get_status(self, address: str) -> Optional[StatusCode]:
         """Status recorded for a denied address (None if not denied)"""
         return self._denied_addresses.get(address)
-    
+
     def __len__(self) -> int:
         return len(self._denied_addresses)
-    
+
     def get_all_denied(self) -> set:
         """Get all denied addresses"""
         return set(self._denied_addresses)
-    
+
     def get_all_statuses(self) -> Dict[str, StatusCode]:
         """Get denied addresses with their status"""
         return dict(self._denied_addresses)
-    
+
     def clear(self):
         """Clear the cache"""
         self._denied_addresses.clear()
