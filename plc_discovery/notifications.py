@@ -43,7 +43,9 @@ class NotificationType(Enum):
     SCAN_ERROR = "scan_error"
     DISCOVERY_COMPLETE = "discovery_complete"
     PLC_FOUND = "plc_found"
+    # Periodic monitoring: a target stopped answering / answers again
     PLC_UNREACHABLE = "plc_unreachable"
+    PLC_RECOVERED = "plc_recovered"
     THRESHOLD_EXCEEDED = "threshold_exceeded"
     # Periodic summary while a periodic (monitoring) scan runs
     STATUS_REPORT = "status_report"
@@ -56,6 +58,16 @@ CONFIGURABLE_EVENTS = {
     NotificationType.SCAN_ERROR: "エラー（接続できないPLCなど）",
     NotificationType.DISCOVERY_COMPLETE: "探索完了",
     NotificationType.STATUS_REPORT: "周期実行中の定期報告",
+    NotificationType.PLC_UNREACHABLE: "周期実行中の通信断・復旧",
+    NotificationType.THRESHOLD_EXCEEDED: "周期実行中のしきい値超過",
+}
+
+# Events also delivered to destinations that chose another event: outages
+# were sent as scan_error before plc_unreachable existed, and choosing
+# plc_unreachable ("通信断・復旧") also brings the recovery message
+EVENT_ALSO_FOR = {
+    NotificationType.PLC_UNREACHABLE: (NotificationType.SCAN_ERROR,),
+    NotificationType.PLC_RECOVERED: (NotificationType.PLC_UNREACHABLE, NotificationType.SCAN_ERROR),
 }
 
 # Notification destination types offered in configuration
@@ -163,7 +175,9 @@ class NotificationHandler(ABC):
             return False
         if not self.config.events:
             return True  # Handle all if no specific types configured
-        return event_type in self.config.events
+        if event_type in self.config.events:
+            return True
+        return any(t in self.config.events for t in EVENT_ALSO_FOR.get(event_type, ()))
 
     async def _post_json(self, payload: dict, headers: Optional[Dict[str, str]] = None) -> bool:
         """
@@ -544,6 +558,43 @@ class NotificationManager:
             message=error_message,
             priority=NotificationPriority.HIGH,
             data={"plc_ip": plc_ip, **extra_data},
+        )
+        return await self.notify(event)
+
+    async def notify_unreachable(self, target: str, plc_ip: Optional[str] = None) -> Dict[str, bool]:
+        """A monitored target stopped answering (sent once per outage)"""
+        event = NotificationEvent(
+            type=NotificationType.PLC_UNREACHABLE,
+            title="PLC Not Reachable",
+            message=f"{target} is not reachable",
+            priority=NotificationPriority.HIGH,
+            data={"plc_ip": plc_ip, "target": target},
+        )
+        return await self.notify(event)
+
+    async def notify_recovered(
+        self, target: str, plc_ip: Optional[str] = None, downtime_seconds: float = 0.0
+    ) -> Dict[str, bool]:
+        """A monitored target answers again after an outage"""
+        event = NotificationEvent(
+            type=NotificationType.PLC_RECOVERED,
+            title="PLC Reachable Again",
+            message=f"{target} is reachable again (down for {downtime_seconds:.0f}s)",
+            priority=NotificationPriority.NORMAL,
+            data={"plc_ip": plc_ip, "target": target, "downtime_seconds": round(downtime_seconds, 1)},
+        )
+        return await self.notify(event)
+
+    async def notify_threshold(
+        self, target: str, condition: str, value: float, plc_ip: Optional[str] = None, **extra_data: Any
+    ) -> Dict[str, bool]:
+        """A monitored value went outside its limit (once per excursion)"""
+        event = NotificationEvent(
+            type=NotificationType.THRESHOLD_EXCEEDED,
+            title="PLC Threshold Exceeded",
+            message=f"{target}: {condition} (value {value:g})",
+            priority=NotificationPriority.HIGH,
+            data={"plc_ip": plc_ip, "target": target, "condition": condition, "value": value, **extra_data},
         )
         return await self.notify(event)
 

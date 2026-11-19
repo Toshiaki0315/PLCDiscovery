@@ -6,18 +6,23 @@ plc_gui.PLCScannerApp, which provides the common helpers used here
 """
 
 import asyncio
-import math
 import logging
+import math
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
-from typing import Dict, Optional
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Coroutine, Dict, List, Optional, Sequence
 
 from plc_discovery import settings_file
+from plc_discovery.config import NetworkConfig
 from plc_discovery.database import DatabaseConfig, DatabaseExporter
 from plc_discovery.notifications import (
-    CONFIGURABLE_EVENTS, NOTIFICATION_TYPES, NotificationEvent, NotificationManager,
-    NotificationPriority, NotificationType,
+    CONFIGURABLE_EVENTS,
+    NOTIFICATION_TYPES,
+    NotificationEvent,
+    NotificationManager,
+    NotificationPriority,
+    NotificationType,
 )
 from plc_discovery.output import DEFAULT_OUTPUT_DIR
 
@@ -41,7 +46,7 @@ class JobOutputs:
             except Exception as e:
                 logging.error(f"データベースを開けませんでした（CSVへの保存は続けます）: {e}")
 
-    async def notify(self, send) -> None:
+    async def notify(self, send: Callable[[NotificationManager], Awaitable[Any]]) -> None:
         """Send a notification if destinations are set; never stops the job"""
         if self.notifier is None or not self.notifier.has_handlers:
             return
@@ -59,23 +64,66 @@ class JobOutputs:
 class SettingsTabsMixin:
     """④ 通知 / ⑤ データベース タブと設定ファイルの保存・読み込み"""
 
+    if TYPE_CHECKING:  # provided by plc_gui.PLCScannerApp
+        root: tk.Tk
+        tab_notify: ttk.Frame
+        tab_db: ttk.Frame
+        var_status: tk.StringVar
+        var_settings_path: tk.StringVar
+        var_packet_interval: tk.StringVar
+        var_retry_interval: tk.StringVar
+        var_timeout: tk.StringVar
+        var_output_dir: tk.StringVar
+        var_encoding: tk.StringVar
+        var_hex_addresses: tk.BooleanVar
+        var_periodic_csv: tk.StringVar
+        var_report_interval: tk.StringVar
+        var_min_interval: tk.StringVar
+        var_db_enabled: tk.BooleanVar
+        var_db_path: tk.StringVar
+        var_db_history: tk.BooleanVar
+        var_db_days: tk.StringVar
+        var_db_size: tk.StringVar
+        var_db_interval: tk.StringVar
+        var_db_status: tk.StringVar
+        notify_destinations: List[Dict[str, Any]]
+
+        def _make_tree(
+            self, parent: tk.Misc, cols: Sequence[str], headings: Sequence[str], widths: Sequence[int]
+        ) -> ttk.Treeview: ...
+
+        def _int_field(self, var: tk.StringVar, label: str, minimum: int = 0) -> int: ...
+
+        def _network_config(self) -> NetworkConfig: ...
+
+        def _run_job(self, coro: Coroutine[Any, Any, Any], start_msg: str) -> None: ...
+
+        def _post(self, *item: Any) -> None: ...
+
     def _build_notify_tab(self) -> None:
         f = self.tab_notify
-        ttk.Label(f, text="スキャンの結果を Teams / Slack / Webhook に通知します", style="Title.TLabel").pack(anchor=tk.W)
-        ttk.Label(f, text="通知先を追加し、送る出来事（スキャン完了・エラーなど）を選んでください。"
-                          "設定は「③ 通信・出力設定」の設定ファイルに保存できます。",
-                  style="Hint.TLabel").pack(anchor=tk.W, pady=(0, 8))
+        ttk.Label(f, text="スキャンの結果を Teams / Slack / Webhook に通知します", style="Title.TLabel").pack(
+            anchor=tk.W
+        )
+        ttk.Label(
+            f,
+            text="通知先を追加し、送る出来事（スキャン完了・エラーなど）を選んでください。"
+            "設定は「③ 通信・出力設定」の設定ファイルに保存できます。",
+            style="Hint.TLabel",
+        ).pack(anchor=tk.W, pady=(0, 8))
 
         timing = ttk.LabelFrame(f, text="通知のタイミング", padding=8)
         timing.pack(fill=tk.X)
         ttk.Label(timing, text="定期報告の間隔", width=18).grid(row=0, column=0, sticky=tk.W)
         ttk.Entry(timing, textvariable=self.var_report_interval, width=8).grid(row=0, column=1, sticky=tk.W)
-        ttk.Label(timing, text="分（周期実行中、各PLCの OK/NG 件数を送る。0 = 送らない）",
-                  style="Hint.TLabel").grid(row=0, column=2, sticky=tk.W, padx=6)
+        ttk.Label(timing, text="分（周期実行中、各PLCの OK/NG 件数を送る。0 = 送らない）", style="Hint.TLabel").grid(
+            row=0, column=2, sticky=tk.W, padx=6
+        )
         ttk.Label(timing, text="同じ通知の最小間隔", width=18).grid(row=1, column=0, sticky=tk.W, pady=(4, 0))
         ttk.Entry(timing, textvariable=self.var_min_interval, width=8).grid(row=1, column=1, sticky=tk.W, pady=(4, 0))
-        ttk.Label(timing, text="分（この間に起きた同じ種類の通知は送らない。0 = 制限なし）",
-                  style="Hint.TLabel").grid(row=1, column=2, sticky=tk.W, padx=6, pady=(4, 0))
+        ttk.Label(timing, text="分（この間に起きた同じ種類の通知は送らない。0 = 制限なし）", style="Hint.TLabel").grid(
+            row=1, column=2, sticky=tk.W, padx=6, pady=(4, 0)
+        )
 
         btns = ttk.Frame(f)
         btns.pack(fill=tk.X, pady=(10, 4))
@@ -95,12 +143,23 @@ class SettingsTabsMixin:
         tree.delete(*tree.get_children())
         for i, d in enumerate(self.notify_destinations):
             events = d.get("events") or []
-            labels = [CONFIGURABLE_EVENTS.get(NotificationType(e), e) for e in events
-                      if e in {t.value for t in NotificationType}]
-            tree.insert("", tk.END, iid=str(i), values=(
-                d.get("name", ""), d.get("type", "webhook"), "○" if d.get("enabled", True) else "×",
-                "、".join(labels) if labels else "すべて", d.get("url", ""),
-            ))
+            labels = [
+                CONFIGURABLE_EVENTS.get(NotificationType(e), e)
+                for e in events
+                if e in {t.value for t in NotificationType}
+            ]
+            tree.insert(
+                "",
+                tk.END,
+                iid=str(i),
+                values=(
+                    d.get("name", ""),
+                    d.get("type", "webhook"),
+                    "○" if d.get("enabled", True) else "×",
+                    "、".join(labels) if labels else "すべて",
+                    d.get("url", ""),
+                ),
+            )
 
     def _selected_destination(self) -> Optional[int]:
         sel = self.tree_notify.selection()
@@ -135,8 +194,10 @@ class SettingsTabsMixin:
 
     def _destination_dialog(self, current: Optional[Dict], index: Optional[int] = None) -> Optional[Dict]:
         """通知先の追加・編集ダイアログ。OK なら設定ファイルの notifications[] の 1 件を返す"""
-        current = dict(current or {"name": "", "type": "teams", "url": "", "enabled": True,
-                                   "events": ["scan_complete", "scan_error"]})
+        current = dict(
+            current
+            or {"name": "", "type": "teams", "url": "", "enabled": True, "events": ["scan_complete", "scan_error"]}
+        )
         win = tk.Toplevel(self.root)
         win.title("通知先の編集" if index is not None else "通知先の追加")
         win.transient(self.root)
@@ -153,28 +214,40 @@ class SettingsTabsMixin:
         chosen = set(current.get("events") or [])
         v_events = {t: tk.BooleanVar(value=t.value in chosen) for t in CONFIGURABLE_EVENTS}
 
-        rows = [("名前", ttk.Entry(body, textvariable=v_name, width=30)),
-                ("通知方法", ttk.Combobox(body, textvariable=v_type, values=list(NOTIFICATION_TYPES),
-                                         state="readonly", width=12)),
-                ("URL", ttk.Entry(body, textvariable=v_url, width=60))]
+        rows = [
+            ("名前", ttk.Entry(body, textvariable=v_name, width=30)),
+            (
+                "通知方法",
+                ttk.Combobox(body, textvariable=v_type, values=list(NOTIFICATION_TYPES), state="readonly", width=12),
+            ),
+            ("URL", ttk.Entry(body, textvariable=v_url, width=60)),
+        ]
         for r, (label, widget) in enumerate(rows):
             ttk.Label(body, text=label, width=12).grid(row=r, column=0, sticky=tk.W, pady=3)
             widget.grid(row=r, column=1, columnspan=3, sticky=tk.W, pady=3)
-        ttk.Label(body, text="Teams: ワークフロー「Webhook 要求を受信したらチャネルに投稿する」の URL / "
-                             "Slack: Incoming Webhook の URL / webhook: 任意の受信 URL（JSON を POST）",
-                  style="Hint.TLabel", wraplength=520, justify=tk.LEFT).grid(row=3, column=1, columnspan=3, sticky=tk.W)
+        ttk.Label(
+            body,
+            text="Teams: ワークフロー「Webhook 要求を受信したらチャネルに投稿する」の URL / "
+            "Slack: Incoming Webhook の URL / webhook: 任意の受信 URL（JSON を POST）",
+            style="Hint.TLabel",
+            wraplength=520,
+            justify=tk.LEFT,
+        ).grid(row=3, column=1, columnspan=3, sticky=tk.W)
 
         ev = ttk.LabelFrame(body, text="通知する出来事（何も選ばないと、すべて通知）", padding=6)
         ev.grid(row=4, column=0, columnspan=4, sticky=tk.EW, pady=(8, 4))
         for i, (t, label) in enumerate(CONFIGURABLE_EVENTS.items()):
-            ttk.Checkbutton(ev, text=label, variable=v_events[t]).grid(row=i // 2, column=i % 2, sticky=tk.W, padx=(0, 16))
+            ttk.Checkbutton(ev, text=label, variable=v_events[t]).grid(
+                row=i // 2, column=i % 2, sticky=tk.W, padx=(0, 16)
+            )
 
         ttk.Label(body, text="タイムアウト(秒)", width=12).grid(row=5, column=0, sticky=tk.W, pady=3)
         ttk.Entry(body, textvariable=v_timeout, width=6).grid(row=5, column=1, sticky=tk.W)
         ttk.Label(body, text="送信回数").grid(row=5, column=2, sticky=tk.E, padx=(10, 4))
         ttk.Entry(body, textvariable=v_retry, width=6).grid(row=5, column=3, sticky=tk.W)
         ttk.Checkbutton(body, text="この通知先を有効にする", variable=v_enabled).grid(
-            row=6, column=0, columnspan=4, sticky=tk.W, pady=(6, 0))
+            row=6, column=0, columnspan=4, sticky=tk.W, pady=(6, 0)
+        )
 
         result: Dict = {}
 
@@ -193,15 +266,22 @@ class SettingsTabsMixin:
                 if timeout <= 0 or retry < 1:
                     raise ValueError
             except ValueError as e:
-                messagebox.showwarning("入力エラー", str(e) or "タイムアウトは正の数、送信回数は 1 以上の整数にしてください。",
-                                       parent=win)
+                messagebox.showwarning(
+                    "入力エラー", str(e) or "タイムアウトは正の数、送信回数は 1 以上の整数にしてください。", parent=win
+                )
                 return
-            result.update(current)   # keep keys this dialog does not edit (e.g. format, headers)
-            result.update({
-                "name": name, "type": v_type.get(), "url": url, "enabled": v_enabled.get(),
-                "events": [t.value for t, var in v_events.items() if var.get()],
-                "timeout": timeout, "retry_count": retry,
-            })
+            result.update(current)  # keep keys this dialog does not edit (e.g. format, headers)
+            result.update(
+                {
+                    "name": name,
+                    "type": v_type.get(),
+                    "url": url,
+                    "enabled": v_enabled.get(),
+                    "events": [t.value for t, var in v_events.items() if var.get()],
+                    "timeout": timeout,
+                    "retry_count": retry,
+                }
+            )
             win.destroy()
 
         act = ttk.Frame(body)
@@ -222,10 +302,11 @@ class SettingsTabsMixin:
         index = self._selected_destination()
         if index is None:
             return
-        dest = dict(self.notify_destinations[index], enabled=True, events=[])   # すべての出来事を受ける
+        dest = dict(self.notify_destinations[index], enabled=True, events=[])  # すべての出来事を受ける
         manager = NotificationManager.from_config({"notifications": [dest]})
         event = NotificationEvent(
-            type=NotificationType.CUSTOM, title="PLC Discovery テスト通知",
+            type=NotificationType.CUSTOM,
+            title="PLC Discovery テスト通知",
             message="PLC Discovery からのテスト通知です。この通知が届いていれば設定は正しく動作しています。",
             priority=NotificationPriority.LOW,
         )
@@ -244,25 +325,37 @@ class SettingsTabsMixin:
 
     def _build_db_tab(self) -> None:
         f = self.tab_db
-        ttk.Label(f, text="収集したデータをデータベース（SQLite）にも保存します", style="Title.TLabel").pack(anchor=tk.W)
-        ttk.Label(f, text="CSV に加えて、値の変化の履歴を残せます。古いデータは下の条件で自動的に整理されます。",
-                  style="Hint.TLabel").pack(anchor=tk.W, pady=(0, 8))
+        ttk.Label(f, text="収集したデータをデータベース（SQLite）にも保存します", style="Title.TLabel").pack(
+            anchor=tk.W
+        )
+        ttk.Label(
+            f,
+            text="CSV に加えて、値の変化の履歴を残せます。古いデータは下の条件で自動的に整理されます。",
+            style="Hint.TLabel",
+        ).pack(anchor=tk.W, pady=(0, 8))
 
         box = ttk.LabelFrame(f, text="データベース", padding=10)
         box.pack(fill=tk.X)
         ttk.Checkbutton(box, text="データベースに保存する", variable=self.var_db_enabled).grid(
-            row=0, column=0, columnspan=3, sticky=tk.W)
+            row=0, column=0, columnspan=3, sticky=tk.W
+        )
         ttk.Label(box, text="ファイル", width=18).grid(row=1, column=0, sticky=tk.W, pady=(6, 0))
         ttk.Entry(box, textvariable=self.var_db_path, width=60).grid(row=1, column=1, sticky=tk.W, pady=(6, 0))
         ttk.Button(box, text="参照...", command=self._browse_db_file).grid(row=1, column=2, padx=6, pady=(6, 0))
         ttk.Checkbutton(box, text="値の変化の履歴を記録する", variable=self.var_db_history).grid(
-            row=2, column=1, sticky=tk.W, pady=(6, 0))
+            row=2, column=1, sticky=tk.W, pady=(6, 0)
+        )
 
         clean = ttk.LabelFrame(f, text="自動整理（古いデータの削除）", padding=10)
         clean.pack(fill=tk.X, pady=10)
         rows = [
             ("保存する期間", self.var_db_days, "日", "これより古いデータを削除（0 = 期間で削除しない）"),
-            ("サイズの上限", self.var_db_size, "MB", "超えたら古いデータから削除（0 = 上限なし）。各アドレスの最新値は残す"),
+            (
+                "サイズの上限",
+                self.var_db_size,
+                "MB",
+                "超えたら古いデータから削除（0 = 上限なし）。各アドレスの最新値は残す",
+            ),
             ("整理の間隔", self.var_db_interval, "時間", "周期実行中に上の条件で整理する間隔（開いたときにも整理）"),
         ]
         for i, (label, var, unit, hint) in enumerate(rows):
@@ -279,7 +372,9 @@ class SettingsTabsMixin:
         path = filedialog.asksaveasfilename(
             initialfile=Path(self.var_db_path.get() or "plc_data.db").name,
             initialdir=str(Path(self.var_db_path.get() or ".").parent),
-            defaultextension=".db", filetypes=[("SQLite データベース", "*.db"), ("すべて", "*.*")])
+            defaultextension=".db",
+            filetypes=[("SQLite データベース", "*.db"), ("すべて", "*.*")],
+        )
         if path:
             self.var_db_path.set(path)
 
@@ -292,11 +387,12 @@ class SettingsTabsMixin:
 
         async def job() -> None:
             def work() -> str:
-                db = DatabaseExporter(db_config)   # 開くときに期間・サイズの条件で整理する
+                db = DatabaseExporter(db_config)  # 開くときに期間・サイズの条件で整理する
                 try:
                     return f"整理しました（データ量 {db.used_bytes() / 1048576:.1f} MB）"
                 finally:
                     db.close()
+
             message = await asyncio.get_running_loop().run_in_executor(None, work)
             logging.info(f"データベース {db_config.path}: {message}")
             self._post("db_status", message)
@@ -346,8 +442,11 @@ class SettingsTabsMixin:
                 "hex_addresses": self.var_hex_addresses.get(),
                 "periodic_csv": self.var_periodic_csv.get(),
                 "database": {
-                    "enabled": db.enabled, "path": db.path, "track_history": db.track_history,
-                    "max_history_days": db.max_history_days, "max_size_mb": db.max_size_mb,
+                    "enabled": db.enabled,
+                    "path": db.path,
+                    "track_history": db.track_history,
+                    "max_history_days": db.max_history_days,
+                    "max_size_mb": db.max_size_mb,
                     "cleanup_interval_hours": db.cleanup_interval_hours,
                 },
             },
@@ -359,9 +458,11 @@ class SettingsTabsMixin:
         """読み込んだ設定（既定値と合成済み）を③〜⑤タブに反映する"""
         get = settings_file.section
         net = get(config, "network", default={}) or {}
-        for var, key in ((self.var_packet_interval, "packet_interval_ms"),
-                         (self.var_retry_interval, "retry_interval_ms"),
-                         (self.var_timeout, "request_timeout_ms")):
+        for var, key in (
+            (self.var_packet_interval, "packet_interval_ms"),
+            (self.var_retry_interval, "retry_interval_ms"),
+            (self.var_timeout, "request_timeout_ms"),
+        ):
             if key in net:
                 var.set(str(net[key]))
         out = get(config, "output", default={}) or {}
@@ -383,15 +484,18 @@ class SettingsTabsMixin:
         timing = get(config, "notification_settings", default={}) or {}
         self.var_report_interval.set(f"{timing.get('report_interval_minutes', 0):g}")
         self.var_min_interval.set(f"{timing.get('min_interval_minutes', 0):g}")
-        self.notify_destinations = [dict(d) for d in (get(config, "notifications", default=[]) or [])
-                                    if isinstance(d, dict)]
+        self.notify_destinations = [
+            dict(d) for d in (get(config, "notifications", default=[]) or []) if isinstance(d, dict)
+        ]
         self._refresh_notify_tree()
 
     def _browse_settings_file(self) -> None:
         path = filedialog.asksaveasfilename(
             initialfile=Path(self.var_settings_path.get() or settings_file.DEFAULT_SETTINGS_FILE).name,
             initialdir=str(Path(self.var_settings_path.get() or ".").parent),
-            defaultextension=".yaml", filetypes=[("YAML", "*.yaml *.yml"), ("JSON", "*.json"), ("すべて", "*.*")])
+            defaultextension=".yaml",
+            filetypes=[("YAML", "*.yaml *.yml"), ("JSON", "*.json"), ("すべて", "*.*")],
+        )
         if path:
             self.var_settings_path.set(path)
 

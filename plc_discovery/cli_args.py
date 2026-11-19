@@ -24,6 +24,7 @@ from .config_loader import NETWORK_MINIMUMS, ConfigLoader, integer_error
 from .data_types import DataType
 from .names import BYTE_ORDER_NAMES, parse_device_type, parse_protocol
 from .output import DEFAULT_OUTPUT_DIR
+from .thresholds import Threshold, parse_thresholds
 from .utils import target_address_error
 
 # Data type string mapping
@@ -170,6 +171,16 @@ Examples:
         default=None,
         help="Interval between scans in seconds for continuous range mode, >= 1 "
         "(default: scan.interval_seconds from --config, otherwise 0 = single scan)",
+    )
+
+    parser.add_argument(
+        "--threshold",
+        action="append",
+        default=None,
+        metavar="CONDITION",
+        help='Notify (threshold_exceeded) when a value crosses a limit during a periodic scan, e.g. "D100>80"; '
+        "operators: > >= < <= == !=; repeat the option or separate with commas "
+        "(default: thresholds from --config)",
     )
 
     parser.add_argument(
@@ -472,3 +483,10 @@ def resolve_output_settings(args: argparse.Namespace, config_loader: Optional[Co
         if encoding is None and config_loader.is_set("output", "encoding"):
             encoding = settings["encoding"]
     return output_dir or DEFAULT_OUTPUT_DIR, encoding or "utf-8-sig"
+
+
+def resolve_thresholds(args: argparse.Namespace, config_loader: Optional[ConfigLoader]) -> List[Threshold]:
+    """--threshold conditions, else thresholds: from the config file; ValueError when malformed"""
+    if getattr(args, "threshold", None):
+        return parse_thresholds(args.threshold)
+    return config_loader.get_thresholds() if config_loader else []

@@ -93,19 +93,47 @@ def test_status_report_sent_only_when_due():
     assert len(sent) == 1
 
 
-def test_outage_notified_once_per_outage():
-    sent = []
+def test_outage_and_recovery_notified_once_each():
+    notifier = MagicMock()
+    notifier.notify_unreachable = AsyncMock()
+    notifier.notify_recovered = AsyncMock()
 
     async def notify(send):
-        sent.append(send)
+        await send(notifier)
 
     async def run():
         runner = CycleRunner(None, notify=notify)
-        for reachable in (False, False, True, False):
-            await runner.track_outage("a", reachable, "10.0.0.1", "down")
+        for reachable in (True, False, False, True, True, False):
+            await runner.track_outage("PLC1", reachable, "10.0.0.1")
 
     asyncio.run(run())
-    assert len(sent) == 2
+    assert notifier.notify_unreachable.await_count == 2  # two outages
+    assert notifier.notify_recovered.await_count == 1  # first one ended
+    kwargs = notifier.notify_recovered.await_args.kwargs
+    assert kwargs["plc_ip"] == "10.0.0.1" and kwargs["downtime_seconds"] >= 0
+
+
+def test_outage_events_reach_scan_error_subscribers():
+    from plc_discovery.notifications import NotificationManager, NotificationType
+
+    sent = []
+    manager = NotificationManager()
+    manager.add_custom("old", lambda event: sent.append(("old", event.type)), events=[NotificationType.SCAN_ERROR])
+    manager.add_custom("new", lambda event: sent.append(("new", event.type)), events=[NotificationType.PLC_UNREACHABLE])
+    manager.add_custom(
+        "report", lambda event: sent.append(("report", event.type)), events=[NotificationType.STATUS_REPORT]
+    )
+    asyncio.run(manager.notify_unreachable("PLC1", "10.0.0.1"))
+    asyncio.run(manager.notify_recovered("PLC1", "10.0.0.1", 12.0))
+    assert sorted(sent, key=str) == sorted(
+        [
+            ("old", NotificationType.PLC_UNREACHABLE),
+            ("new", NotificationType.PLC_UNREACHABLE),
+            ("old", NotificationType.PLC_RECOVERED),
+            ("new", NotificationType.PLC_RECOVERED),
+        ],
+        key=str,
+    )
 
 
 def test_next_cycle_wait_subtracts_reading_time():
@@ -159,7 +187,6 @@ def test_parallel_scan_reports_unreached_addresses(tmp_path):
     from unittest.mock import patch
 
     import plc_scanner
-    from plc_discovery import parallel
     from plc_discovery.config import NetworkConfig, ScanMode
     from plc_discovery.output import CSVExporter
 
@@ -177,7 +204,7 @@ def test_parallel_scan_reports_unreached_addresses(tmp_path):
             return None
 
     plcs = [PLCInfo(ip, protocol=Protocol.SLMP, port=5001) for ip in ("10.0.0.1", "10.0.0.2")]
-    with patch.object(parallel, "PLCDataCollector", Offline):
+    with patch.object(plc_scanner, "PLCDataCollector", Offline):
         results = asyncio.run(
             plc_scanner.run_parallel_scan(
                 plcs,
@@ -189,7 +216,7 @@ def test_parallel_scan_reports_unreached_addresses(tmp_path):
             )
         )
     for result in results.values():
-        assert not result.success and "Failed to connect" in result.error_message
+        assert not result.success and "Failed to connect" in result.error
         assert [(p.address, p.status) for p in result.data_points] == [
             ("D0", StatusCode.NG_COMM_ERROR),
             ("D1", StatusCode.NG_COMM_ERROR),

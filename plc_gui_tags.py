@@ -6,9 +6,9 @@ the tags for the "タグ（EtherNet/IP）" field of the ② データ収集 tab.
 
 import tkinter as tk
 from tkinter import ttk
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple, Union
 
-from plc_discovery.config import NetworkConfig, PROTOCOL_PORTS, Protocol
+from plc_discovery.config import PROTOCOL_PORTS, NetworkConfig, Protocol
 from plc_discovery.protocols.ethernet_ip import EtherNetIPHandler
 
 # Message when the device has no tag list (Omron NJ/NX, generic CIP devices)
@@ -45,8 +45,13 @@ def filter_tags(tags: List[str], text: str) -> List[str]:
 class TagPickerDialog:
     """Modal list of tags with a filter; on OK calls on_select(selected tags)"""
 
-    def __init__(self, parent: tk.Misc, tags: List[str], selected: List[str],
-                 on_select: Callable[[List[str]], None]):
+    def __init__(
+        self,
+        parent: Union[tk.Tk, tk.Toplevel],
+        tags: List[str],
+        selected: List[str],
+        on_select: Callable[[List[str]], None],
+    ):
         self.tags = tags
         self.selected = [t for t in selected if t in tags]
         self.on_select = on_select
@@ -57,8 +62,9 @@ class TagPickerDialog:
 
         frame = ttk.Frame(self.top, padding=10)
         frame.pack(fill=tk.BOTH, expand=True)
-        ttk.Label(frame, text=f"コントローラのタグ {len(tags)} 件。Ctrl / Shift + クリックで複数選択できます。"
-                  ).pack(anchor=tk.W)
+        ttk.Label(frame, text=f"コントローラのタグ {len(tags)} 件。Ctrl / Shift + クリックで複数選択できます。").pack(
+            anchor=tk.W
+        )
         row = ttk.Frame(frame)
         row.pack(fill=tk.X, pady=(6, 4))
         ttk.Label(row, text="絞り込み").pack(side=tk.LEFT)

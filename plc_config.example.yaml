@@ -218,7 +218,10 @@ notification_settings:
   # dropped), so a PLC failing every cycle does not flood the channel
   min_interval_minutes: 0
 
-# Event types: scan_complete, scan_error, discovery_complete, status_report
+# Event types: scan_complete, scan_error, discovery_complete, status_report,
+# plc_unreachable (periodic scan: a PLC stopped answering, and when it
+# answers again; also sent to destinations that chose scan_error),
+# threshold_exceeded (periodic scan: a value crossed a limit in thresholds)
 notifications:
   # Webhook notification
   - name: main_webhook
@@ -253,3 +256,12 @@ notifications:
     events:
       - scan_complete
 
+# Thresholds watched during periodic range scans (--interval): a
+# threshold_exceeded notification is sent once when a value crosses its
+# limit, and again only after it went back inside. Operators: > >= < <= == !=
+# (CLI: --threshold "D100>80")
+# thresholds:
+#   - address: D100
+#     op: ">"
+#     value: 80
+#     name: Furnace temperature

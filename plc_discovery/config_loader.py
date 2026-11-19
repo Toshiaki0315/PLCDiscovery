@@ -25,6 +25,7 @@ except ImportError:
 from .config import DeviceRange, DeviceType, NetworkConfig, PLCInfo, Protocol, ScanMode, range_size_error
 from .data_types import ByteOrder, DataType, DataTypeManager
 from .names import parse_byte_order, parse_device_type, parse_protocol
+from .thresholds import Threshold, threshold_from_dict
 from .utils import ip_range_error, target_address_error
 
 # Default configuration template
@@ -350,6 +351,13 @@ class ConfigLoader:
         tags = self.config.get("scan", {}).get("tags") or []
         return [str(t).strip() for t in tags if str(t).strip()] if isinstance(tags, list) else []
 
+    def get_thresholds(self) -> List[Threshold]:
+        """Limits watched during periodic scans (thresholds:), see thresholds.py"""
+        items = self.config.get("thresholds") or []
+        if not isinstance(items, list):
+            return []
+        return [threshold_from_dict(item, f"thresholds[{i}]") for i, item in enumerate(items)]
+
     def get_tag_members(self) -> Dict[str, List[str]]:
         """Structure variable -> member names (scan.tag_members), see expand_tag_members()"""
         members = self.config.get("scan", {}).get("tag_members") or {}
@@ -581,6 +589,16 @@ class ConfigLoader:
                         errors.append(f"output.database.{key} {error}")
 
         errors.extend(self._validate_notifications())
+
+        thresholds = self.config.get("thresholds") or []
+        if not isinstance(thresholds, list):
+            errors.append("thresholds must be a list")
+        else:
+            for i, item in enumerate(thresholds):
+                try:
+                    threshold_from_dict(item, f"thresholds[{i}]")
+                except ValueError as e:
+                    errors.append(str(e))
 
         # Validate data type settings (default type/byte order and mappings)
         try:

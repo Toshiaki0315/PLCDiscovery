@@ -117,6 +117,9 @@ jobs:
   # Code quality checks
   code-quality:
     runs-on: ubuntu-latest
+    env:
+      # Entry-point scripts at the repository root, checked like the package
+      TOP_LEVEL: plc_scanner.py plc_gui.py plc_gui_settings.py plc_gui_tags.py
     
     steps:
     - name: Checkout code
@@ -135,19 +138,19 @@ jobs:
     
     - name: Run linting with flake8
       run: |
-        flake8 plc_discovery tests simulators --max-line-length=120 --ignore=E501,W503,E402,E203
+        flake8 plc_discovery tests simulators $TOP_LEVEL --max-line-length=120 --ignore=E501,W503,E402,E203,E704
     
     - name: Check code formatting with Black
       run: |
-        black --check --diff plc_discovery tests
+        black --check --diff plc_discovery tests $TOP_LEVEL
     
     - name: Check import sorting with isort
       run: |
-        isort --check-only --diff plc_discovery tests
+        isort --check-only --diff plc_discovery tests $TOP_LEVEL
     
     - name: Run type checking with mypy
       run: |
-        mypy plc_discovery --ignore-missing-imports --no-error-summary
+        mypy plc_discovery $TOP_LEVEL --ignore-missing-imports --no-error-summary
 
   # Build package
   build:

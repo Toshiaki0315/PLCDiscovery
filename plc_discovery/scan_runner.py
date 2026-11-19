@@ -20,6 +20,7 @@ from .conversion import apply_data_type_conversion
 from .data_types import ByteOrder, DataType, DataTypeManager
 from .database import DatabaseExporter
 from .output import CSVExporter
+from .thresholds import ThresholdMonitor
 
 logger = logging.getLogger(__name__)
 
@@ -209,6 +210,7 @@ class CycleRunner:
         type_manager: Optional[DataTypeManager] = None,
         notifier: Any = None,
         notify: Optional[Notify] = None,
+        thresholds: Optional[ThresholdMonitor] = None,
     ):
         self.items = None if items is None else list(items)
         self.data_type = data_type
@@ -217,7 +219,9 @@ class CycleRunner:
         self.notifier = notifier
         self._notify: Notify = notify or _no_notify
         self._last_report = asyncio.get_running_loop().time()
-        self._down: Set[str] = set()
+        # Target -> loop time its outage was first seen
+        self._down: Dict[str, float] = {}
+        self.thresholds = thresholds
 
     async def read(self, collector: PLCDataCollector, writer: ResultWriter) -> CycleResult:
         """Collect, convert and write one target; denied addresses are logged once"""
@@ -243,12 +247,29 @@ class CycleRunner:
         message, problems = status_report_message(points_by_target, unreachable, iteration)
         await self._notify(lambda n: n.notify_status_report(message, has_problems=problems, iteration=iteration))
 
-    async def track_outage(self, label: str, reachable: bool, plc_ip: str, message: str) -> None:
-        """An error notification when a target stops answering (once per outage)"""
+    async def check_thresholds(self, target: str, points: List[DataPoint], plc_ip: str) -> None:
+        """THRESHOLD_EXCEEDED for each limit this cycle newly crossed"""
+        if not self.thresholds:
+            return
+        for threshold, value in self.thresholds.check(target, points):
+            logger.warning(f"{target}: threshold {threshold.label} exceeded (value {value:g})")
+            # notify() sends right away, before the loop moves on
+            label, address = threshold.label, threshold.address
+            await self._notify(lambda n: n.notify_threshold(target, label, value, plc_ip=plc_ip, address=address))
+
+    async def track_outage(self, target: str, reachable: bool, plc_ip: str) -> None:
+        """
+        A PLC_UNREACHABLE notification when a target stops answering (once
+        per outage) and PLC_RECOVERED with the downtime when it answers again.
+        """
+        now = asyncio.get_running_loop().time()
         if reachable:
-            self._down.discard(label)
+            down_since = self._down.pop(target, None)
+            if down_since is not None:
+                downtime = now - down_since
+                await self._notify(lambda n: n.notify_recovered(target, plc_ip=plc_ip, downtime_seconds=downtime))
             return
-        if label in self._down:
+        if target in self._down:
             return
-        self._down.add(label)
-        await self._notify(lambda n: n.notify_error(message, plc_ip=plc_ip))
+        self._down[target] = now
+        await self._notify(lambda n: n.notify_unreachable(target, plc_ip=plc_ip))

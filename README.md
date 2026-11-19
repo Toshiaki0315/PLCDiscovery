@@ -627,7 +627,9 @@ notification_settings:
   min_interval_minutes: 10      # 同じ種類の通知は10分に1回まで（0 = 制限なし）
 ```
 
-通知する出来事（`events`）: `scan_complete`（スキャン完了）、`scan_error`（エラー）、`discovery_complete`（探索完了）、`status_report`（周期実行中の定期報告）。省略するとすべて通知します。
+通知する出来事（`events`）: `scan_complete`（スキャン完了）、`scan_error`（エラー）、`discovery_complete`（探索完了）、`status_report`（周期実行中の定期報告）、`plc_unreachable`（周期実行中の通信断・復旧）、`threshold_exceeded`（周期実行中のしきい値超過）。省略するとすべて通知します。
+
+周期実行中に PLC が応答しなくなると、通信が途切れるたびに 1 回 `plc_unreachable` を送り、応答に戻ると止まっていた時間を付けて `plc_recovered` を送ります（CLI・GUI 共通）。どちらも `scan_error` を選んだ通知先にも届きます。
 
 ### 設定ファイルでの通知設定
 
@@ -657,6 +659,25 @@ notifications:
 ```
 
 Teams の従来の Incoming Webhook（`outlook.office.com/webhook/...`）は廃止が進んでいます。新しく設定する場合は、Teams のワークフローで発行した Webhook の URL を指定してください。Teams には Adaptive Card 形式で送ります（従来の URL を使う場合は `format: messagecard`）。
+
+### しきい値の監視
+
+周期実行中、指定したアドレス（またはタグ）の値が条件を満たしたときに `threshold_exceeded` を通知します。通知は条件を満たした時点で 1 回だけ送り、値が範囲内に戻ってから再び超えたときにもう一度送ります（毎周期は送りません）。比較する値は、データ型変換をしている場合は変換後の値、そうでなければ読み取った値そのものです。読めなかったアドレスは比較しません。
+
+```bash
+python plc_scanner.py --mode range --target 192.168.1.10 --device D --range 100-200 \
+  --interval 60 --threshold "D100>80" --threshold "D150<=10"
+```
+
+```yaml
+thresholds:
+  - address: D100
+    op: ">"          # >, >=, <, <=, ==, !=
+    value: 80
+    name: 炉温度      # 通知に表示する名前（任意）
+```
+
+GUI では、「周期実行」の横の「しきい値」欄に `D100>80, D200<=10` のようにカンマ区切りで入力します。
 
 ### Pythonコードでの通知
 
