@@ -208,9 +208,9 @@ async def run_parallel_scan(
         if result.denied_addresses:
             writer.export_new_denied(result.denied_addresses, result.denied_statuses)
         
-        if writer.errors and result.success:
+        if writer.error_count and result.success:
             result.success = False
-            result.error_message = f"{len(writer.errors)} write error(s); first: {writer.errors[0]}"
+            result.error_message = writer.error_summary()
     
     # Display results
     result_dicts = {
@@ -381,8 +381,8 @@ async def run_single_scan(
         display.print_info(f"Denied addresses logged to: {denied_path}")
     
     display.print_statistics(stats)
-    if writer.errors:
-        outcome.error = f"{len(writer.errors)} write error(s); first: {writer.errors[0]}"
+    if writer.error_count:
+        outcome.error = writer.error_summary()
     else:
         outcome.success = True
     return outcome
@@ -506,11 +506,8 @@ async def run_periodic_scan(
             display.print_statistics(stats)
             if key not in reached:
                 pass   # never answered: keep the connection error from the start
-            elif writers[key].errors:
-                outcome.error = (
-                    f"{len(writers[key].errors)} write error(s) during monitoring; "
-                    f"first: {writers[key].errors[0]}"
-                )
+            elif writers[key].error_count:
+                outcome.error = writers[key].error_summary(" during monitoring")
             else:
                 outcome.success = True
     

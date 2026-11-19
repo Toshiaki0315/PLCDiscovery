@@ -12,9 +12,10 @@ from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
 
 from .audit_log import get_audit_logger
-from .collector import PLCDataCollector, collect_item
+from .collector import PLCDataCollector, unreached_points
 from .config import DataPoint, DeviceRange, NetworkConfig, PLCInfo, ScanMode, StatusCode
 from .discovery import target_labels
+from .scan_runner import collect_items
 from .utils import success_rate_text
 
 logger = logging.getLogger(__name__)
@@ -171,11 +172,9 @@ class ParallelPLCScanner:
                         f"({plc.protocol.name if plc.protocol else 'UNKNOWN'})" + (f": {reason}" if reason else "")
                     )
 
-                if mode == ScanMode.FULL:
-                    data_points = await collector.collect_full_scan()
-                elif mode == ScanMode.RANGE and device_ranges:
-                    for device_range in device_ranges:
-                        data_points.extend(await collect_item(collector, device_range))
+                data_points = await collect_items(
+                    collector, None if mode == ScanMode.FULL else list(device_ranges or [])
+                )
 
                 denied_addresses = collector.get_denied_addresses()
                 denied_statuses = collector.get_denied_statuses()
@@ -185,6 +184,12 @@ class ParallelPLCScanner:
             error_message = str(e)
             logger.error(f"Error scanning {plc.ip_address}: {e}")
             self._audit.log_error(f"Scan failed: {e}", {"plc_ip": plc.ip_address})
+            if not data_points:
+                # PLC off or unreachable: still report every requested
+                # address as NG_COMM_ERROR, as a sequential scan does
+                data_points = unreached_points(
+                    plc.protocol, None if mode == ScanMode.FULL else list(device_ranges or [])
+                )
 
         end_time = datetime.now()
 

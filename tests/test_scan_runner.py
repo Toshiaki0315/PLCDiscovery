@@ -61,7 +61,9 @@ def test_result_writer_without_display_never_raises():
     exporter.export_plc_data.side_effect = PermissionError("locked")
     writer = ResultWriter(PLCInfo("10.0.0.1", protocol=Protocol.SLMP, port=5001), exporter, daily=False)
     assert writer.export_points([_ok("D0")]) is None
-    assert writer.errors and "locked" in writer.errors[0]
+    writer.export_points([_ok("D1")])
+    assert writer.error_count == 2 and "locked" in writer.first_error
+    assert writer.error_summary(" during monitoring").startswith("2 write error(s) during monitoring; first: ")
     assert exporter.export_plc_data.call_args.kwargs["hex_addresses"] is True
 
 
@@ -150,3 +152,58 @@ def test_simulator_cli_helpers():
     args = simulator_parser("x", 5001, "1-2").parse_args(["--port", "6000"])
     assert (args.host, args.port, args.denied) == ("127.0.0.1", 6000, "1-2")
     assert not hasattr(simulator_parser("x", 9600).parse_args([]), "denied")
+
+
+def test_parallel_scan_reports_unreached_addresses(tmp_path):
+    """--max-concurrent > 1: an offline PLC still gets NG_COMM_ERROR rows and a CSV"""
+    from unittest.mock import patch
+
+    import plc_scanner
+    from plc_discovery import parallel
+    from plc_discovery.config import NetworkConfig, ScanMode
+    from plc_discovery.output import CSVExporter
+
+    class Offline:
+        is_connected = False
+        connect_error = None
+
+        def __init__(self, plc, config=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return None
+
+    plcs = [PLCInfo(ip, protocol=Protocol.SLMP, port=5001) for ip in ("10.0.0.1", "10.0.0.2")]
+    with patch.object(parallel, "PLCDataCollector", Offline):
+        results = asyncio.run(
+            plc_scanner.run_parallel_scan(
+                plcs,
+                NetworkConfig(max_concurrent=2),
+                CSVExporter(str(tmp_path)),
+                MagicMock(),
+                ScanMode.RANGE,
+                [DeviceRange(DeviceType.D, 0, 1), TagRange(["A"])],
+            )
+        )
+    for result in results.values():
+        assert not result.success and "Failed to connect" in result.error_message
+        assert [(p.address, p.status) for p in result.data_points] == [
+            ("D0", StatusCode.NG_COMM_ERROR),
+            ("D1", StatusCode.NG_COMM_ERROR),
+            ("A", StatusCode.NG_COMM_ERROR),
+        ]
+    assert len(list(tmp_path.glob("plc_data_*.csv"))) == 2
+
+
+def test_gui_writer_keeps_database_detail_out_of_log(caplog):
+    db = MagicMock(is_enabled=True)
+    db.export_plc_data.return_value = 1
+    writer = ResultWriter(
+        PLCInfo("10.0.0.1", protocol=Protocol.SLMP, port=5001), MagicMock(hex_addresses=False), db_exporter=db
+    )
+    with caplog.at_level("INFO"):
+        writer.export_points([_ok("D0")])
+    assert "Saved 1 records" not in caplog.text

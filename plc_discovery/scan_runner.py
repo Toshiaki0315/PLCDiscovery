@@ -71,20 +71,32 @@ class ResultWriter:
         self.display = display
         self.db_exporter = db_exporter
         self._exported_denied: Set[str] = set()
-        self.errors: List[str] = []
+        # Only the count and the first message: a long monitoring run with a
+        # CSV locked for hours must not grow memory with every cycle
+        self.error_count = 0
+        self.first_error: Optional[str] = None
 
     def _failed(self, what: str, error: Exception) -> None:
         message = f"{self.label}: failed to write {what}: {error}"
-        self.errors.append(message)
+        self.error_count += 1
+        if self.first_error is None:
+            self.first_error = message
         if self.display is not None:
             self.display.print_error(message)
         logger.error(message)
+
+    def error_summary(self, context: str = "") -> Optional[str]:
+        """'N write error(s)[ context]; first: ...', or None without errors"""
+        if not self.error_count:
+            return None
+        return f"{self.error_count} write error(s){context}; first: {self.first_error}"
 
     def _info(self, message: str) -> None:
         if self.display is not None:
             self.display.print_info(message)
         else:
-            logger.info(message)
+            # GUI: per-cycle details stay out of the log pane
+            logger.debug(message)
 
     def export_points(self, points: List[DataPoint]) -> Optional[str]:
         if not points:
