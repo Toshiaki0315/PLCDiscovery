@@ -85,7 +85,13 @@ class TagPickerDialog:
 
         self.shown: List[str] = []
         self._refresh()
-        self.top.grab_set()
+        # Linux Tk refuses a grab before the window is mapped ("grab failed:
+        # window not viewable"); the dialog still works without the grab
+        try:
+            self.top.wait_visibility()
+            self.top.grab_set()
+        except tk.TclError:
+            pass
 
     def _refresh(self) -> None:
         self.shown = filter_tags(self.tags, self.var_filter.get())

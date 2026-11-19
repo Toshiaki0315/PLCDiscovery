@@ -211,7 +211,13 @@ class PLCDataCollector:
 
         if not await self._ensure_link():
             # Report every address as a communication error instead of
-            # returning nothing, so the output shows the PLC was unreachable
+            # returning nothing, so the output shows the PLC was unreachable.
+            # EtherNet/IP data-file ranges only apply to SLC-style devices;
+            # a Logix / Omron controller gets the single "ALL" row instead.
+            if protocol == Protocol.ETHERNET_IP and getattr(self._handler, "_plc_type", None) != "slc":
+                logger.warning(f"{self.plc_info.ip_address} unreachable: full scan reported as NG_COMM_ERROR")
+                self._collected_data = unreached_points(protocol, None)
+                return self._collected_data
             for device_range in device_ranges:
                 self._collected_data.extend(self._unreachable_points(device_range))
             return self._collected_data
@@ -441,6 +447,10 @@ async def collect_plc_data(
             return []
 
 
+# Address of the row standing for a whole full scan that could not be read
+FULL_SCAN_ADDRESS = "ALL"
+
+
 def comm_error_points(item: Union[DeviceRange, TagRange]) -> List[DataPoint]:
     """
     NG_COMM_ERROR data points for every address (or tag) of a requested
@@ -469,6 +479,11 @@ def unreached_points(
     protocol's full-scan ranges.
     """
     if items is None:
+        if protocol == Protocol.ETHERNET_IP:
+            # Data files (D/M = N7/B3) exist on SLC-style devices only; a
+            # Logix / Omron controller has tags. Without a connection the kind
+            # is unknown: one row says the whole full scan could not be read.
+            return [DataPoint(address=FULL_SCAN_ADDRESS, status=StatusCode.NG_COMM_ERROR, timestamp=get_timestamp())]
         items = list(DEFAULT_DEVICE_RANGES.get(protocol, [])) if protocol else []
     points: List[DataPoint] = []
     for item in items:

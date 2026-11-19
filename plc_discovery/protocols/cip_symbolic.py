@@ -141,7 +141,12 @@ def encode_tag_path(name: str) -> bytes:
     """Padded EPATH (with word length) of a symbolic name: Tag, Tag.Member, Tag[1], Program:P.Tag"""
     from pycomm3.packets.util import tag_request_path
 
-    path = tag_request_path(name, {}, False)
+    try:
+        path = tag_request_path(name, {}, False)
+    except Exception as e:
+        # e.g. "A[x]" or "A[1": pycomm3 raises ValueError on the index. A
+        # malformed name concerns this tag only, never its batch or the link.
+        raise SymbolicReadError(StatusCode.NG_ILLEGAL_ADDR, f"invalid tag name: {name} ({e})") from None
     if path is None:
         raise SymbolicReadError(StatusCode.NG_ILLEGAL_ADDR, f"invalid tag name: {name}")
     return bytes(path)
@@ -182,12 +187,21 @@ def read_symbolic(client: Any, tag: str) -> Tuple[Any, str]:
     return decode_values(tag, type_code, payload, elements)
 
 
-def read_symbolic_batch(client: Any, tags: List[str]) -> List[Any]:
+# Outcome of a batched tag that must be read on its own (reply too large,
+# or the batch reply was not usable). The caller sends that read as a
+# separate request after the packet interval.
+READ_SINGLY = "read-singly"
+
+
+def read_symbolic_batch(client: Any, tags: List[str]) -> Tuple[List[Any], bool]:
     """
     Read single values ("Name", "Name.Member", "Array[3]"; no {n} element
-    count) in one Multiple Service request. Returns, per tag, (value, type)
-    or a SymbolicReadError. A tag whose reply does not fit is read on its own
-    (fragmented); if the controller rejects Multiple Service, every tag is.
+    count) in ONE Multiple Service request (no further requests here).
+
+    Returns (outcomes, multiple_service_supported). Each outcome is
+    (value, type), a SymbolicReadError, or READ_SINGLY for a tag the caller
+    must read on its own. multiple_service_supported is False when the
+    controller rejected the service: read every tag singly from then on.
     Transport failures propagate (CommError).
     """
     from pycomm3.packets.util import request_path
@@ -200,6 +214,7 @@ def read_symbolic_batch(client: Any, tags: List[str]) -> List[Any]:
             paths.append(e)
     requests = [bytes([SERVICE_READ_TAG]) + path + struct.pack("<H", 1) for path in paths if isinstance(path, bytes)]
     replies: List[Optional[bytes]] = []
+    supported = True
     if requests:
         offsets, position = [], 2 + 2 * len(requests)
         for request in requests:
@@ -207,6 +222,7 @@ def read_symbolic_batch(client: Any, tags: List[str]) -> List[Any]:
             position += len(request)
         body = struct.pack("<H", len(requests)) + b"".join(struct.pack("<H", o) for o in offsets) + b"".join(requests)
         status, data, _ = _send(client, SERVICE_MULTIPLE, request_path(0x02, 0x01), body)
+        supported = status not in UNSUPPORTED_STATUSES
         replies = (
             list(_split_multiple_reply(data, len(requests))) if status in (STATUS_OK, STATUS_EMBEDDED_ERROR) else []
         )
@@ -221,10 +237,10 @@ def read_symbolic_batch(client: Any, tags: List[str]) -> List[Any]:
             continue
         reply = next(reply_iter)
         try:
-            results.append(_decode_embedded_reply(client, tag, reply))
+            results.append(_decode_embedded_reply(tag, reply))
         except SymbolicReadError as e:
             results.append(e)
-    return results
+    return results, supported
 
 
 def _split_multiple_reply(data: bytes, count: int) -> List[bytes]:
@@ -237,13 +253,13 @@ def _split_multiple_reply(data: bytes, count: int) -> List[bytes]:
     return [data[offsets[i] : offsets[i + 1]] for i in range(count)]
 
 
-def _decode_embedded_reply(client: Any, tag: str, reply: Optional[bytes]) -> Tuple[Any, str]:
-    """(value, type) of one embedded Read Tag reply; falls back to a single read"""
+def _decode_embedded_reply(tag: str, reply: Optional[bytes]) -> Any:
+    """(value, type) of one embedded Read Tag reply, or READ_SINGLY"""
     if reply is None or len(reply) < 4:
-        return read_symbolic(client, tag)
+        return READ_SINGLY
     status, extended = reply[2], reply[3]
     if status in REPLY_TOO_LARGE_STATUSES:
-        return read_symbolic(client, tag)
+        return READ_SINGLY
     if status != STATUS_OK:
         raise SymbolicReadError(status_for_cip_error(status), f"{tag}: CIP status 0x{status:02X}")
     data = reply[4 + 2 * extended :]

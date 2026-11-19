@@ -417,7 +417,8 @@ def test_tag_members_from_config(monkeypatch, tmp_path):
 def test_generic_request_groups():
     from plc_discovery.protocols.ethernet_ip import MAX_BATCH_TAGS, _generic_request_groups
 
-    groups = _generic_request_groups(["A", "B", "V[0]{5}", "C"] + [f"T{i}" for i in range(MAX_BATCH_TAGS)])
+    tags = ["A", "B", "V[0]{5}", "C"] + [f"T{i}" for i in range(MAX_BATCH_TAGS)]
+    groups = [[tag for _, tag in group] for group in _generic_request_groups(list(enumerate(tags)))]
     assert groups[:3] == [["A", "B"], ["V[0]{5}"], ["C"] + [f"T{i}" for i in range(MAX_BATCH_TAGS - 1)]]
     assert groups[3] == [f"T{MAX_BATCH_TAGS - 1}"]
 
@@ -432,9 +433,9 @@ def test_multiple_service_reply_split_and_decode():
     data = st.pack("<HHH", 2, 6, 6 + len(ok)) + ok + missing
     replies = cs._split_multiple_reply(data, 2)
     assert replies == [ok, missing]
-    assert cs._decode_embedded_reply(None, "A", replies[0]) == (-5, "DINT")
+    assert cs._decode_embedded_reply("A", replies[0]) == (-5, "DINT")
     with pytest.raises(cs.SymbolicReadError) as err:
-        cs._decode_embedded_reply(None, "B", replies[1])
+        cs._decode_embedded_reply("B", replies[1])
     assert err.value.status == StatusCode.NG_ILLEGAL_ADDR
     assert cs._split_multiple_reply(data, 3) == []  # count mismatch: read one by one
 

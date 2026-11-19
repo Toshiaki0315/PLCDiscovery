@@ -208,7 +208,13 @@ class SettingsTabsMixin:
         act.grid(row=7, column=0, columnspan=4, sticky=tk.E, pady=(10, 0))
         ttk.Button(act, text="OK", command=on_ok).pack(side=tk.RIGHT)
         ttk.Button(act, text="キャンセル", command=win.destroy).pack(side=tk.RIGHT, padx=6)
-        win.grab_set()
+        # Linux Tk refuses a grab before the window is mapped ("grab failed:
+        # window not viewable"); the dialog still works without the grab
+        try:
+            win.wait_visibility()
+            win.grab_set()
+        except tk.TclError:
+            pass
         win.wait_window()
         return result or None
 

@@ -10,7 +10,8 @@ Supports:
 
 import asyncio
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from collections import deque
+from typing import Any, Deque, Dict, List, Optional, Tuple
 
 from ..config import PROTOCOL_PORTS, DataPoint, DeviceType, Protocol, StatusCode
 from ..utils import get_timestamp, value_to_hex
@@ -18,6 +19,7 @@ from .base import BaseProtocolHandler
 from .cip_symbolic import (
     MAX_BATCH_REQUEST_BYTES,
     MAX_BATCH_TAGS,
+    READ_SINGLY,
     SymbolicReadError,
     read_symbolic,
     read_symbolic_batch,
@@ -80,6 +82,8 @@ class EtherNetIPHandler(BaseProtocolHandler):
         self._client: Any = None
         self._slot = slot
         self._plc_type: Optional[str] = None  # 'logix', 'slc' or 'generic'
+        # Cleared when a generic CIP controller rejects Multiple Service
+        self._multiple_service_ok = True
 
     def _connection_path(self, include_slot: bool) -> str:
         """
@@ -354,10 +358,10 @@ class EtherNetIPHandler(BaseProtocolHandler):
         for start in range(0, len(tags), TAG_BATCH_SIZE):
             batch = tags[start : start + TAG_BATCH_SIZE]
             if not self.supports_tags:
-                results += [_tag_point(t, StatusCode.NG_UNSUPPORTED) for t in batch]
+                results += [_tag_point(split_element_count(t)[0], StatusCode.NG_UNSUPPORTED) for t in batch]
                 continue
             if not await self._ensure_fresh_connection() or not self._connected:
-                results += [_tag_point(t, StatusCode.NG_COMM_ERROR) for t in batch]
+                results += [_tag_point(split_element_count(t)[0], StatusCode.NG_COMM_ERROR) for t in batch]
                 continue
             await self._rate_limiter.wait()
             try:
@@ -368,12 +372,12 @@ class EtherNetIPHandler(BaseProtocolHandler):
 
                 replies = await self._run_blocking(_read)
             except asyncio.TimeoutError:
-                results += [_tag_point(t, StatusCode.NG_TIMEOUT) for t in batch]
+                results += [_tag_point(split_element_count(t)[0], StatusCode.NG_TIMEOUT) for t in batch]
                 continue
             except Exception as e:
                 self._needs_reconnect = True
                 logger.debug(f"EtherNet/IP tag read error: {e}")
-                results += [_tag_point(t, StatusCode.NG_COMM_ERROR) for t in batch]
+                results += [_tag_point(split_element_count(t)[0], StatusCode.NG_COMM_ERROR) for t in batch]
                 continue
             for name, reply in zip(batch, replies):
                 results += _tag_points(name, reply)
@@ -384,39 +388,63 @@ class EtherNetIPHandler(BaseProtocolHandler):
         Read tags with raw symbolic Read Tag (Omron NJ/NX: published
         variables, structure members by name). Single values go in Multiple
         Service batches; array reads ("V[0]{10}") one request each
-        (fragmented). A CIP error reply is a per-tag status; a transport
-        failure fails the request's tags and reconnects before the next one.
+        (fragmented). Every request - batches, single reads and the re-reads
+        of batched tags whose reply did not fit - waits for the packet
+        interval. A controller that rejects Multiple Service is remembered
+        and read one tag per request from then on. A CIP error reply is a
+        per-tag status; a transport failure fails the request's tags and
+        reconnects before the next one.
         """
-        results: List[DataPoint] = []
-        for group in _generic_request_groups(tags):
+        outcomes: Dict[int, List[DataPoint]] = {}
+        queue: Deque[List[Tuple[int, str]]] = deque(
+            [[(index, tag) for index, tag in group] for group in _generic_request_groups(list(enumerate(tags)))]
+        )
+        while queue:
+            group = queue.popleft()
+            if len(group) > 1 and not self._multiple_service_ok:
+                queue.extendleft(reversed([[item] for item in group]))
+                continue
+            names = [tag for _, tag in group]
             if not await self._ensure_fresh_connection() or not self._connected or not self._client:
-                results += [_tag_point(split_element_count(t)[0], StatusCode.NG_COMM_ERROR) for t in group]
+                for index, tag in group:
+                    outcomes[index] = [_tag_point(split_element_count(tag)[0], StatusCode.NG_COMM_ERROR)]
                 continue
             await self._rate_limiter.wait()
             client = self._client
 
-            def read(client=client, group=group):
-                if group[0].rstrip().endswith("}"):  # element-count read: alone, fragmented
-                    return [_capture(read_symbolic, client, group[0])]
-                return read_symbolic_batch(client, group)
+            def read(client: Any = client, names: List[str] = names) -> Tuple[List[Any], bool]:
+                if len(names) == 1:
+                    return [_capture(read_symbolic, client, names[0])], True
+                return read_symbolic_batch(client, names)
 
             try:
-                outcomes = await self._run_blocking(read)
+                results, supported = await self._run_blocking(read)
             except asyncio.TimeoutError:
-                results += [_tag_point(split_element_count(t)[0], StatusCode.NG_TIMEOUT) for t in group]
+                for index, tag in group:
+                    outcomes[index] = [_tag_point(split_element_count(tag)[0], StatusCode.NG_TIMEOUT)]
                 continue
             except Exception as e:
                 self._needs_reconnect = True
                 logger.debug(f"EtherNet/IP tag read error: {e}")
-                results += [_tag_point(split_element_count(t)[0], StatusCode.NG_COMM_ERROR) for t in group]
+                for index, tag in group:
+                    outcomes[index] = [_tag_point(split_element_count(tag)[0], StatusCode.NG_COMM_ERROR)]
                 continue
-            for tag, outcome in zip(group, outcomes):
-                if isinstance(outcome, SymbolicReadError):
+            if not supported:
+                logger.info("Multiple Service not supported by the controller: reading one tag per request")
+                self._multiple_service_ok = False
+            retry: List[Tuple[int, str]] = []
+            for (index, tag), outcome in zip(group, results):
+                if outcome is READ_SINGLY:
+                    retry.append((index, tag))
+                elif isinstance(outcome, SymbolicReadError):
                     logger.debug(f"Tag {tag}: {outcome}")
-                    results.append(_tag_point(split_element_count(tag)[0], outcome.status))
+                    outcomes[index] = [_tag_point(split_element_count(tag)[0], outcome.status)]
                 else:
-                    results += _value_points(tag, outcome[0])
-        return results
+                    outcomes[index] = _value_points(tag, outcome[0])
+            # Tags whose batched reply did not fit: separate requests, each
+            # after the packet interval (never a burst inside one call)
+            queue.extendleft(reversed([[item] for item in retry]))
+        return [point for index in sorted(outcomes) for point in outcomes[index]]
 
 
 def _capture(func, *args):
@@ -427,19 +455,20 @@ def _capture(func, *args):
         return e
 
 
-def _generic_request_groups(tags: List[str]) -> List[List[str]]:
+def _generic_request_groups(tags: List[Tuple[int, str]]) -> List[List[Tuple[int, str]]]:
     """Consecutive single-value tags batched (MAX_BATCH_TAGS); element-count reads alone"""
-    groups: List[List[str]] = []
-    batch: List[str] = []
-    for tag in tags:
+    groups: List[List[Tuple[int, str]]] = []
+    batch: List[Tuple[int, str]] = []
+    for item in tags:
+        tag = item[1]
         if tag.rstrip().endswith("}"):
             if batch:
                 groups.append(batch)
                 batch = []
-            groups.append([tag])
+            groups.append([item])
             continue
-        batch.append(tag)
-        if len(batch) >= MAX_BATCH_TAGS or sum(len(t) + 8 for t in batch) >= MAX_BATCH_REQUEST_BYTES:
+        batch.append(item)
+        if len(batch) >= MAX_BATCH_TAGS or sum(len(t) + 8 for _, t in batch) >= MAX_BATCH_REQUEST_BYTES:
             groups.append(batch)
             batch = []
     if batch:
