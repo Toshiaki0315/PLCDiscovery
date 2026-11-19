@@ -20,7 +20,6 @@ Usage:
 import asyncio
 import struct
 import logging
-import argparse
 import random
 from typing import Dict, Optional, Tuple
 
@@ -29,6 +28,12 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# Shared CLI helpers (support both direct execution and package import)
+try:
+    from .common import run_simulator, simulator_parser
+except ImportError:
+    from common import run_simulator, simulator_parser  # type: ignore[no-redef]
 
 # FINS Constants
 FINS_ICF_RESPONSE = 0xC0  # Response frame
@@ -408,20 +413,7 @@ async def run_fins_simulator(host: str, port: int, transport: str = "both"):
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="FINS Protocol Simulator for Omron PLCs"
-    )
-    parser.add_argument(
-        "--host",
-        default="127.0.0.1",
-        help="Host to bind (default: 127.0.0.1; 0.0.0.0 = all interfaces)"
-    )
-    parser.add_argument(
-        "--port",
-        type=int,
-        default=9600,
-        help="Port to listen on (default: 9600)"
-    )
+    parser = simulator_parser("FINS Protocol Simulator for Omron PLCs", 9600)
     parser.add_argument(
         "--transport",
         choices=["both", "udp", "tcp"],
@@ -433,16 +425,12 @@ def main():
         action="store_true",
         help="Enable debug logging"
     )
-
     args = parser.parse_args()
 
     if args.debug:
         logging.getLogger().setLevel(logging.DEBUG)
 
-    try:
-        asyncio.run(run_fins_simulator(args.host, args.port, args.transport))
-    except KeyboardInterrupt:
-        logger.info("Simulator stopped by user")
+    run_simulator(run_fins_simulator(args.host, args.port, args.transport), logger)
 
 
 if __name__ == "__main__":

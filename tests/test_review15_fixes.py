@@ -213,7 +213,12 @@ def test_cli_rejects_huge_range_before_scanning(tmp_path, monkeypatch, capsys):
 @pytest.mark.parametrize("name", ["slmp", "modbus", "ethernet_ip", "s7", "fins", "run_all"])
 def test_simulator_default_host_is_loopback(name):
     filename = "run_all.py" if name == "run_all" else f"{name}_simulator.py"
-    tree = ast.parse((ROOT / "simulators" / filename).read_text(encoding="utf-8"))
+    source = (ROOT / "simulators" / filename).read_text(encoding="utf-8")
+    if name != "run_all":
+        # The protocol simulators take --host from simulators/common.py
+        assert "simulator_parser(" in source and '"--host"' not in source
+        source = (ROOT / "simulators" / "common.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
     defaults = [
         kw.value.value
         for node in ast.walk(tree)

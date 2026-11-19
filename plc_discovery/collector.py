@@ -136,13 +136,8 @@ class PLCDataCollector:
         if handler.is_connected:
             return True
         logger.info(f"Connection to {self.plc_info.ip_address} lost; reconnecting")
-        handler._needs_reconnect = True
-        if not await handler._ensure_fresh_connection():
+        if not await handler.reconnect():
             return False
-        # The PLC is back: forget the failures from the outage so the circuit
-        # breaker and lost-link detection do not block the first reads
-        handler._comm_failure_streak = 0
-        handler.reset_circuit_breaker()
         logger.info(f"Reconnected to {self.plc_info.ip_address}")
         return True
 
@@ -167,7 +162,7 @@ class PLCDataCollector:
             f"{device_range.device_type.value}{device_range.end_address}: {error}; reported as NG_COMM_ERROR"
         )
         if self._handler is not None:
-            self._handler._needs_reconnect = True
+            self._handler.mark_needs_reconnect()
         return comm_error_points(device_range)
 
     async def collect_full_scan(self) -> List[DataPoint]:
@@ -214,7 +209,7 @@ class PLCDataCollector:
             # returning nothing, so the output shows the PLC was unreachable.
             # EtherNet/IP data-file ranges only apply to SLC-style devices;
             # a Logix / Omron controller gets the single "ALL" row instead.
-            if protocol == Protocol.ETHERNET_IP and getattr(self._handler, "_plc_type", None) != "slc":
+            if not self._handler.uses_address_ranges:
                 logger.warning(f"{self.plc_info.ip_address} unreachable: full scan reported as NG_COMM_ERROR")
                 self._collected_data = unreached_points(protocol, None)
                 return self._collected_data

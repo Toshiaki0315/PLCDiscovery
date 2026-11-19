@@ -9,7 +9,6 @@ Usage:
     python ethernet_ip_simulator.py [--host 127.0.0.1] [--port 44818]
 """
 
-import argparse
 import asyncio
 import struct
 import logging
@@ -17,6 +16,12 @@ from typing import Dict, List, Optional, Tuple
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("EtherNetIP-Simulator")
+
+# Shared CLI helpers (support both direct execution and package import)
+try:
+    from .common import parse_denied_ranges, run_simulator, simulator_parser
+except ImportError:
+    from common import parse_denied_ranges, run_simulator, simulator_parser  # type: ignore[no-redef]
 
 # EtherNet/IP Commands
 EIP_CMD_NOP = 0x0000
@@ -774,29 +779,14 @@ async def run_server(host: str, port: int, denied_ranges: List[Tuple[int, int]],
 
 
 def main():
-    parser = argparse.ArgumentParser(description="EtherNet/IP PLC Simulator")
-    parser.add_argument("--host", default="127.0.0.1",
-                        help="Host to bind to (default 127.0.0.1; 0.0.0.0 = all interfaces)")
-    parser.add_argument("--port", type=int, default=44818, help="Port to listen on")
-    parser.add_argument("--denied", default="100-150",
-                        help="Denied address ranges")
+    parser = simulator_parser("EtherNet/IP PLC Simulator", 44818, "100-150")
     parser.add_argument("--mode", choices=["slc", "logix", "omron"], default="slc",
                         help="slc = PLC-5/SLC/MicroLogix data files (default), "
                              "logix = ControlLogix style symbolic tags (tag list, UDTs, program tags), "
                              "omron = Omron NJ/NX style variables (read by name only)")
     args = parser.parse_args()
-
-    denied_ranges = []
-    if args.denied:
-        for range_str in args.denied.split(","):
-            if "-" in range_str:
-                start, end = range_str.split("-")
-                denied_ranges.append((int(start), int(end)))
-
-    try:
-        asyncio.run(run_server(args.host, args.port, denied_ranges, args.mode))
-    except KeyboardInterrupt:
-        logger.info("Simulator stopped")
+    denied_ranges = parse_denied_ranges(args.denied)
+    run_simulator(run_server(args.host, args.port, denied_ranges, args.mode), logger)
 
 
 if __name__ == "__main__":

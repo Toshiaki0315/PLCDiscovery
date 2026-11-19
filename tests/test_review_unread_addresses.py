@@ -23,7 +23,6 @@ def _collector_with_failing_handler():
     collector = PLCDataCollector(PLCInfo("10.0.0.1", protocol=Protocol.SLMP, port=5001))
     handler = MagicMock()
     handler.is_connected = True
-    handler._needs_reconnect = False
     handler.read_device_range = AsyncMock(side_effect=RuntimeError("library bug"))
     collector._handler = handler
     return collector, handler
@@ -34,7 +33,7 @@ def test_collect_range_reports_comm_error_when_read_raises():
     points = asyncio.run(collector.collect_range(DeviceType.D, 10, 14))
     assert [p.address for p in points] == ["D10", "D11", "D12", "D13", "D14"]
     assert {p.status for p in points} == {StatusCode.NG_COMM_ERROR}
-    assert handler._needs_reconnect  # reconnect before the next read
+    handler.mark_needs_reconnect.assert_called_once_with()  # reconnect before the next read
     assert collector.get_statistics()["total_points"] == 5
 
 

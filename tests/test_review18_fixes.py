@@ -20,6 +20,7 @@ from plc_discovery.config import (
 )
 from plc_discovery.config_loader import ConfigLoader
 from plc_discovery.protocols.slmp import SLMPHandler
+from plc_discovery.scan_runner import ResultWriter
 
 
 async def _scan(end, valid):
@@ -143,6 +144,8 @@ from plc_discovery.protocols.base import BaseProtocolHandler
 ALLOWED_PUBLIC_COROUTINES = {
     "connect",
     "disconnect",
+    # disconnect + connect after a lost link, no data read
+    "reconnect",
     "read_device_raw",
     "read_device_range",
     # EtherNet/IP symbolic tags: packet interval, timeout with
@@ -254,7 +257,7 @@ def test_writer_names_shared_ip_outputs(tmp_path):
         labels = dict(zip(("slmp", "fins", "alone"), plc_scanner.target_labels([slmp, fins, alone])))
         paths = {}
         for key, plc in (("slmp", slmp), ("fins", fins), ("alone", alone)):
-            writer = plc_scanner._ResultWriter(plc, exporter, _Display(), db, label=labels[key])
+            writer = ResultWriter(plc, exporter, _Display(), db, label=labels[key])
             paths[key] = Path(writer.export_points(_points([1])))
             writer.export_new_denied({"D9"}, {"D9": StatusCode.NG_ILLEGAL_ADDR})
         assert paths["slmp"].name.startswith("plc_data_127_0_0_1_SLMP_5001_")

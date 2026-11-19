@@ -4,6 +4,7 @@ PLC Discovery - レポート生成モジュール
 HTML/PDFレポートを生成するための機能を提供します。
 """
 
+import functools
 import html
 import json
 import math
@@ -11,6 +12,7 @@ import os
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
+from importlib import resources
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
@@ -27,6 +29,12 @@ def json_safe(value):
     if isinstance(value, (list, tuple)):
         return [json_safe(v) for v in value]
     return value
+
+
+@functools.lru_cache(maxsize=None)
+def _template(name: str) -> str:
+    """A file of plc_discovery/templates (report stylesheets)"""
+    return resources.files("plc_discovery").joinpath("templates").joinpath(name).read_text(encoding="utf-8")
 
 
 class ReportFormat(Enum):
@@ -268,184 +276,11 @@ class ReportGenerator:
 
     def _get_default_theme_css(self) -> str:
         """デフォルトテーマCSS"""
-        return """
-        :root {
-            --primary-color: #2563eb;
-            --secondary-color: #64748b;
-            --success-color: #22c55e;
-            --warning-color: #f59e0b;
-            --danger-color: #ef4444;
-            --bg-color: #f8fafc;
-            --card-bg: #ffffff;
-            --text-color: #1e293b;
-            --text-secondary: #64748b;
-            --border-color: #e2e8f0;
-        }
-
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
-        body {
-            font-family: 'Segoe UI', 'Hiragino Kaku Gothic ProN', 'Yu Gothic UI', sans-serif;
-            background-color: var(--bg-color);
-            color: var(--text-color);
-            line-height: 1.6;
-        }
-
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 2rem;
-        }
-
-        header {
-            text-align: center;
-            margin-bottom: 2rem;
-            padding-bottom: 1rem;
-            border-bottom: 2px solid var(--primary-color);
-        }
-
-        header h1 {
-            font-size: 2rem;
-            color: var(--primary-color);
-            margin-bottom: 0.5rem;
-        }
-
-        header .meta {
-            color: var(--text-secondary);
-            font-size: 0.9rem;
-        }
-
-        .section {
-            background: var(--card-bg);
-            border-radius: 8px;
-            padding: 1.5rem;
-            margin-bottom: 1.5rem;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-        }
-
-        .section h2 {
-            font-size: 1.25rem;
-            color: var(--primary-color);
-            margin-bottom: 1rem;
-            padding-bottom: 0.5rem;
-            border-bottom: 1px solid var(--border-color);
-        }
-
-        .summary-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 1rem;
-        }
-
-        .stat-card {
-            background: var(--bg-color);
-            padding: 1rem;
-            border-radius: 6px;
-            text-align: center;
-        }
-
-        .stat-card .value {
-            font-size: 2rem;
-            font-weight: bold;
-            color: var(--primary-color);
-        }
-
-        .stat-card .label {
-            font-size: 0.875rem;
-            color: var(--text-secondary);
-        }
-
-        .stat-card.success .value { color: var(--success-color); }
-        .stat-card.warning .value { color: var(--warning-color); }
-        .stat-card.danger .value { color: var(--danger-color); }
-
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-top: 1rem;
-        }
-
-        th, td {
-            padding: 0.75rem;
-            text-align: left;
-            border-bottom: 1px solid var(--border-color);
-        }
-
-        th {
-            background: var(--bg-color);
-            font-weight: 600;
-            color: var(--text-secondary);
-        }
-
-        tr:hover {
-            background: var(--bg-color);
-        }
-
-        .badge {
-            display: inline-block;
-            padding: 0.25rem 0.5rem;
-            border-radius: 4px;
-            font-size: 0.75rem;
-            font-weight: 600;
-        }
-
-        .badge-success { background: #dcfce7; color: #166534; }
-        .badge-warning { background: #fef3c7; color: #92400e; }
-        .badge-danger { background: #fee2e2; color: #991b1b; }
-        .badge-info { background: #dbeafe; color: #1e40af; }
-
-        .chart-container {
-            margin: 1rem 0;
-        }
-
-        .error-list {
-            list-style: none;
-        }
-
-        .error-list li {
-            padding: 0.5rem;
-            margin-bottom: 0.5rem;
-            background: #fee2e2;
-            border-left: 3px solid var(--danger-color);
-            border-radius: 4px;
-        }
-
-        footer {
-            text-align: center;
-            padding: 1rem;
-            color: var(--text-secondary);
-            font-size: 0.875rem;
-        }
-
-        @media print {
-            body { background: white; }
-            .container { max-width: 100%; padding: 0; }
-            .section { box-shadow: none; border: 1px solid #ddd; }
-        }
-        """
+        return _template("report_default.css")
 
     def _get_dark_theme_css(self) -> str:
-        """ダークテーマCSS"""
-        base_css = self._get_default_theme_css()
-        dark_overrides = """
-        :root {
-            --primary-color: #60a5fa;
-            --bg-color: #0f172a;
-            --card-bg: #1e293b;
-            --text-color: #f1f5f9;
-            --text-secondary: #94a3b8;
-            --border-color: #334155;
-        }
-
-        .stat-card { background: #0f172a; }
-        th { background: #0f172a; }
-        tr:hover { background: #0f172a; }
-        """
-        return base_css + dark_overrides
+        """ダークテーマCSS（デフォルトの上に色を上書き）"""
+        return self._get_default_theme_css() + _template("report_dark.css")
 
     def _get_light_theme_css(self) -> str:
         """ライトテーマCSS"""

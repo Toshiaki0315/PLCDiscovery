@@ -74,6 +74,9 @@ version = {attr = "plc_discovery.__version__"}
 [tool.setuptools.packages.find]
 include = ["plc_discovery*"]
 
+[tool.setuptools.package-data]
+plc_discovery = ["py.typed", "templates/*.css"]
+
 [tool.black]
 line-length = 120
 target-version = ['py310', 'py311', 'py312']

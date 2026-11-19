@@ -312,6 +312,11 @@ class EtherNetIPHandler(BaseProtocolHandler):
     # ------------------------------------------------------------------
 
     @property
+    def uses_address_ranges(self) -> bool:
+        """Only SLC-style devices have numeric data files (N7, B3)"""
+        return self._plc_type == "slc"
+
+    @property
     def supports_tags(self) -> bool:
         """
         True when tags can be read by name: through LogixDriver (Logix), or

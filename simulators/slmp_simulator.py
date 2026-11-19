@@ -9,7 +9,6 @@ Usage:
     python slmp_simulator.py [--host 127.0.0.1] [--port 5001]
 """
 
-import argparse
 import asyncio
 import struct
 import logging
@@ -17,6 +16,12 @@ from typing import Dict, List, Optional, Tuple
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("SLMP-Simulator")
+
+# Shared CLI helpers (support both direct execution and package import)
+try:
+    from .common import parse_denied_ranges, run_simulator, simulator_parser
+except ImportError:
+    from common import parse_denied_ranges, run_simulator, simulator_parser  # type: ignore[no-redef]
 
 # SLMP 3E Frame constants
 SLMP_SUBHEADER = 0x00D0  # Response subheader 'D0 00'
@@ -346,26 +351,10 @@ async def run_server(host: str, port: int, denied_ranges: List[Tuple[int, int]])
 
 
 def main():
-    parser = argparse.ArgumentParser(description="SLMP PLC Simulator")
-    parser.add_argument("--host", default="127.0.0.1",
-                        help="Host to bind to (default 127.0.0.1; 0.0.0.0 = all interfaces)")
-    parser.add_argument("--port", type=int, default=5001, help="Port to listen on")
-    parser.add_argument("--denied", default="5000-5100,7000-7050",
-                        help="Denied address ranges (e.g., '5000-5100,7000-7050')")
+    parser = simulator_parser("SLMP PLC Simulator", 5001, "5000-5100,7000-7050")
     args = parser.parse_args()
-
-    # Parse denied ranges
-    denied_ranges = []
-    if args.denied:
-        for range_str in args.denied.split(","):
-            if "-" in range_str:
-                start, end = range_str.split("-")
-                denied_ranges.append((int(start), int(end)))
-
-    try:
-        asyncio.run(run_server(args.host, args.port, denied_ranges))
-    except KeyboardInterrupt:
-        logger.info("Simulator stopped")
+    denied_ranges = parse_denied_ranges(args.denied)
+    run_simulator(run_server(args.host, args.port, denied_ranges), logger)
 
 
 if __name__ == "__main__":

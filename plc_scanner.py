@@ -39,13 +39,20 @@ from typing import Dict, List, Optional, Set
 
 from plc_discovery.config import (
     Protocol, ScanMode, PLCInfo, DataPoint,
-    NetworkConfig, DeviceRange, StatusCode, PROTOCOL_PORTS, TagRange
+    NetworkConfig, DeviceRange, PROTOCOL_PORTS, TagRange
 )
 from plc_discovery.discovery import (
     PLCDiscovery, discover_plcs, merge_discovery_results, target_labels
 )
-from plc_discovery.collector import PLCDataCollector, collect_item, unreached_points
+from plc_discovery.collector import PLCDataCollector, unreached_points
 from plc_discovery.output import CSVExporter
+from plc_discovery.scan_runner import (  # noqa: F401  (status_report_message re-exported)
+    CycleRunner,
+    ResultWriter,
+    collect_items,
+    next_cycle_wait,
+    status_report_message,
+)
 from plc_discovery.utils import ip_range_error, sorted_addresses
 from plc_discovery.config_loader import MIN_INTERVAL_SECONDS, ConfigLoader, generate_config_template
 from plc_discovery.audit_log import init_audit_logger, get_audit_logger, close_audit_logger
@@ -190,7 +197,7 @@ async def run_parallel_scan(
         if not result.success:
             display.print_error(f"{label}: {result.error_message}")
         
-        writer = _ResultWriter(result.plc_info, exporter, display, db_exporter, label=label)
+        writer = ResultWriter(result.plc_info, exporter, display, db_exporter, label=label)
         if result.data_points:
             # Apply data type conversion
             result.data_points = apply_data_type_conversion(
@@ -255,99 +262,6 @@ def _uncancel_current_task() -> None:
             uncancel()
 
 
-async def _collect_ranges(
-    collector: PLCDataCollector,
-    device_ranges: List[DeviceRange]
-) -> List[DataPoint]:
-    """Collect all device ranges in order"""
-    points: List[DataPoint] = []
-    for device_range in device_ranges:
-        points.extend(await collect_item(collector, device_range))
-    return points
-
-
-class _ResultWriter:
-    """
-    Writes one PLC's data / newly denied addresses to CSV and the database.
-    
-    Write failures (e.g. a CSV locked by Excel on Windows, a full disk) are
-    reported and counted but never raised, so a scan or a long periodic
-    monitoring run keeps going. Denied addresses that could not be written
-    are retried on the next call.
-    """
-    
-    def __init__(self, plc_info: PLCInfo, exporter: CSVExporter, display: RichProgressDisplay,
-                 db_exporter: Optional[DatabaseExporter] = None, label: Optional[str] = None):
-        self.ip = plc_info.ip_address
-        self.protocol = plc_info.protocol.name if plc_info.protocol else None
-        self.port = plc_info.port
-        # "IP (PROTOCOL:port)" when another target shares the IP (target_labels)
-        self.label = label or self.ip
-        self.shared_ip = self.label != self.ip
-        self.exporter = exporter
-        # Periodic scans with output.periodic_csv: daily append to one file a day
-        self.daily = False
-        self.display = display
-        self.db_exporter = db_exporter
-        self._exported_denied: Set[str] = set()
-        self.errors: List[str] = []
-    
-    def _failed(self, what: str, error: Exception) -> None:
-        message = f"{self.label}: failed to write {what}: {error}"
-        self.errors.append(message)
-        self.display.print_error(message)
-        logger.error(message)
-    
-    def export_points(self, points: List[DataPoint]) -> Optional[str]:
-        if not points:
-            return None
-        path = None
-        try:
-            # Protocol and port in the file name only when the IP is shared
-            tag = f"{self.protocol}_{self.port}" if self.shared_ip else None
-            hex_addresses = self.exporter.hex_addresses and self.protocol == "SLMP"
-            if self.daily:
-                path = self.exporter.append_plc_data(
-                    points, self.ip, target_tag=tag, hex_addresses=hex_addresses)
-            else:
-                path = self.exporter.export_plc_data(
-                    points, self.ip, target_tag=tag, hex_addresses=hex_addresses)
-        except Exception as e:
-            self._failed("data CSV", e)
-        if self.db_exporter and self.db_exporter.is_enabled:
-            try:
-                db_count = self.db_exporter.export_plc_data(
-                    points, self.ip, protocol=self.protocol, port=self.port
-                )
-                self.display.print_info(f"Saved {db_count} records to database")
-            except Exception as e:
-                self._failed("data to database", e)
-        return path
-    
-    def export_new_denied(self, denied: Set[str],
-                          statuses: Optional[Dict[str, StatusCode]] = None) -> Optional[str]:
-        """Append only addresses not yet written in this session"""
-        new = set(denied) - self._exported_denied
-        if not new:
-            return None
-        try:
-            # plc_ip column: the label, so targets sharing an IP stay apart
-            # (the plain IP otherwise, as before)
-            path = self.exporter.export_denied_addresses(new, self.label, statuses=statuses)
-        except Exception as e:
-            self._failed("access denied log", e)
-            return None  # not marked as exported: retried next time
-        self._exported_denied.update(new)
-        if self.db_exporter and self.db_exporter.is_enabled:
-            try:
-                self.db_exporter.export_denied_addresses(
-                    new, self.ip, statuses=statuses, protocol=self.protocol, port=self.port
-                )
-            except Exception as e:
-                self._failed("denied addresses to database", e)
-        return path
-
-
 def _range_labels(device_ranges: Optional[List[DeviceRange]]) -> List[str]:
     return [
         r.label if isinstance(r, TagRange)
@@ -408,7 +322,7 @@ async def run_single_scan(
     audit = get_audit_logger()
     ip = plc_info.ip_address
     outcome = ScanOutcome(ip, label=label)
-    writer = _ResultWriter(plc_info, exporter, display, db_exporter, label=label)
+    writer = ResultWriter(plc_info, exporter, display, db_exporter, label=label)
     labels = _range_labels(device_ranges)
     loop = asyncio.get_running_loop()
     
@@ -432,10 +346,11 @@ async def run_single_scan(
             
             if mode == ScanMode.FULL:
                 display.print_info("Running full scan...")
-                outcome.data_points = await collector.collect_full_scan()
             else:
                 display.print_info(f"Scanning {', '.join(labels)}")
-                outcome.data_points = await _collect_ranges(collector, device_ranges or [])
+            outcome.data_points = await collect_items(
+                collector, None if mode == ScanMode.FULL else list(device_ranges or [])
+            )
             
             outcome.denied_addresses = collector.get_denied_addresses()
             denied_statuses = collector.get_denied_statuses()
@@ -503,12 +418,11 @@ async def run_periodic_scan(
     # protocols, local simulators) are each scanned and reported
     targets = list(zip(target_labels(plc_infos), plc_infos))
     outcomes = {key: ScanOutcome(p.ip_address, label=key) for key, p in targets}
+    daily = getattr(exporter, "periodic_csv", "per_cycle") == "daily"
     writers = {
-        key: _ResultWriter(p, exporter, display, db_exporter, label=key)
+        key: ResultWriter(p, exporter, display, db_exporter, label=key, daily=daily)
         for key, p in targets
     }
-    for writer in writers.values():
-        writer.daily = getattr(exporter, "periodic_csv", "per_cycle") == "daily"
     ips = {key: p.ip_address for key, p in targets}
     
     async with contextlib.AsyncExitStack() as stack:
@@ -539,7 +453,10 @@ async def run_periodic_scan(
             f"(Ctrl+C to stop)"
         )
         started_at = loop.time()
-        last_report = started_at
+        runner = CycleRunner(
+            device_ranges, data_type=data_type, byte_order=byte_order, type_manager=type_manager,
+            notifier=notifier, notify=lambda send: _notify(notifier, send),
+        )
         interrupted = False
         try:
             iteration = 0
@@ -549,32 +466,20 @@ async def run_periodic_scan(
                 display.print_info(f"Iteration {iteration}")
                 
                 for key, collector in collectors.items():
-                    collector.clear_data()
-                    points = await _collect_ranges(collector, device_ranges)
+                    points = (await runner.read(collector, writers[key])).points
                     if key not in reached and collector.is_connected:
                         reached.add(key)
                         outcomes[key].error = None
                         display.print_success(f"{key}: connected")
-                    points = apply_data_type_conversion(points, data_type, byte_order, type_manager)
                     outcomes[key].data_points = points
-                    writers[key].export_points(points)
-                    writers[key].export_new_denied(
-                        collector.get_denied_addresses(), collector.get_denied_statuses()
-                    )
                 
-                if (notifier and notifier.report_interval_seconds
-                        and loop.time() - last_report >= notifier.report_interval_seconds):
-                    last_report = loop.time()
-                    message, problems = status_report_message(
-                        {key: outcomes[key].data_points for key in collectors},
-                        [key for key in collectors if key not in reached],
-                        iteration,
-                    )
-                    await _notify(notifier, lambda n: n.notify_status_report(
-                        message, has_problems=problems, iteration=iteration,
-                    ))
+                await runner.report_if_due(
+                    {key: outcomes[key].data_points for key in collectors},
+                    [key for key in collectors if key not in reached],
+                    iteration,
+                )
                 
-                wait = max(0.0, interval - (loop.time() - cycle_started))
+                wait = next_cycle_wait(interval, cycle_started)
                 if wait == 0.0:
                     display.print_warning(
                         f"Cycle took longer than the {interval:g}s interval; starting next cycle now"
@@ -616,28 +521,6 @@ UNDETECTED_PROTOCOL = (
     "no PLC protocol answered (check the PLC power and network, "
     "or specify the protocol with --protocol / targets[].protocol)"
 )
-
-
-def status_report_message(
-    points_by_target: Dict[str, List[DataPoint]],
-    unreachable: List[str],
-    iteration: int,
-) -> tuple:
-    """
-    Text of a periodic status report: per target, the OK / NG counts of the
-    latest cycle. Returns (message, has_problems).
-    """
-    lines = [f"Cycle {iteration}"]
-    problems = bool(unreachable)
-    for label, points in points_by_target.items():
-        if label in unreachable:
-            lines.append(f"{label}: not reachable")
-            continue
-        ok = sum(1 for p in points if p.status == StatusCode.OK)
-        ng = len(points) - ok
-        problems = problems or ng > 0
-        lines.append(f"{label}: OK {ok} / NG {ng}")
-    return "\n".join(lines), problems
 
 
 async def resolve_target(
@@ -687,20 +570,14 @@ async def _notify(notifier: Optional[NotificationManager], send) -> None:
         logger.warning(f"Notification failed: {e}")
 
 
-async def main():
-    """Main entry point"""
-    args = parse_args()
-    
-    # Handle generate-config
-    if args.generate_config:
-        try:
-            generate_config_template(args.generate_config)
-        except FileExistsError as e:
-            print(f"Error: {e}")
-            sys.exit(1)
-        return
-    
-    # Configure logging
+def _exit_with_errors(prefix: str, errors: List[str]) -> None:
+    """Print each error and exit with status 1"""
+    for error in errors:
+        print(f"{prefix}: {error}")
+    sys.exit(1)
+
+
+def _configure_logging(args) -> None:
     log_level = logging.DEBUG if args.verbose else (logging.ERROR if args.quiet else logging.INFO)
     logging.basicConfig(
         level=log_level,
@@ -708,98 +585,231 @@ async def main():
         force=True,
     )
     quiet_third_party_loggers(args.verbose)
-    
-    # Load configuration file if specified
-    config_loader = None
-    if args.config:
-        if not Path(args.config).is_file():
-            print(f"Config error: file not found: {args.config}")
-            sys.exit(1)
-        config_loader = ConfigLoader(args.config)
-        try:
-            config_loader.load()
-        except Exception as e:
-            print(f"Config error: {e}")
-            sys.exit(1)
-        
-        # Validate configuration
-        errors = config_loader.validate()
-        if errors:
-            for error in errors:
-                print(f"Config error: {error}")
-            sys.exit(1)
-    
+
+
+def _load_config(args) -> Optional[ConfigLoader]:
+    """The validated config file (--config), or None; exits on errors"""
+    if not args.config:
+        return None
+    if not Path(args.config).is_file():
+        _exit_with_errors("Config error", [f"file not found: {args.config}"])
+    config_loader = ConfigLoader(args.config)
+    try:
+        config_loader.load()
+    except Exception as e:
+        _exit_with_errors("Config error", [str(e)])
+    errors = config_loader.validate()
+    if errors:
+        _exit_with_errors("Config error", errors)
+    return config_loader
+
+
+def _resolve_run_settings(args, config_loader: Optional[ConfigLoader]):
+    """(mode name, interval, NetworkConfig) from the options; exits on errors"""
     mode_name, interval = resolve_mode_and_interval(args, config_loader)
     if not math.isfinite(interval) or interval < 0 or (mode_name == "range" and 0 < interval < MIN_INTERVAL_SECONDS):
-        print(f"Error: --interval must be 0 (single scan) or >= {MIN_INTERVAL_SECONDS:g} seconds, got {interval}")
-        sys.exit(1)
-    
-    # Create network config
+        _exit_with_errors(
+            "Error", [f"--interval must be 0 (single scan) or >= {MIN_INTERVAL_SECONDS:g} seconds, got {interval}"]
+        )
     option_errors = network_option_errors(args)
     if option_errors:
-        for error in option_errors:
-            print(f"Error: {error}")
-        sys.exit(1)
-    config = create_network_config(args, config_loader)
-    
-    # Initialize audit logger
+        _exit_with_errors("Error", option_errors)
+    return mode_name, interval, create_network_config(args, config_loader)
+
+
+def _init_audit(args, config_loader: Optional[ConfigLoader]) -> Optional[str]:
+    """Start the audit log (--audit-log or logging.audit_log); returns its path"""
     audit_file = args.audit_log
     if config_loader and not audit_file:
-        log_settings = config_loader.get_logging_settings()
-        audit_file = log_settings.get("audit_log")
-    
+        audit_file = config_loader.get_logging_settings().get("audit_log")
     if audit_file:
         init_audit_logger(audit_file, enabled=True)
         get_audit_logger().log_session_start({"args": vars(args)})
-    
-    # Create display
-    display = RichProgressDisplay(use_rich=not args.no_rich)
-    if not args.quiet and not args.no_rich:
-        display.print_header()
-    
-    # Create exporter
+    return audit_file
+
+
+def _create_exporter(args, config_loader: Optional[ConfigLoader]) -> CSVExporter:
+    """CSV exporter with the output directory, encoding and CSV options"""
     output_dir, encoding = resolve_output_settings(args, config_loader)
+    output_settings = config_loader.get_output_settings() if config_loader else {}
     hex_addresses = args.hex_addresses
     if hex_addresses is None and config_loader:
-        hex_addresses = bool(config_loader.get_output_settings().get("hex_addresses", False))
+        hex_addresses = bool(output_settings.get("hex_addresses", False))
     exporter = CSVExporter(output_dir, encoding, hex_addresses=bool(hex_addresses))
     periodic_csv = args.periodic_csv
     if periodic_csv is None and config_loader:
-        periodic_csv = config_loader.get_output_settings().get("periodic_csv")
+        periodic_csv = output_settings.get("periodic_csv")
     exporter.periodic_csv = periodic_csv or "per_cycle"
-    
-    # Initialize database exporter (optional)
-    db_exporter = None
-    if not args.no_database:
-        db_config = None
-        
-        # Check CLI argument first
-        if args.database:
-            db_config = DatabaseConfig(
-                enabled=True,
-                path=args.database,
-                track_history=args.db_track_history
+    return exporter
+
+
+def _create_db_exporter(args, config_loader: Optional[ConfigLoader],
+                        display: RichProgressDisplay) -> Optional[DatabaseExporter]:
+    """Database output from --database or the config file (optional)"""
+    if args.no_database:
+        return None
+    db_config = None
+    if args.database:
+        db_config = DatabaseConfig(enabled=True, path=args.database, track_history=args.db_track_history)
+    elif config_loader:
+        database_settings = config_loader.get_output_settings().get("database", {})
+        if database_settings.get("enabled"):
+            db_config = DatabaseConfig.from_dict(database_settings)
+    if not (db_config and db_config.enabled):
+        return None
+    try:
+        db_exporter = DatabaseExporter(db_config)
+    except Exception as e:
+        display.print_warning(f"Failed to initialize database: {e}")
+        return None
+    display.print_info(f"Database output enabled: {db_config.path}")
+    return db_exporter
+
+
+def _create_notifier(config_loader: Optional[ConfigLoader],
+                     display: RichProgressDisplay) -> Optional[NotificationManager]:
+    """Notifications (webhook / Slack / Teams) from the config file"""
+    if not (config_loader and config_loader.config.get("notifications")):
+        return None
+    notifier = NotificationManager.from_config(config_loader.config)
+    display.print_info(f"Notifications enabled: {len(notifier._handlers)} handler(s)")
+    return notifier
+
+
+@dataclasses.dataclass
+class _RunResults:
+    """What one run of the CLI found, for notifications, the report and the exit code"""
+    plcs: List[PLCInfo] = dataclasses.field(default_factory=list)
+    data_points: Dict[str, List[DataPoint]] = dataclasses.field(default_factory=dict)
+    denied_addresses: Dict[str, List[str]] = dataclasses.field(default_factory=dict)
+    failed_targets: List[str] = dataclasses.field(default_factory=list)
+    # "label: reason" for each failed target, shown in the report
+    target_errors: List[str] = dataclasses.field(default_factory=list)
+    output_errors: List[str] = dataclasses.field(default_factory=list)
+    interrupted: bool = False
+
+    def add_failure(self, label: str, reason: Optional[str]) -> None:
+        self.failed_targets.append(label)
+        self.target_errors.append(_target_error(label, reason))
+
+    def add(self, label: str, success: bool, error: Optional[str],
+            data_points: List[DataPoint], denied: Set[str]) -> None:
+        """Record one target's scan result"""
+        if not success:
+            self.add_failure(label, error)
+        if data_points:
+            self.data_points[label] = data_points
+        if denied:
+            self.denied_addresses[label] = sorted_addresses(denied)
+
+
+async def _run_discover(args, config_loader, config, exporter, display, db_exporter, notifier,
+                        results: _RunResults) -> None:
+    ip_ranges = [args.ip_range] if args.ip_range else (
+        config_loader.get_ip_ranges() if config_loader else []
+    )
+    range_errors = [e for e in map(ip_range_error, ip_ranges) if e]
+    if range_errors:
+        for error in range_errors:
+            display.print_error(error)
+        sys.exit(1)
+    discovered = await run_discovery(
+        ip_ranges, config, exporter, display, db_exporter,
+        resolve_discovery_protocols(args, config_loader),
+        errors=results.output_errors,
+    )
+    results.plcs = discovered if discovered else []
+    await _notify(notifier, lambda n: n.notify_discovery(
+        len(results.plcs), [p.to_dict() for p in results.plcs]
+    ))
+
+
+async def _resolve_targets(args, config_loader, config, display):
+    """(targets to scan, targets whose protocol could not be detected); exits without targets"""
+    targets = parse_targets(args.target) if args.target else []
+    protocol = get_protocol_from_string(args.protocol) if args.protocol else None
+    plc_infos: List[PLCInfo] = []
+    undetected: List[str] = []
+    if config_loader and not targets:
+        for target in config_loader.get_targets():
+            resolved = await resolve_target(
+                target.ip_address, target.protocol, target.port, config, display, base=target
             )
-        # Then check config file
-        elif config_loader:
-            output_settings = config_loader.get_output_settings()
-            if output_settings.get("database", {}).get("enabled"):
-                db_config = DatabaseConfig.from_dict(output_settings.get("database", {}))
-        
-        if db_config and db_config.enabled:
-            try:
-                db_exporter = DatabaseExporter(db_config)
-                display.print_info(f"Database output enabled: {db_config.path}")
-            except Exception as e:
-                display.print_warning(f"Failed to initialize database: {e}")
-    
-    # Notifications (webhook / Slack / Teams) from the config file
-    notifier: Optional[NotificationManager] = None
-    if config_loader and config_loader.config.get("notifications"):
-        notifier = NotificationManager.from_config(config_loader.config)
-        display.print_info(f"Notifications enabled: {len(notifier._handlers)} handler(s)")
-    
-    # Parse data type options (CLI, then type mapping file / config file)
+            if resolved:
+                plc_infos.append(resolved)
+            else:
+                undetected.append(target.ip_address)
+    else:
+        if not targets:
+            display.print_error("--target is required for full/range modes")
+            sys.exit(1)
+        for ip in targets:
+            resolved = await resolve_target(ip, protocol, args.port, config, display)
+            if resolved:
+                plc_infos.append(resolved)
+            else:
+                undetected.append(ip)
+    if not plc_infos and not undetected:
+        display.print_error("No targets specified")
+        sys.exit(1)
+    return plc_infos, undetected
+
+
+async def _run_scans(args, config_loader, mode_name, interval, config, exporter, display,
+                     db_exporter, notifier, data_types, results: _RunResults) -> None:
+    # Validate ranges before connecting to anything
+    mode = ScanMode.FULL if mode_name == "full" else ScanMode.RANGE
+    device_ranges = resolve_device_ranges(args, config_loader) if mode == ScanMode.RANGE else None
+    data_type, byte_order, type_manager = data_types
+
+    plc_infos, undetected = await _resolve_targets(args, config_loader, config, display)
+    for ip in undetected:
+        results.add_failure(ip, UNDETECTED_PROTOCOL)
+
+    if mode == ScanMode.FULL and interval > 0:
+        display.print_warning("--interval is ignored in full scan mode")
+
+    # Undetected targets are listed (without protocol) in the report
+    results.plcs = plc_infos + [PLCInfo(ip_address=ip) for ip in undetected]
+
+    if not plc_infos:
+        return   # nothing could be scanned; reported as failed
+    if mode == ScanMode.RANGE and interval > 0:
+        # Periodic: all targets in turn every cycle
+        if len(plc_infos) > 1 and config.max_concurrent > 1:
+            display.print_info("Periodic scans read targets one after another (--max-concurrent not used)")
+        outcomes = await run_periodic_scan(
+            plc_infos, config, exporter, display, device_ranges, interval,
+            data_type, byte_order, type_manager, db_exporter, notifier
+        )
+        for outcome in outcomes:
+            results.add(outcome.label, outcome.success, outcome.error,
+                        outcome.data_points, outcome.denied_addresses)
+            results.interrupted = results.interrupted or outcome.interrupted
+    elif len(plc_infos) > 1 and config.max_concurrent > 1:
+        parallel = await run_parallel_scan(
+            plc_infos, config, exporter, display,
+            mode, device_ranges, data_type, byte_order, type_manager,
+            db_exporter
+        )
+        for label, result in parallel.items():
+            results.add(label, result.success, result.error_message,
+                        result.data_points, result.denied_addresses)
+    else:
+        # Single or sequential scan
+        for label, plc_info in zip(target_labels(plc_infos), plc_infos):
+            outcome = await run_single_scan(
+                plc_info, config, exporter, display,
+                mode, device_ranges,
+                data_type, byte_order, type_manager, db_exporter,
+                label=label,
+            )
+            results.add(label, outcome.success, outcome.error,
+                        outcome.data_points, outcome.denied_addresses)
+
+
+def _resolve_data_types_or_exit(args, config_loader, display):
+    """Data type options (CLI, then type mapping file / config file)"""
     try:
         data_type, byte_order, type_manager = resolve_data_types(args, config_loader)
     except Exception as e:
@@ -809,226 +819,161 @@ async def main():
         display.print_info(f"Loaded type mapping from: {args.type_mapping}")
     elif type_manager:
         display.print_info("Using data type mappings from config file")
-    
-    # Track scan results for report generation
-    scan_start_time = None
-    all_plcs: List[PLCInfo] = []
-    all_data_points: Dict[str, List[DataPoint]] = {}
-    all_denied_addresses: Dict[str, List[str]] = {}
-    failed_targets: List[str] = []
-    # "label: reason" for each failed target, shown in the report
-    target_errors: List[str] = []
-    output_errors: List[str] = []
-    interrupted = False
+    return data_type, byte_order, type_manager
+
+
+async def _notify_scan_end(notifier, mode_name: str, results: _RunResults, duration: float) -> None:
+    failed = results.failed_targets
+    # One error notification for all failed targets (each send can take
+    # several seconds when the endpoint is unreachable)
+    if failed:
+        await _notify(notifier, lambda n: n.notify_error(
+            f"Scan failed for {len(failed)} target(s): {', '.join(failed)}",
+            plc_ip=failed[0] if len(failed) == 1 else None,
+            failed_targets=failed,
+        ))
+    await _notify(notifier, lambda n: n.notify_scan_complete(
+        len(results.plcs),
+        len(results.plcs) - len(failed),
+        len(failed),
+        duration,
+        mode=mode_name,
+        interrupted=results.interrupted,
+    ))
+
+
+def _write_report(args, output_dir: str, mode_name: str, interval: float, display,
+                  results: _RunResults, started_at, completed_at) -> None:
+    """The --report file; a failure counts as an output error"""
+    display.print_info("Generating report...")
+    format_map = {
+        "html": ReportFormat.HTML,
+        "pdf": ReportFormat.PDF,
+        "json": ReportFormat.JSON,
+    }
+    report_config = ReportConfig(
+        format=format_map[args.report],
+        output_path=output_dir,
+        title=args.report_title,
+        company_name=args.report_company,
+        theme=args.report_theme,
+    )
+    report_mode = mode_name
+    if mode_name == "range" and interval > 0:
+        # Periodic monitoring: data_points hold the last cycle only
+        report_mode = f"range (periodic every {interval:g}s, last cycle)"
+        display.print_info("Report contains the last monitoring cycle; per-cycle data is in the CSV files")
+    generator, report_data = create_report(
+        plcs=results.plcs,
+        data_points=results.data_points,
+        denied_addresses=results.denied_addresses,
+        scan_mode=report_mode,
+        started_at=started_at,
+        completed_at=completed_at,
+        config=report_config,
+        errors=results.target_errors + results.output_errors,
+    )
+    try:
+        report_path = generator.save(report_data, args.report_output)
+        display.print_success(f"Report saved to: {report_path}")
+    except Exception as e:
+        # Counted like a CSV/database write failure: the requested
+        # report does not exist, so the run must not exit with 0
+        # (e.g. --report pdf without weasyprint/pdfkit)
+        message = f"Report generation failed: {e}"
+        display.print_error(message)
+        results.output_errors.append(message)
+
+
+def _final_status(display, results: _RunResults) -> int:
+    """Print the closing line; returns the exit code"""
+    if results.interrupted:
+        display.print_warning("Scan stopped by user.")
+        return 130
+    if results.output_errors:
+        display.print_error(f"Finished, but {len(results.output_errors)} output error(s) occurred")
+        return 1
+    if results.failed_targets:
+        display.print_error(
+            f"Scan finished with errors: {len(results.failed_targets)} target(s) failed "
+            f"({', '.join(results.failed_targets)})"
+        )
+        return 1
+    display.print_success("Scan completed successfully.")
+    return 0
+
+
+def _close_run(db_exporter: Optional[DatabaseExporter], audit_file: Optional[str], exit_code: int) -> None:
+    """End the database scan session and the audit log"""
+    if db_exporter:
+        try:
+            db_exporter.end_session({
+                0: "completed",
+                1: "completed with errors",
+                130: "interrupted",
+            }.get(exit_code, f"exit {exit_code}"))
+        except Exception as e:
+            logger.warning(f"Failed to close database session: {e}")
+        db_exporter.close()
+    if audit_file:
+        get_audit_logger().log_session_end()
+        close_audit_logger()
+
+
+async def main():
+    """Main entry point"""
+    args = parse_args()
+
+    if args.generate_config:
+        try:
+            generate_config_template(args.generate_config)
+        except FileExistsError as e:
+            print(f"Error: {e}")
+            sys.exit(1)
+        return
+
+    _configure_logging(args)
+    config_loader = _load_config(args)
+    mode_name, interval, config = _resolve_run_settings(args, config_loader)
+    audit_file = _init_audit(args, config_loader)
+
+    display = RichProgressDisplay(use_rich=not args.no_rich)
+    if not args.quiet and not args.no_rich:
+        display.print_header()
+
+    exporter = _create_exporter(args, config_loader)
+    db_exporter = _create_db_exporter(args, config_loader, display)
+    notifier = _create_notifier(config_loader, display)
+    data_types = _resolve_data_types_or_exit(args, config_loader, display)
+
+    results = _RunResults()
     exit_code = 0
-    
     try:
         from datetime import datetime
-        scan_start_time = datetime.now()
-        
+        started_at = datetime.now()
+
         # Tag all database rows of this run with one scan session
         if db_exporter and db_exporter.is_enabled:
             db_exporter.begin_session(mode_name)
-        
+
         if mode_name == "discover":
-            ip_ranges = [args.ip_range] if args.ip_range else (
-                config_loader.get_ip_ranges() if config_loader else []
-            )
-            range_errors = [e for e in map(ip_range_error, ip_ranges) if e]
-            if range_errors:
-                for error in range_errors:
-                    display.print_error(error)
-                exit_code = 1
-                sys.exit(1)
-            discovered = await run_discovery(
-                ip_ranges, config, exporter, display, db_exporter,
-                resolve_discovery_protocols(args, config_loader),
-                errors=output_errors,
-            )
-            all_plcs = discovered if discovered else []
-            await _notify(notifier, lambda n: n.notify_discovery(
-                len(all_plcs), [p.to_dict() for p in all_plcs]
-            ))
-        
+            await _run_discover(args, config_loader, config, exporter, display, db_exporter, notifier, results)
         else:
-            # Validate ranges before connecting to anything
-            mode = ScanMode.FULL if mode_name == "full" else ScanMode.RANGE
-            device_ranges = resolve_device_ranges(args, config_loader) if mode == ScanMode.RANGE else None
-            
-            # Get targets
-            targets = parse_targets(args.target) if args.target else []
-            protocol = get_protocol_from_string(args.protocol) if args.protocol else None
-            
-            plc_infos: List[PLCInfo] = []
-            # Targets whose protocol could not be detected: failed, not scanned
-            undetected: List[str] = []
-            if config_loader and not targets:
-                for target in config_loader.get_targets():
-                    resolved = await resolve_target(
-                        target.ip_address, target.protocol, target.port,
-                        config, display, base=target
-                    )
-                    if resolved:
-                        plc_infos.append(resolved)
-                    else:
-                        undetected.append(target.ip_address)
-            else:
-                if not targets:
-                    display.print_error("--target is required for full/range modes")
-                    exit_code = 1
-                    sys.exit(1)
-                for ip in targets:
-                    resolved = await resolve_target(ip, protocol, args.port, config, display)
-                    if resolved:
-                        plc_infos.append(resolved)
-                    else:
-                        undetected.append(ip)
-            
-            if not plc_infos and not undetected:
-                display.print_error("No targets specified")
-                exit_code = 1
-                sys.exit(1)
-            
-            for ip in undetected:
-                failed_targets.append(ip)
-                target_errors.append(_target_error(ip, UNDETECTED_PROTOCOL))
-            
-            if mode == ScanMode.FULL and interval > 0:
-                display.print_warning("--interval is ignored in full scan mode")
-            
-            # Undetected targets are listed (without protocol) in the report
-            all_plcs = plc_infos + [PLCInfo(ip_address=ip) for ip in undetected]
-            
-            if not plc_infos:
-                pass   # nothing could be scanned; reported as failed below
-            elif mode == ScanMode.RANGE and interval > 0:
-                # Periodic: all targets in turn every cycle
-                if len(plc_infos) > 1 and config.max_concurrent > 1:
-                    display.print_info("Periodic scans read targets one after another (--max-concurrent not used)")
-                outcomes = await run_periodic_scan(
-                    plc_infos, config, exporter, display, device_ranges, interval,
-                    data_type, byte_order, type_manager, db_exporter, notifier
-                )
-                for outcome in outcomes:
-                    if not outcome.success:
-                        failed_targets.append(outcome.label)
-                        target_errors.append(_target_error(outcome.label, outcome.error))
-                    if outcome.data_points:
-                        all_data_points[outcome.label] = outcome.data_points
-                    if outcome.denied_addresses:
-                        all_denied_addresses[outcome.label] = sorted_addresses(outcome.denied_addresses)
-                    interrupted = interrupted or outcome.interrupted
-            elif len(plc_infos) > 1 and config.max_concurrent > 1:
-                results = await run_parallel_scan(
-                    plc_infos, config, exporter, display,
-                    mode, device_ranges, data_type, byte_order, type_manager,
-                    db_exporter
-                )
-                for label, result in results.items():
-                    if not result.success:
-                        failed_targets.append(label)
-                        target_errors.append(_target_error(label, result.error_message))
-                    if result.data_points:
-                        all_data_points[label] = result.data_points
-                    if result.denied_addresses:
-                        all_denied_addresses[label] = sorted_addresses(result.denied_addresses)
-            else:
-                # Single or sequential scan
-                for label, plc_info in zip(target_labels(plc_infos), plc_infos):
-                    outcome = await run_single_scan(
-                        plc_info, config, exporter, display,
-                        mode, device_ranges,
-                        data_type, byte_order, type_manager, db_exporter,
-                        label=label,
-                    )
-                    if not outcome.success:
-                        failed_targets.append(label)
-                        target_errors.append(_target_error(label, outcome.error))
-                    if outcome.data_points:
-                        all_data_points[label] = outcome.data_points
-                    if outcome.denied_addresses:
-                        all_denied_addresses[label] = sorted_addresses(outcome.denied_addresses)
-        
-        scan_end_time = datetime.now()
+            await _run_scans(args, config_loader, mode_name, interval, config, exporter, display,
+                             db_exporter, notifier, data_types, results)
+
+        completed_at = datetime.now()
         if mode_name != "discover":
-            # One error notification for all failed targets (each send can take
-            # several seconds when the endpoint is unreachable)
-            if failed_targets:
-                await _notify(notifier, lambda n: n.notify_error(
-                    f"Scan failed for {len(failed_targets)} target(s): {', '.join(failed_targets)}",
-                    plc_ip=failed_targets[0] if len(failed_targets) == 1 else None,
-                    failed_targets=failed_targets,
-                ))
-            await _notify(notifier, lambda n: n.notify_scan_complete(
-                len(all_plcs),
-                len(all_plcs) - len(failed_targets),
-                len(failed_targets),
-                (scan_end_time - scan_start_time).total_seconds(),
-                mode=mode_name,
-                interrupted=interrupted,
-            ))
-        
-        # Generate report if requested
+            await _notify_scan_end(notifier, mode_name, results, (completed_at - started_at).total_seconds())
         if args.report:
-            display.print_info("Generating report...")
-            
-            format_map = {
-                "html": ReportFormat.HTML,
-                "pdf": ReportFormat.PDF,
-                "json": ReportFormat.JSON,
-            }
-            
-            report_config = ReportConfig(
-                format=format_map[args.report],
-                output_path=output_dir,
-                title=args.report_title,
-                company_name=args.report_company,
-                theme=args.report_theme,
-            )
-            
-            report_mode = mode_name
-            if mode_name == "range" and interval > 0:
-                # Periodic monitoring: data_points hold the last cycle only
-                report_mode = f"range (periodic every {interval:g}s, last cycle)"
-                display.print_info("Report contains the last monitoring cycle; per-cycle data is in the CSV files")
-            
-            generator, report_data = create_report(
-                plcs=all_plcs,
-                data_points=all_data_points,
-                denied_addresses=all_denied_addresses,
-                scan_mode=report_mode,
-                started_at=scan_start_time,
-                completed_at=scan_end_time,
-                config=report_config,
-                errors=target_errors + output_errors,
-            )
-            
-            try:
-                report_path = generator.save(report_data, args.report_output)
-                display.print_success(f"Report saved to: {report_path}")
-            except Exception as e:
-                # Counted like a CSV/database write failure: the requested
-                # report does not exist, so the run must not exit with 0
-                # (e.g. --report pdf without weasyprint/pdfkit)
-                message = f"Report generation failed: {e}"
-                display.print_error(message)
-                output_errors.append(message)
-        
-        if interrupted:
-            display.print_warning("Scan stopped by user.")
-            exit_code = 130
-        elif output_errors:
-            display.print_error(f"Finished, but {len(output_errors)} output error(s) occurred")
-            exit_code = 1
-        elif failed_targets:
-            display.print_error(
-                f"Scan finished with errors: {len(failed_targets)} target(s) failed "
-                f"({', '.join(failed_targets)})"
-            )
-            exit_code = 1
-        else:
-            display.print_success("Scan completed successfully.")
-        
+            _write_report(args, str(exporter.output_dir), mode_name, interval, display, results,
+                          started_at, completed_at)
+        exit_code = _final_status(display, results)
+
+    except SystemExit as e:
+        # Invalid ranges / targets found after the session started
+        exit_code = e.code if isinstance(e.code, int) else 1
+        raise
     except (KeyboardInterrupt, asyncio.CancelledError):
         display.print_warning("Operation cancelled by user.")
         _uncancel_current_task()
@@ -1042,23 +987,8 @@ async def main():
         exit_code = 1
         await _notify(notifier, lambda n: n.notify_error(message))
     finally:
-        # Close database
-        if db_exporter:
-            try:
-                db_exporter.end_session({
-                    0: "completed",
-                    1: "completed with errors",
-                    130: "interrupted",
-                }.get(exit_code, f"exit {exit_code}"))
-            except Exception as e:
-                logger.warning(f"Failed to close database session: {e}")
-            db_exporter.close()
-        
-        # Close audit logger
-        if audit_file:
-            get_audit_logger().log_session_end()
-            close_audit_logger()
-    
+        _close_run(db_exporter, audit_file, exit_code)
+
     if exit_code:
         sys.exit(exit_code)
 

@@ -466,6 +466,37 @@ class BaseProtocolHandler(ABC):
             self._needs_reconnect = True
         return ok
 
+    def mark_needs_reconnect(self) -> None:
+        """Re-establish the connection before the next request"""
+        self._needs_reconnect = True
+
+    async def reconnect(self) -> bool:
+        """
+        Reconnect after the link was lost (PLC power-cycled, cable pulled).
+
+        On success the failures from the outage are forgotten, so the circuit
+        breaker and lost-link detection do not block the first reads.
+
+        Returns:
+            False if the PLC still cannot be reached
+        """
+        self._needs_reconnect = True
+        if not await self._ensure_fresh_connection():
+            return False
+        self._comm_failure_streak = 0
+        self.reset_circuit_breaker()
+        return True
+
+    @property
+    def uses_address_ranges(self) -> bool:
+        """
+        True when a full scan reads the protocol's default numeric ranges.
+
+        Handlers of symbolic-tag devices override this; an unreachable full
+        scan of such a device is reported as a single "ALL" row.
+        """
+        return True
+
     def get_denied_addresses(self) -> set:
         """Get all addresses marked as inaccessible in this session"""
         return self._session_cache.get_all_denied()

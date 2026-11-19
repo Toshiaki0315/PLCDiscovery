@@ -35,6 +35,7 @@ from plc_discovery.notifications import (
 )
 from plc_discovery.output import CSVExporter
 from plc_discovery.protocols.ethernet_ip import MAX_TAG_ARRAY_ELEMENTS, EtherNetIPHandler
+from plc_discovery.scan_runner import ResultWriter
 from plc_discovery.utils import melsec_address
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -131,7 +132,7 @@ class _Display:
 def test_hex_column_only_for_slmp(tmp_path, protocol, expected):
     """Modbus X/Y are coils / discrete inputs numbered in decimal"""
     exporter = CSVExporter(str(tmp_path), "utf-8", hex_addresses=True)
-    writer = plc_scanner._ResultWriter(PLCInfo("10.0.0.1", protocol=protocol, port=1), exporter, _Display())
+    writer = ResultWriter(PLCInfo("10.0.0.1", protocol=protocol, port=1), exporter, _Display())
     path = writer.export_points(_points("X31"))
     assert ("address_hex" in open(path, encoding="utf-8").readline()) is expected
 
@@ -177,7 +178,7 @@ def test_daily_csv_keeps_existing_columns(tmp_path):
 def test_periodic_writer_uses_daily_file(tmp_path):
     exporter = CSVExporter(str(tmp_path), "utf-8")
     exporter.periodic_csv = "daily"
-    writer = plc_scanner._ResultWriter(PLCInfo("10.0.0.1", protocol=Protocol.SLMP, port=5001), exporter, _Display())
+    writer = ResultWriter(PLCInfo("10.0.0.1", protocol=Protocol.SLMP, port=5001), exporter, _Display())
     writer.daily = True
     paths = {writer.export_points(_points("D0")) for _ in range(3)}
     assert len(paths) == 1 and len(list(tmp_path.glob("plc_data_*.csv"))) == 1

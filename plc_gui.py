@@ -47,12 +47,13 @@ from plc_discovery import settings_file
 from plc_gui_settings import JobOutputs, SettingsTabsMixin  # noqa: F401  (JobOutputs re-exported)
 from plc_discovery.discovery import PLCDiscovery, discover_plcs, merge_discovery_results
 from plc_discovery.output import DEFAULT_OUTPUT_DIR, CSVExporter
+from plc_discovery.scan_runner import CycleRunner, ResultWriter, ScanItem, next_cycle_wait
 from plc_discovery.cli_args import parse_tag_list
 from plc_gui_tags import TagPickerDialog, fetch_tag_list
 from plc_discovery.utils import (
     MAX_IP_RANGE_HOSTS, ip_range_error, melsec_address, success_rate_text, target_address_error,
 )
-from plc_scanner import BYTE_ORDER_MAP, DATA_TYPE_MAP, apply_data_type_conversion, status_report_message
+from plc_scanner import BYTE_ORDER_MAP, DATA_TYPE_MAP
 
 APP_TITLE = "PLC Discovery - PLC自動探索・データ収集ツール"
 
@@ -848,6 +849,9 @@ class PLCScannerApp(SettingsTabsMixin):
         else:
             plc = PLCInfo(ip_address=ip, protocol=protocol, port=port or PROTOCOL_PORTS.get(protocol))
 
+        # The requested ranges / tags (None: full scan), shared with the CLI
+        items: Optional[List[ScanItem]] = None if mode == "full" else (
+            [TagRange(tags)] if tags else [DeviceRange(device_type, start, end)])
         collector = PLCDataCollector(plc, config)
         collector.set_progress_callback(self._progress_cb)
         if not await collector.connect():
@@ -855,16 +859,9 @@ class PLCScannerApp(SettingsTabsMixin):
                 await collector.disconnect()
                 # Still save every requested address as NG_COMM_ERROR (CSV and
                 # table), so the result shows what could not be read
-                items: Optional[list] = None if mode == "full" else (
-                    [TagRange(tags)] if tags else [DeviceRange(device_type, start, end)])
                 points = unreached_points(plc.protocol, items)
-                saved = None
                 self._last_protocol = plc.protocol
-                try:
-                    hex_addresses = exporter.hex_addresses and plc.protocol == Protocol.SLMP
-                    saved = exporter.export_plc_data(points, ip, hex_addresses=hex_addresses)
-                except Exception as e:
-                    logging.error(f"CSVの書き込みに失敗しました: {e}")
+                saved = ResultWriter(plc, exporter).export_points(points)
                 stats = {"total_points": len(points), "success_count": 0,
                          "success_rate": success_rate_text(0, len(points))}
                 self._post("data", points, stats, saved, None, 1)
@@ -878,65 +875,26 @@ class PLCScannerApp(SettingsTabsMixin):
             # keep going; every cycle retries the connection and records the
             # addresses as communication errors until the PLC answers
             logging.warning(f"{ip}:{plc.port} ({plc.protocol.name}) に接続できません。周期ごとに再接続を試みます。")
-        exported_denied: set = set()
         loop = asyncio.get_running_loop()
         protocol_name = plc.protocol.name if plc.protocol else None
         self._last_protocol = plc.protocol
         outputs.open_db()
-        job_started = last_report = loop.time()
+        # Write failures (e.g. CSV opened in Excel) are logged and the
+        # collection continues; unwritten denied addresses are retried
+        daily = bool(interval) and getattr(exporter, "periodic_csv", "per_cycle") == "daily"
+        writer = ResultWriter(plc, exporter, db_exporter=outputs.db, daily=daily)
+        runner = CycleRunner(items, data_type=data_type, byte_order=byte_order,
+                             notifier=outputs.notifier, notify=outputs.notify)
+        job_started = loop.time()
         iteration = 0
         points: List[DataPoint] = []
-        reported_unreachable = False
         try:
             while True:
                 iteration += 1
                 started = loop.time()
-                if mode == "full":
-                    points = await collector.collect_full_scan()
-                else:
-                    if interval:
-                        self._post("status", f"周期実行 {iteration} 回目: 読み取り中...")
-                    collector.clear_data()
-                    if tags:
-                        points = await collector.collect_tags(tags)
-                    else:
-                        points = await collector.collect_range(device_type, start, end)
-
-                if data_type:
-                    points = apply_data_type_conversion(points, data_type, byte_order, None)
-
-                # Write failures (e.g. CSV opened in Excel) are logged and the
-                # collection continues; unwritten denied addresses are retried
-                path = None
-                if points:
-                    try:
-                        hex_addresses = exporter.hex_addresses and plc.protocol == Protocol.SLMP
-                        if interval and getattr(exporter, "periodic_csv", "per_cycle") == "daily":
-                            path = exporter.append_plc_data(points, ip, hex_addresses=hex_addresses)
-                        else:
-                            path = exporter.export_plc_data(points, ip, hex_addresses=hex_addresses)
-                    except Exception as e:
-                        logging.error(f"CSVの書き込みに失敗しました（収集は継続します）: {e}")
-                # Append only addresses not yet logged (avoid duplicates every cycle)
-                new_denied = collector.get_denied_addresses() - exported_denied
-                denied_path = None
-                if new_denied:
-                    try:
-                        denied_path = exporter.export_denied_addresses(
-                            new_denied, ip, statuses=collector.get_denied_statuses()
-                        )
-                        exported_denied |= new_denied
-                    except Exception as e:
-                        logging.error(f"アクセス不可ログの書き込みに失敗しました（次回再試行）: {e}")
-                if outputs.db:
-                    try:
-                        outputs.db.export_plc_data(points, ip, protocol=protocol_name, port=plc.port)
-                        if new_denied:
-                            outputs.db.export_denied_addresses(
-                                new_denied, ip, statuses=collector.get_denied_statuses(),
-                                protocol=protocol_name, port=plc.port)
-                    except Exception as e:
-                        logging.error(f"データベースへの保存に失敗しました（収集は継続します）: {e}")
+                if interval:
+                    self._post("status", f"周期実行 {iteration} 回目: 読み取り中...")
+                points, path, denied_path = await runner.read(collector, writer)
                 self._post("data", points, collector.get_statistics(), path, denied_path, iteration)
 
                 if not interval:
@@ -945,21 +903,11 @@ class PLCScannerApp(SettingsTabsMixin):
                 # Periodic monitoring: an error notification when the PLC stops
                 # answering (once per outage) and the periodic status report
                 unreachable = not collector.is_connected
-                if unreachable and not reported_unreachable:
-                    await outputs.notify(lambda n: n.notify_error(
-                        f"{ip}:{plc.port} ({protocol_name}) is not reachable", plc_ip=ip))
-                reported_unreachable = unreachable
-                notifier = outputs.notifier
-                if (notifier and notifier.report_interval_seconds
-                        and loop.time() - last_report >= notifier.report_interval_seconds):
-                    last_report = loop.time()
-                    message, problems = status_report_message(
-                        {ip: points}, [ip] if unreachable else [], iteration)
-                    await outputs.notify(lambda n: n.notify_status_report(
-                        message, has_problems=problems, iteration=iteration))
+                await runner.track_outage(ip, not unreachable, ip,
+                                          f"{ip}:{plc.port} ({protocol_name}) is not reachable")
+                await runner.report_if_due({ip: points}, [ip] if unreachable else [], iteration)
 
-                # Fixed period: subtract the time spent reading
-                wait = max(0.0, interval - (loop.time() - started))
+                wait = next_cycle_wait(interval, started)
                 self._post("status", f"周期実行 {iteration} 回目完了。{wait:.1f} 秒後に次回実行（停止ボタンで終了）")
                 await asyncio.sleep(wait)
         except asyncio.CancelledError:
