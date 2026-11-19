@@ -6,6 +6,7 @@ plc_gui.PLCScannerApp, which provides the common helpers used here
 """
 
 import asyncio
+import math
 import logging
 import tkinter as tk
 from pathlib import Path
@@ -300,6 +301,8 @@ class SettingsTabsMixin:
         try:
             v = float(var.get().strip())
         except ValueError:
+            raise ValueError(f"「{label}」には数値を入力してください。")
+        if not math.isfinite(v):
             raise ValueError(f"「{label}」には数値を入力してください。")
         if v < minimum or (exclusive and v == minimum):
             raise ValueError(f"「{label}」は {minimum:g} {'より大きく' if exclusive else '以上に'}してください。")

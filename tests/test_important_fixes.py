@@ -110,7 +110,10 @@ class TestConnectionFailure:
             )
         assert outcome.success is False
         assert "Failed to connect" in outcome.error
-        exporter.export_plc_data.assert_not_called()
+        # Every requested address is still written, as NG_COMM_ERROR
+        written = exporter.export_plc_data.call_args.args[0]
+        assert [p.address for p in written] == [f"D{i}" for i in range(10)]
+        assert {p.status for p in written} == {StatusCode.NG_COMM_ERROR}
 
     def test_cli_exit_code_on_unreachable_plc(self, tmp_path, monkeypatch):
         """Connection refused -> exit code 1, other targets still attempted"""

@@ -7,6 +7,7 @@ Provides validation and default values for all settings.
 
 import json
 import logging
+import math
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -522,6 +523,10 @@ class ConfigLoader:
         interval = self.config.get("scan", {}).get("interval_seconds", 0) or 0
         if isinstance(interval, bool) or not isinstance(interval, (int, float)):
             errors.append(f"scan.interval_seconds must be a number, got {interval!r}")
+        elif not math.isfinite(interval):
+            # NaN slips through every comparison below and would make a
+            # periodic scan run without waiting; infinity never wakes up
+            errors.append(f"scan.interval_seconds must be a finite number, got {interval!r}")
         elif interval < 0 or 0 < interval < MIN_INTERVAL_SECONDS:
             errors.append(f"scan.interval_seconds must be 0 (single scan) or >= {MIN_INTERVAL_SECONDS:g}")
 
@@ -590,6 +595,8 @@ def number_error(value: Any, minimum: float, exclusive: bool = False) -> Optiona
     """Why value is not a number >= (or > when exclusive) minimum"""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return f"must be a number, got {value!r}"
+    if not math.isfinite(value):
+        return f"must be a finite number, got {value!r}"
     if value < minimum or (exclusive and value == minimum):
         return f"must be {'>' if exclusive else '>='} {minimum:g}, got {value:g}"
     return None

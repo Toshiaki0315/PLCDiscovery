@@ -29,6 +29,7 @@ License: MIT
 """
 
 import asyncio
+import math
 import contextlib
 import dataclasses
 import logging
@@ -43,7 +44,7 @@ from plc_discovery.config import (
 from plc_discovery.discovery import (
     PLCDiscovery, discover_plcs, merge_discovery_results, target_labels
 )
-from plc_discovery.collector import PLCDataCollector, collect_item
+from plc_discovery.collector import PLCDataCollector, collect_item, unreached_points
 from plc_discovery.output import CSVExporter
 from plc_discovery.utils import ip_range_error, sorted_addresses
 from plc_discovery.config_loader import MIN_INTERVAL_SECONDS, ConfigLoader, generate_config_template
@@ -355,6 +356,12 @@ def _range_labels(device_ranges: Optional[List[DeviceRange]]) -> List[str]:
     ] or ["ALL"]
 
 
+def _unreached_points(plc_info: PLCInfo, mode: ScanMode,
+                      device_ranges: Optional[List[DeviceRange]]) -> List[DataPoint]:
+    """NG_COMM_ERROR points for the requested ranges / tags (full scan: every range)"""
+    return unreached_points(plc_info.protocol, None if mode == ScanMode.FULL else list(device_ranges or []))
+
+
 def _protocol_name(plc_info: PLCInfo) -> str:
     return plc_info.protocol.name if plc_info.protocol else "UNKNOWN"
 
@@ -412,6 +419,12 @@ async def run_single_scan(
     try:
         async with PLCDataCollector(plc_info, config) as collector:
             if not _check_connected(collector, plc_info, outcome, display):
+                # Still write every requested address as NG_COMM_ERROR, so the
+                # output shows what could not be read (PLC off or unreachable)
+                outcome.data_points = _unreached_points(plc_info, mode, device_ranges)
+                filepath = writer.export_points(outcome.data_points)
+                if filepath:
+                    display.print_info(f"Unreachable addresses saved to: {filepath}")
                 return outcome
             
             audit.log_scan_start(ip, mode.value, labels)
@@ -717,8 +730,8 @@ async def main():
             sys.exit(1)
     
     mode_name, interval = resolve_mode_and_interval(args, config_loader)
-    if mode_name == "range" and 0 < interval < MIN_INTERVAL_SECONDS:
-        print(f"Error: --interval must be 0 (single scan) or >= {MIN_INTERVAL_SECONDS:g} seconds")
+    if not math.isfinite(interval) or interval < 0 or (mode_name == "range" and 0 < interval < MIN_INTERVAL_SECONDS):
+        print(f"Error: --interval must be 0 (single scan) or >= {MIN_INTERVAL_SECONDS:g} seconds, got {interval}")
         sys.exit(1)
     
     # Create network config
@@ -1021,12 +1034,13 @@ async def main():
         _uncancel_current_task()
         exit_code = 130
     except Exception as e:
-        display.print_error(str(e))
+        message = str(e)
+        display.print_error(message)
         if args.verbose:
             import traceback
             traceback.print_exc()
         exit_code = 1
-        await _notify(notifier, lambda n: n.notify_error(str(e)))
+        await _notify(notifier, lambda n: n.notify_error(message))
     finally:
         # Close database
         if db_exporter:

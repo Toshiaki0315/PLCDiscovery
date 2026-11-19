@@ -26,6 +26,7 @@ from .config import (
     TagRange,
 )
 from .protocols.base import BaseProtocolHandler
+from .protocols.cip_symbolic import split_element_count
 from .protocols.ethernet_ip import EtherNetIPHandler
 from .protocols.fins import FINSHandler
 from .protocols.modbus import ModbusHandler
@@ -152,15 +153,22 @@ class PLCDataCollector:
             f"{device_range.device_type.value}{device_range.start_address}-"
             f"{device_range.device_type.value}{device_range.end_address} reported as NG_COMM_ERROR"
         )
-        if self._handler is None:
-            return []
-        return self._handler._failed_points(
-            device_range.device_type,
-            device_range.start_address,
-            device_range.end_address,
-            StatusCode.NG_COMM_ERROR,
-            learn=False,
+        return comm_error_points(device_range)
+
+    def _read_error_points(self, device_range: DeviceRange, error: Exception) -> List[DataPoint]:
+        """
+        NG_COMM_ERROR points for a range whose read raised an unexpected
+        exception (library or handler bug, broken link): every requested
+        address still appears in the output. The connection is re-established
+        before the next read.
+        """
+        logger.error(
+            f"Error reading {device_range.device_type.value}{device_range.start_address}-"
+            f"{device_range.device_type.value}{device_range.end_address}: {error}; reported as NG_COMM_ERROR"
         )
+        if self._handler is not None:
+            self._handler._needs_reconnect = True
+        return comm_error_points(device_range)
 
     async def collect_full_scan(self) -> List[DataPoint]:
         """
@@ -220,10 +228,10 @@ class PLCDataCollector:
 
             try:
                 data_points = await self._handler.read_device_range(device_range)
-                self._collected_data.extend(data_points)
             except Exception as e:
-                logger.error(f"Error scanning {device_range.device_type.value}: {e}")
-                # Continue with next range - don't stop on errors
+                # Continue with the next range - don't stop on errors
+                data_points = self._read_error_points(device_range, e)
+            self._collected_data.extend(data_points)
 
         self._report_progress(
             f"Full scan complete. Collected {len(self._collected_data)} data points.", total_ranges, total_ranges
@@ -258,17 +266,15 @@ class PLCDataCollector:
 
         try:
             data_points = await self._handler.read_device_range(device_range)
-            self._collected_data.extend(data_points)
-
-            self._report_progress(
-                f"Collected {len(data_points)} data points from "
-                f"{device_type.value}{start_address}-{device_type.value}{end_address}"
-            )
-
-            return data_points
         except Exception as e:
-            logger.error(f"Error collecting range: {e}")
-            return []
+            data_points = self._read_error_points(device_range, e)
+        self._collected_data.extend(data_points)
+
+        self._report_progress(
+            f"Collected {len(data_points)} data points from "
+            f"{device_type.value}{start_address}-{device_type.value}{end_address}"
+        )
+        return data_points
 
     async def collect_tags(self, tags: List[str]) -> List[DataPoint]:
         """
@@ -433,6 +439,41 @@ async def collect_plc_data(
         else:
             logger.error(f"Invalid mode or missing parameters: {mode}")
             return []
+
+
+def comm_error_points(item: Union[DeviceRange, TagRange]) -> List[DataPoint]:
+    """
+    NG_COMM_ERROR data points for every address (or tag) of a requested
+    range that could not be read at all, so the output still lists them.
+    Not learned as inaccessible: communication errors are transient.
+    """
+    timestamp = get_timestamp()
+    if isinstance(item, TagRange):
+        return [
+            DataPoint(address=split_element_count(tag)[0], status=StatusCode.NG_COMM_ERROR, timestamp=timestamp)
+            for tag in item.tags
+        ]
+    prefix = item.device_type.value
+    return [
+        DataPoint(address=f"{prefix}{address}", status=StatusCode.NG_COMM_ERROR, timestamp=timestamp)
+        for address in range(item.start_address, item.end_address + 1)
+    ]
+
+
+def unreached_points(
+    protocol: Optional[Protocol], items: Optional[List[Union[DeviceRange, TagRange]]]
+) -> List[DataPoint]:
+    """
+    NG_COMM_ERROR points for everything a scan would have read when the PLC
+    could not be connected: the requested ranges / tags, or (items None) the
+    protocol's full-scan ranges.
+    """
+    if items is None:
+        items = list(DEFAULT_DEVICE_RANGES.get(protocol, [])) if protocol else []
+    points: List[DataPoint] = []
+    for item in items:
+        points.extend(comm_error_points(item))
+    return points
 
 
 async def collect_item(collector: "PLCDataCollector", item: Union[DeviceRange, TagRange]) -> List[DataPoint]:

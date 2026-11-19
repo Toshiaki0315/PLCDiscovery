@@ -16,6 +16,7 @@ PLC Scanner GUI - PLC自動探索・データ収集ツールのグラフィカ�
 """
 
 import asyncio
+import math
 import logging
 import os
 import queue
@@ -28,16 +29,18 @@ from tkinter import filedialog, messagebox, ttk
 from typing import Callable, Dict, List, Optional
 
 from plc_discovery.broadcast_discovery import BroadcastDiscovery
-from plc_discovery.collector import PLCDataCollector
+from plc_discovery.collector import PLCDataCollector, unreached_points
 from plc_discovery.config import (
     MAX_RANGE_POINTS,
     PROTOCOL_PORTS,
     DataPoint,
+    DeviceRange,
     DeviceType,
     NetworkConfig,
     PLCInfo,
     Protocol,
     StatusCode,
+    TagRange,
 )
 from plc_discovery.data_types import ByteOrder
 from plc_discovery import settings_file
@@ -46,7 +49,9 @@ from plc_discovery.discovery import PLCDiscovery, discover_plcs, merge_discovery
 from plc_discovery.output import DEFAULT_OUTPUT_DIR, CSVExporter
 from plc_discovery.cli_args import parse_tag_list
 from plc_gui_tags import TagPickerDialog, fetch_tag_list
-from plc_discovery.utils import MAX_IP_RANGE_HOSTS, ip_range_error, melsec_address, target_address_error
+from plc_discovery.utils import (
+    MAX_IP_RANGE_HOSTS, ip_range_error, melsec_address, success_rate_text, target_address_error,
+)
 from plc_scanner import BYTE_ORDER_MAP, DATA_TYPE_MAP, apply_data_type_conversion, status_report_message
 
 APP_TITLE = "PLC Discovery - PLC自動探索・データ収集ツール"
@@ -788,6 +793,8 @@ class PLCScannerApp(SettingsTabsMixin):
                     interval = float(self.var_interval.get())
                 except ValueError:
                     raise ValueError("「周期」には数値（秒）を入力してください。")
+                if not math.isfinite(interval):
+                    raise ValueError("「周期」には数値（秒）を入力してください。")
                 if interval < MIN_PERIODIC_INTERVAL_SEC:
                     raise ValueError(f"周期は {MIN_PERIODIC_INTERVAL_SEC:g} 秒以上にしてください（PLC負荷対策）。")
             outputs = self._job_outputs()
@@ -846,9 +853,27 @@ class PLCScannerApp(SettingsTabsMixin):
         if not await collector.connect():
             if not interval or collector.connect_error:
                 await collector.disconnect()
+                # Still save every requested address as NG_COMM_ERROR (CSV and
+                # table), so the result shows what could not be read
+                items: Optional[list] = None if mode == "full" else (
+                    [TagRange(tags)] if tags else [DeviceRange(device_type, start, end)])
+                points = unreached_points(plc.protocol, items)
+                saved = None
+                self._last_protocol = plc.protocol
+                try:
+                    hex_addresses = exporter.hex_addresses and plc.protocol == Protocol.SLMP
+                    saved = exporter.export_plc_data(points, ip, hex_addresses=hex_addresses)
+                except Exception as e:
+                    logging.error(f"CSVの書き込みに失敗しました: {e}")
+                stats = {"total_points": len(points), "success_count": 0,
+                         "success_rate": success_rate_text(0, len(points))}
+                self._post("data", points, stats, saved, None, 1)
                 await outputs.notify(lambda n: n.notify_error(
                     f"Failed to connect to {ip}:{plc.port} ({plc.protocol.name})", plc_ip=ip))
-                raise RuntimeError(f"{ip}:{plc.port} ({plc.protocol.name}) に接続できませんでした。")
+                message = f"{ip}:{plc.port} ({plc.protocol.name}) に接続できませんでした。"
+                if saved:
+                    message += f"\n\n読めなかったアドレスを NG_COMM_ERROR として保存しました:\n{saved}"
+                raise RuntimeError(message)
             # Periodic monitoring started while the PLC is off or restarting:
             # keep going; every cycle retries the connection and records the
             # addresses as communication errors until the PLC answers
