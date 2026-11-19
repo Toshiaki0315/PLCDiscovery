@@ -274,3 +274,35 @@ def test_macos_app_name_never_raises(monkeypatch):
     names = {n.name for n in tree.body if isinstance(n, ast.FunctionDef)}
     assert "set_macos_app_name" in names
     assert "tk.Tk(className=APP_NAME)" in source
+
+
+def test_outage_and_threshold_suppression_is_per_target(monkeypatch):
+    """min_interval must not hide another PLC's outage or another limit's crossing"""
+    clock = [1000.0]
+    monkeypatch.setattr("plc_discovery.notifications.time.monotonic", lambda: clock[0])
+    manager = NotificationManager(min_interval_seconds=600)
+    sent = []
+    manager.add_custom("c", lambda e: sent.append(e.message))
+
+    async def run():
+        await manager.notify_threshold("PLC1", "D1 > 10", 50)
+        await manager.notify_threshold("PLC1", "D2 > 10", 60)  # other limit: sent
+        await manager.notify_threshold("PLC2", "D1 > 10", 70)  # other target: sent
+        await manager.notify_unreachable("PLC1")
+        await manager.notify_unreachable("PLC2")  # other target: sent
+        await manager.notify_recovered("PLC1")
+        await manager.notify_recovered("PLC2")
+        clock[0] += 60
+        await manager.notify_unreachable("PLC1")  # same target flapping: dropped
+        await manager.notify_threshold("PLC1", "D1 > 10", 55)  # same limit: dropped
+
+    asyncio.run(run())
+    assert sent == [
+        "PLC1: D1 > 10 (value 50)",
+        "PLC1: D2 > 10 (value 60)",
+        "PLC2: D1 > 10 (value 70)",
+        "PLC1 is not reachable",
+        "PLC2 is not reachable",
+        "PLC1 is reachable again (down for 0s)",
+        "PLC2 is reachable again (down for 0s)",
+    ]

@@ -215,7 +215,9 @@ notification_settings:
   # During a periodic scan, send a status report (OK/NG per PLC) this often
   report_interval_minutes: 0
   # Send each event type at most once in this many minutes (repeats are
-  # dropped), so a PLC failing every cycle does not flood the channel
+  # dropped), so a PLC failing every cycle does not flood the channel.
+  # Outages / recoveries count per PLC and threshold crossings per PLC and
+  # condition, so one PLC's message never hides another's
   min_interval_minutes: 0
 
 # Event types: scan_complete, scan_error, discovery_complete, status_report,

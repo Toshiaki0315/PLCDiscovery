@@ -222,6 +222,8 @@ class CycleRunner:
         # Target -> loop time its outage was first seen
         self._down: Dict[str, float] = {}
         self.thresholds = thresholds
+        # Targets already checked for thresholds outside the scanned ranges
+        self._threshold_coverage_checked: Set[str] = set()
 
     async def read(self, collector: PLCDataCollector, writer: ResultWriter) -> CycleResult:
         """Collect, convert and write one target; denied addresses are logged once"""
@@ -251,6 +253,15 @@ class CycleRunner:
         """THRESHOLD_EXCEEDED for each limit this cycle newly crossed"""
         if not self.thresholds:
             return
+        if points and target not in self._threshold_coverage_checked:
+            # Once per target, on the first cycle that read anything: a limit
+            # on an address outside the ranges / tags would never be checked
+            self._threshold_coverage_checked.add(target)
+            for threshold in self.thresholds.unmatched(points):
+                logger.warning(
+                    f"{target}: threshold {threshold.label} is never checked: "
+                    f"{threshold.address} is not in the scanned ranges / tags"
+                )
         for threshold, value in self.thresholds.check(target, points):
             logger.warning(f"{target}: threshold {threshold.label} exceeded (value {value:g})")
             # notify() sends right away, before the loop moves on

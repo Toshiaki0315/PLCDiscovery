@@ -13,6 +13,7 @@ import plc_scanner
 from plc_discovery.config import DataPoint, DeviceRange, DeviceType, NetworkConfig, PLCInfo, Protocol, StatusCode
 from plc_discovery.config_loader import ConfigLoader
 from plc_discovery.notifications import NotificationManager, NotificationType
+from plc_discovery.scan_runner import CycleRunner
 from plc_discovery.thresholds import (
     Threshold,
     ThresholdMonitor,
@@ -204,3 +205,16 @@ def test_cli_rejects_malformed_threshold(monkeypatch, tmp_path, capsys):
     assert exit_info.value.code == 1
     assert "invalid threshold" in capsys.readouterr().out
     periodic.assert_not_called()
+
+
+def test_threshold_outside_scanned_ranges_is_warned_once(caplog):
+    async def run():
+        runner = CycleRunner(None, thresholds=ThresholdMonitor([Threshold("D100", ">", 1), Threshold("d0", ">", 1)]))
+        await runner.check_thresholds("PLC1", [], "10.0.0.1")  # nothing read yet: no verdict
+        for _ in range(2):
+            await runner.check_thresholds("PLC1", [_point("D0", 0)], "10.0.0.1")
+
+    with caplog.at_level("WARNING", logger="plc_discovery.scan_runner"):
+        asyncio.run(run())
+    warnings = [r.getMessage() for r in caplog.records if "never checked" in r.getMessage()]
+    assert warnings == ["PLC1: threshold D100 > 1 is never checked: D100 is not in the scanned ranges / tags"]

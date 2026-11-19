@@ -22,7 +22,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Type
+from typing import Any, Callable, Dict, List, Optional, Tuple, Type
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +94,9 @@ class NotificationEvent:
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
     data: Dict[str, Any] = field(default_factory=dict)
     source: str = "plc_discovery"
+    # What min_interval suppression is counted per, besides the type: e.g.
+    # the target, so one PLC's outage does not hide another's (not sent)
+    throttle_key: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary"""
@@ -415,14 +418,16 @@ class NotificationManager:
         Args:
             min_interval_seconds: an event type is sent at most once in this
                 many seconds; repeats in between are dropped (0 = no limit),
-                so a PLC failing every cycle does not flood the channel
+                so a PLC failing every cycle does not flood the channel.
+                Events with a throttle_key (outage, recovery, threshold) are
+                counted per type and key, i.e. per target / threshold
             report_interval_seconds: how often a periodic scan sends a
                 STATUS_REPORT summary (0 = never); read by the scan loops
         """
         self._handlers: Dict[str, NotificationHandler] = {}
         self.min_interval_seconds = max(0.0, float(min_interval_seconds or 0))
         self.report_interval_seconds = max(0.0, float(report_interval_seconds or 0))
-        self._last_sent: Dict[NotificationType, float] = {}
+        self._last_sent: Dict[Tuple[NotificationType, Optional[str]], float] = {}
 
     @property
     def has_handlers(self) -> bool:
@@ -496,10 +501,12 @@ class NotificationManager:
         handler_names = []
 
         now = time.monotonic()
-        last = self._last_sent.get(event.type)
+        throttle = (event.type, event.throttle_key)
+        last = self._last_sent.get(throttle)
         if self.min_interval_seconds and last is not None and now - last < self.min_interval_seconds:
+            about = f" for {event.throttle_key}" if event.throttle_key else ""
             logger.info(
-                f"Notification '{event.type.value}' suppressed: one was sent "
+                f"Notification '{event.type.value}'{about} suppressed: one was sent "
                 f"{now - last:.0f}s ago (minimum interval {self.min_interval_seconds:.0f}s)"
             )
             return results
@@ -517,7 +524,7 @@ class NotificationManager:
             handler_names.append(name)
 
         if tasks:
-            self._last_sent[event.type] = now
+            self._last_sent[throttle] = now
             outcomes = await asyncio.gather(*tasks, return_exceptions=True)
 
             for name, outcome in zip(handler_names, outcomes):
@@ -569,6 +576,7 @@ class NotificationManager:
             message=f"{target} is not reachable",
             priority=NotificationPriority.HIGH,
             data={"plc_ip": plc_ip, "target": target},
+            throttle_key=target,
         )
         return await self.notify(event)
 
@@ -582,6 +590,7 @@ class NotificationManager:
             message=f"{target} is reachable again (down for {downtime_seconds:.0f}s)",
             priority=NotificationPriority.NORMAL,
             data={"plc_ip": plc_ip, "target": target, "downtime_seconds": round(downtime_seconds, 1)},
+            throttle_key=target,
         )
         return await self.notify(event)
 
@@ -595,6 +604,7 @@ class NotificationManager:
             message=f"{target}: {condition} (value {value:g})",
             priority=NotificationPriority.HIGH,
             data={"plc_ip": plc_ip, "target": target, "condition": condition, "value": value, **extra_data},
+            throttle_key=f"{target}: {condition}",
         )
         return await self.notify(event)
 

@@ -150,3 +150,8 @@ class ThresholdMonitor:
             else:
                 self._exceeded.discard(key)
         return newly
+
+    def unmatched(self, points: Iterable[DataPoint]) -> List[Threshold]:
+        """Thresholds whose address is not among the points at all (not read)"""
+        addresses = {p.address.casefold() for p in points}
+        return [t for t in self.thresholds if t.address.casefold() not in addresses]
