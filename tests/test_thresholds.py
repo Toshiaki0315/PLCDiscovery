@@ -452,3 +452,19 @@ def test_runner_sends_cleared_notification():
     assert sent[0] == "exceeded"
     _, args, kwargs = sent[1]
     assert args[:3] == ("PLC1", "D1 > 10", 5.0) and kwargs["plc_ip"] == "10.0.0.1" and kwargs["address"] == "D1"
+
+
+def test_misspelt_threshold_keys_are_config_errors(tmp_path):
+    with pytest.raises(ValueError, match="unknown key"):
+        threshold_from_dict({"address": "D1", "op": ">", "value": 1, "tagret": "10.0.0.1"})
+    path = tmp_path / "c.yaml"
+    path.write_text(
+        "thresholds:\n  - {address: D100, op: '>', value: 80, for_cycle: 3, hysterisis: 2, tagret: 10.0.0.1}\n",
+        encoding="utf-8",
+    )
+    loader = ConfigLoader(str(path))
+    loader.load()
+    assert loader.validate() == [
+        "thresholds[0]: unknown key(s) for_cycle, hysterisis, tagret "
+        "(allowed: address, op, value, name, target, hysteresis, for_cycles)"
+    ]

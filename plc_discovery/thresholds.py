@@ -118,10 +118,19 @@ def parse_threshold(text: str) -> Threshold:
     return Threshold(match["address"], match["op"], _number(match["value"], f"threshold {text!r}"))
 
 
+# Keys of a thresholds: entry in the config file
+THRESHOLD_KEYS = ("address", "op", "value", "name", "target", "hysteresis", "for_cycles")
+
+
 def threshold_from_dict(item: Any, where: str = "threshold") -> Threshold:
     """A config file entry {address, op, value, name?}; ValueError when invalid"""
     if not isinstance(item, dict):
         raise ValueError(f"{where} must be a mapping with address, op and value")
+    # A misspelt key (e.g. "tagret") would otherwise silently fall back to
+    # the default: a threshold meant for one PLC watched on every PLC
+    unknown = sorted(str(k) for k in item if k not in THRESHOLD_KEYS)
+    if unknown:
+        raise ValueError(f"{where}: unknown key(s) {', '.join(unknown)} (allowed: {', '.join(THRESHOLD_KEYS)})")
     address = str(item.get("address") or "").strip()
     if not address:
         raise ValueError(f"{where}.address is required")
