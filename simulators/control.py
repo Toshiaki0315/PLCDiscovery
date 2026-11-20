@@ -23,7 +23,7 @@ import random
 import threading
 from concurrent.futures import Future
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 
 try:
     from .common import parse_denied_ranges
@@ -243,6 +243,33 @@ class _Running:
     port: int
     device: Any
     closers: List[Callable[[], Any]]
+    # Open client connections (TCP transports): closed on stop, since
+    # Server.close() only stops accepting new ones
+    connections: Set[Any]
+
+
+def _tracked(factory: Callable[[], Any], connections: Set[Any]) -> Callable[[], Any]:
+    """A protocol factory whose connections are recorded in ``connections``"""
+
+    def make() -> Any:
+        protocol = factory()
+        made, lost = protocol.connection_made, protocol.connection_lost
+        transport: List[Any] = []
+
+        def connection_made(t: Any) -> None:
+            transport.append(t)
+            connections.add(t)
+            made(t)
+
+        def connection_lost(exc: Optional[Exception]) -> None:
+            for t in transport:
+                connections.discard(t)
+            lost(exc)
+
+        protocol.connection_made, protocol.connection_lost = connection_made, connection_lost
+        return protocol
+
+    return make
 
 
 @dataclass(frozen=True)
@@ -321,6 +348,7 @@ class SimulatorController:
     async def _start(self, kind: SimulatorKind, host: str, port: int, denied: List[Tuple[int, int]]) -> _Running:
         loop = asyncio.get_running_loop()
         closers: List[Callable[[], Any]] = []
+        connections: Set[Any] = set()
         device: Any
         if kind.key == "fins":
             device = FINSSimulator(host, port)
@@ -328,12 +356,14 @@ class SimulatorController:
             closers.append(udp.close)
             bound = udp.get_extra_info("sockname")[1]
             try:
-                server = await loop.create_server(lambda: FINSTCPServerProtocol(device), host, bound)
+                server = await loop.create_server(
+                    _tracked(lambda: FINSTCPServerProtocol(device), connections), host, bound
+                )
             except OSError:
                 udp.close()
                 raise
             closers.append(server.close)
-            return _Running(kind, host, bound, device, closers)
+            return _Running(kind, host, bound, device, closers, connections)
         factories: Dict[str, Callable[[], Any]] = {
             "slmp": lambda: SLMPDevice(denied),
             "modbus": lambda: ModbusDevice(denied),
@@ -352,9 +382,9 @@ class SimulatorController:
         }
         device = factories[kind.key]()
         protocol = protocols[kind.key]
-        server = await loop.create_server(lambda: protocol(device), host, port)
+        server = await loop.create_server(_tracked(lambda: protocol(device), connections), host, port)
         closers.append(server.close)
-        return _Running(kind, host, server.sockets[0].getsockname()[1], device, closers)
+        return _Running(kind, host, server.sockets[0].getsockname()[1], device, closers, connections)
 
     def stop(self, key: str) -> None:
         """Stop one simulator and its automatic changes (no-op when stopped)"""
@@ -367,6 +397,10 @@ class SimulatorController:
         async def close() -> None:
             for closer in running.closers:
                 closer()
+            # Connected scanners must see the PLC go away (e.g. to try
+            # outage notifications), not keep being answered
+            for transport in list(running.connections):
+                transport.abort()
 
         self._call(close())
         logger.info(f"{running.kind.title} stopped")
@@ -424,7 +458,9 @@ class SimulatorController:
         if not (math.isfinite(generator.period) and generator.period > 0):
             raise ValueError("period must be more than 0 seconds")
         device = self._device(generator.kind)
-        # A bad area / address / tag fails here, not later in the loop
+        # A bad area / address / tag or a limit the area cannot hold (e.g. a
+        # maximum over 65535 for a word) fails here, not later in the loop
+        self.write(generator.kind, generator.area, generator.address, generator.high)
         self.write(generator.kind, generator.area, generator.address, generator.low)
         key = (generator.kind, generator.area, generator.address)
         self.stop_generator(*key)
@@ -434,7 +470,11 @@ class SimulatorController:
             while True:
                 elapsed = asyncio.get_running_loop().time() - started
                 value = wave_value(generator.waveform, generator.low, generator.high, generator.period, elapsed)
-                write_value(generator.kind, device, generator.area, generator.address, value)
+                try:
+                    write_value(generator.kind, device, generator.area, generator.address, value)
+                except ValueError as e:
+                    logger.error(f"auto change stopped: {generator.label}: {e}")
+                    return
                 await asyncio.sleep(interval)
 
         async def create() -> "asyncio.Task[None]":

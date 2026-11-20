@@ -198,3 +198,27 @@ def test_gui_module_imports_without_a_display(monkeypatch):
     with pytest.raises(SystemExit) as exit_info:
         simulator_gui.main(["--help"])
     assert exit_info.value.code == 0
+
+
+def test_stop_drops_connected_scanners(controller):
+    """A periodic scan keeps its connection: stopping must still make the PLC go away"""
+    port = controller.start("slmp", "127.0.0.1", 0)
+
+    async def scan():
+        plc = PLCInfo("127.0.0.1", protocol=Protocol.SLMP, port=port)
+        config = NetworkConfig(packet_interval_ms=0, retry_interval_ms=0, request_timeout_ms=1000)
+        async with PLCDataCollector(plc, config) as collector:
+            before = await collector.collect_range(DeviceType.D, 0, 0)
+            await asyncio.to_thread(controller.stop, "slmp")
+            after = await collector.collect_range(DeviceType.D, 0, 0)
+        return before[0].status, after[0].status
+
+    before, after = asyncio.run(scan())
+    assert before == StatusCode.OK and after != StatusCode.OK
+
+
+def test_generator_limits_outside_the_area_are_rejected(controller):
+    controller.start("modbus", "127.0.0.1", 0)
+    with pytest.raises(ValueError, match="16-bit word"):
+        controller.start_generator(Generator("modbus", "HR", 1, "ramp", 0, 70000, 1))
+    assert controller.generators() == []
