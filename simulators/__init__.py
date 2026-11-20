@@ -9,6 +9,10 @@ Supported Protocols:
 - Modbus/TCP
 - EtherNet/IP
 - S7 (Siemens)
+- FINS (Omron)
+
+simulator_gui.py is a Tk front end (start / stop, edit and animate values);
+control.py holds its headless part.
 """
 
 __version__ = "1.0.0"
