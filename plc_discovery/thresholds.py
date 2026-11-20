@@ -133,8 +133,19 @@ class ThresholdMonitor:
     def __bool__(self) -> bool:
         return bool(self.thresholds)
 
-    def check(self, target: str, points: Iterable[DataPoint]) -> List[Tuple[Threshold, float]]:
-        """Thresholds newly exceeded by this cycle's points, with the value"""
+    def check(
+        self,
+        target: str,
+        points: Iterable[DataPoint],
+        may_notify: Optional[Callable[[Threshold], bool]] = None,
+    ) -> List[Tuple[Threshold, float]]:
+        """
+        Thresholds newly exceeded by this cycle's points, with the value.
+
+        ``may_notify(threshold)`` False (the notification would be throttled)
+        leaves the crossing unrecorded, so it is reported on a later cycle
+        if the value is still outside the limit.
+        """
         newly: List[Tuple[Threshold, float]] = []
         by_address = {p.address.casefold(): p for p in points}
         for threshold in self.thresholds:
@@ -144,7 +155,7 @@ class ThresholdMonitor:
                 continue  # not read this cycle: keep the previous state
             key = (target, threshold)
             if threshold.exceeded(value):
-                if key not in self._exceeded:
+                if key not in self._exceeded and (may_notify is None or may_notify(threshold)):
                     self._exceeded.add(key)
                     newly.append((threshold, value))
             else:

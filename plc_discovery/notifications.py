@@ -484,6 +484,22 @@ class NotificationManager:
             return True
         return False
 
+    def is_suppressed(self, event_type: NotificationType, throttle_key: Optional[str] = None) -> bool:
+        """
+        True while min_interval would drop this event (one with the same type
+        and key was sent too recently). State-change notifications ask first
+        and retry on a later cycle instead of losing the change.
+        """
+        last = self._last_sent.get((event_type, throttle_key))
+        return (
+            bool(self.min_interval_seconds) and last is not None and time.monotonic() - last < self.min_interval_seconds
+        )
+
+    @staticmethod
+    def threshold_key(target: str, condition: str) -> str:
+        """The throttle key of notify_threshold"""
+        return f"{target}: {condition}"
+
     async def notify(self, event: NotificationEvent, handlers: Optional[List[str]] = None) -> Dict[str, bool]:
         """
         Send notification to all applicable handlers.
@@ -502,12 +518,11 @@ class NotificationManager:
 
         now = time.monotonic()
         throttle = (event.type, event.throttle_key)
-        last = self._last_sent.get(throttle)
-        if self.min_interval_seconds and last is not None and now - last < self.min_interval_seconds:
+        if self.is_suppressed(event.type, event.throttle_key):
             about = f" for {event.throttle_key}" if event.throttle_key else ""
             logger.info(
                 f"Notification '{event.type.value}'{about} suppressed: one was sent "
-                f"{now - last:.0f}s ago (minimum interval {self.min_interval_seconds:.0f}s)"
+                f"{now - self._last_sent[throttle]:.0f}s ago (minimum interval {self.min_interval_seconds:.0f}s)"
             )
             return results
 
@@ -604,7 +619,7 @@ class NotificationManager:
             message=f"{target}: {condition} (value {value:g})",
             priority=NotificationPriority.HIGH,
             data={"plc_ip": plc_ip, "target": target, "condition": condition, "value": value, **extra_data},
-            throttle_key=f"{target}: {condition}",
+            throttle_key=self.threshold_key(target, condition),
         )
         return await self.notify(event)
 

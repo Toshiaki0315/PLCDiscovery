@@ -218,3 +218,57 @@ def test_threshold_outside_scanned_ranges_is_warned_once(caplog):
         asyncio.run(run())
     warnings = [r.getMessage() for r in caplog.records if "never checked" in r.getMessage()]
     assert warnings == ["PLC1: threshold D100 > 1 is never checked: D100 is not in the scanned ranges / tags"]
+
+
+def _throttled_runner(monkeypatch, clock, sent):
+    monkeypatch.setattr("plc_discovery.notifications.time.monotonic", lambda: clock[0])
+    manager = NotificationManager(min_interval_seconds=600)
+    manager.add_custom("c", lambda e: sent.append(e.message))
+
+    async def notify(send):
+        await send(manager)
+
+    return CycleRunner(None, notifier=manager, notify=notify, thresholds=ThresholdMonitor([Threshold("D1", ">", 10)]))
+
+
+def test_throttled_outage_is_reported_once_the_interval_passes(monkeypatch):
+    """A PLC that flaps and then stays down must not be left looking reachable"""
+    clock, sent = [1000.0], []
+
+    async def run():
+        runner = _throttled_runner(monkeypatch, clock, sent)
+        for minute, up in enumerate([False, True, False] + [False] * 10):
+            clock[0] = 1000 + 60 * minute
+            await runner.track_outage("PLC1", up, "10.0.0.1")
+            if minute == 9:
+                assert sent[-1].startswith("PLC1 is reachable again")  # still within 10 min
+
+    asyncio.run(run())
+    assert sent[0] == "PLC1 is not reachable" and sent[1].startswith("PLC1 is reachable again")
+    assert sent[2:] == ["PLC1 is not reachable"]  # sent at minute 10, not lost
+
+
+def test_throttled_threshold_is_reported_while_still_exceeded(monkeypatch):
+    clock, sent = [1000.0], []
+
+    async def run():
+        runner = _throttled_runner(monkeypatch, clock, sent)
+        for minute, value in enumerate([50, 5] + [60] * 12):
+            clock[0] = 1000 + 60 * minute
+            await runner.check_thresholds("PLC1", [_point("D1", value)], "10.0.0.1")
+
+    asyncio.run(run())
+    assert sent == ["PLC1: D1 > 10 (value 50)", "PLC1: D1 > 10 (value 60)"]
+
+
+def test_short_excursion_within_interval_stays_suppressed(monkeypatch):
+    clock, sent = [1000.0], []
+
+    async def run():
+        runner = _throttled_runner(monkeypatch, clock, sent)
+        for minute, value in enumerate([50, 5, 60, 5] + [5] * 12):
+            clock[0] = 1000 + 60 * minute
+            await runner.check_thresholds("PLC1", [_point("D1", value)], "10.0.0.1")
+
+    asyncio.run(run())
+    assert sent == ["PLC1: D1 > 10 (value 50)"]  # back inside before it could be sent

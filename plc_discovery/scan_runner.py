@@ -19,8 +19,9 @@ from .config import DataPoint, DeviceRange, PLCInfo, StatusCode, TagRange
 from .conversion import apply_data_type_conversion
 from .data_types import ByteOrder, DataType, DataTypeManager
 from .database import DatabaseExporter
+from .notifications import NotificationManager, NotificationType
 from .output import CSVExporter
-from .thresholds import ThresholdMonitor
+from .thresholds import Threshold, ThresholdMonitor
 
 logger = logging.getLogger(__name__)
 
@@ -219,8 +220,12 @@ class CycleRunner:
         self.notifier = notifier
         self._notify: Notify = notify or _no_notify
         self._last_report = asyncio.get_running_loop().time()
-        # Target -> loop time its outage was first seen
+        # Target -> loop time its current outage was first seen
         self._down: Dict[str, float] = {}
+        # Length of each target's latest finished outage (for PLC_RECOVERED)
+        self._last_downtime: Dict[str, float] = {}
+        # Targets last reported as not reachable: what the receiver believes
+        self._reported_down: Set[str] = set()
         self.thresholds = thresholds
         # Targets already checked for thresholds outside the scanned ranges
         self._threshold_coverage_checked: Set[str] = set()
@@ -262,25 +267,43 @@ class CycleRunner:
                     f"{target}: threshold {threshold.label} is never checked: "
                     f"{threshold.address} is not in the scanned ranges / tags"
                 )
-        for threshold, value in self.thresholds.check(target, points):
+
+        def may_notify(threshold: Threshold) -> bool:
+            key = NotificationManager.threshold_key(target, threshold.label)
+            return not self._suppressed(NotificationType.THRESHOLD_EXCEEDED, key)
+
+        for threshold, value in self.thresholds.check(target, points, may_notify):
             logger.warning(f"{target}: threshold {threshold.label} exceeded (value {value:g})")
             # notify() sends right away, before the loop moves on
             label, address = threshold.label, threshold.address
             await self._notify(lambda n: n.notify_threshold(target, label, value, plc_ip=plc_ip, address=address))
 
+    def _suppressed(self, event_type: NotificationType, key: str) -> bool:
+        """True while the notifier's min_interval would drop this event"""
+        notifier = self.notifier
+        return isinstance(notifier, NotificationManager) and notifier.is_suppressed(event_type, key)
+
     async def track_outage(self, target: str, reachable: bool, plc_ip: str) -> None:
         """
         A PLC_UNREACHABLE notification when a target stops answering (once
         per outage) and PLC_RECOVERED with the downtime when it answers again.
+
+        A change the notifier would throttle (min_interval) is not marked as
+        reported and is retried on the next cycle, so the receiver always
+        ends up with the target's current state (a PLC that flaps and then
+        stays down is not left looking reachable).
         """
         now = asyncio.get_running_loop().time()
         if reachable:
             down_since = self._down.pop(target, None)
             if down_since is not None:
-                downtime = now - down_since
+                self._last_downtime[target] = now - down_since
+            if target in self._reported_down and not self._suppressed(NotificationType.PLC_RECOVERED, target):
+                self._reported_down.discard(target)
+                downtime = self._last_downtime.get(target, 0.0)
                 await self._notify(lambda n: n.notify_recovered(target, plc_ip=plc_ip, downtime_seconds=downtime))
             return
-        if target in self._down:
-            return
-        self._down[target] = now
-        await self._notify(lambda n: n.notify_unreachable(target, plc_ip=plc_ip))
+        self._down.setdefault(target, now)
+        if target not in self._reported_down and not self._suppressed(NotificationType.PLC_UNREACHABLE, target):
+            self._reported_down.add(target)
+            await self._notify(lambda n: n.notify_unreachable(target, plc_ip=plc_ip))

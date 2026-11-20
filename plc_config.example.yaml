@@ -217,7 +217,9 @@ notification_settings:
   # Send each event type at most once in this many minutes (repeats are
   # dropped), so a PLC failing every cycle does not flood the channel.
   # Outages / recoveries count per PLC and threshold crossings per PLC and
-  # condition, so one PLC's message never hides another's
+  # condition, so one PLC's message never hides another's. A throttled
+  # outage / recovery / crossing is sent once the interval has passed if the
+  # state still holds, so the latest state always arrives
   min_interval_minutes: 0
 
 # Event types: scan_complete, scan_error, discovery_complete, status_report,
