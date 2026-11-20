@@ -807,6 +807,9 @@ async def _resolve_targets(args, config_loader, config, display):
     return plc_infos, undetected
 
 
+THRESHOLDS_IGNORED = "Thresholds are watched in periodic range scans only (--interval); ignored"
+
+
 async def _run_scans(
     args: argparse.Namespace,
     config_loader: Optional[ConfigLoader],
@@ -833,7 +836,9 @@ async def _run_scans(
     if mode == ScanMode.FULL and interval > 0:
         display.print_warning("--interval is ignored in full scan mode")
     if thresholds and not (mode == ScanMode.RANGE and interval > 0):
-        display.print_warning("Thresholds are watched in periodic range scans only (--interval); ignored")
+        display.print_warning(THRESHOLDS_IGNORED)
+    elif thresholds:
+        display.print_info(f"Watching {len(thresholds)} threshold(s): {', '.join(t.label for t in thresholds)}")
 
     # Undetected targets are listed (without protocol) in the report
     results.plcs = plc_infos + [PLCInfo(ip_address=ip) for ip in undetected]
@@ -1052,8 +1057,8 @@ async def main():
     except ValueError as e:
         display.print_error(str(e))
         sys.exit(1)
-    if thresholds:
-        display.print_info(f"Watching {len(thresholds)} threshold(s): {', '.join(t.label for t in thresholds)}")
+    if mode_name == "discover" and getattr(args, "threshold", None):
+        display.print_warning(THRESHOLDS_IGNORED)
 
     results = _RunResults()
     exit_code = 0

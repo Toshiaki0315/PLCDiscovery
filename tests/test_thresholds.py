@@ -288,3 +288,42 @@ def test_evaluate_separates_crossings_from_notifications():
     # still outside: not a new crossing, but offered for notification again
     assert monitor.evaluate("PLC1", [_point("D1", 55)]) == ([], [(Threshold("D1", ">", 10), 55.0)])
     assert monitor.evaluate("PLC1", [_point("D1", 60)]) == ([], [])
+
+
+def _run_main(monkeypatch, tmp_path, *args):
+    argv = ["plc_scanner.py", *args, "--threshold", "D100>80", "--output-dir", str(tmp_path), "--no-rich"]
+    monkeypatch.setattr(sys, "argv", argv)
+    with (
+        patch.object(plc_scanner, "run_periodic_scan", AsyncMock(return_value=[])) as periodic,
+        patch.object(plc_scanner, "run_single_scan", AsyncMock()),
+        patch.object(plc_scanner, "_run_discover", AsyncMock()),
+    ):
+        try:
+            asyncio.run(plc_scanner.main())
+        except SystemExit:
+            pass
+    return periodic
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--mode", "discover"],
+        ["--mode", "range", "--target", "10.0.0.9", "--protocol", "slmp", "--range", "0-0"],
+    ],
+)
+def test_thresholds_not_watched_say_so(monkeypatch, tmp_path, capsys, args):
+    _run_main(monkeypatch, tmp_path, *args)
+    out = capsys.readouterr().out
+    assert "Watching" not in out and "ignored" in out
+
+
+def test_periodic_range_scan_says_watching(monkeypatch, tmp_path, capsys):
+    periodic = _run_main(
+        monkeypatch,
+        tmp_path,
+        *["--mode", "range", "--target", "10.0.0.9", "--protocol", "slmp", "--range", "0-0", "--interval", "5"],
+    )
+    out = capsys.readouterr().out
+    assert "Watching 1 threshold(s): D100 > 80" in out and "ignored" not in out
+    periodic.assert_awaited_once()
