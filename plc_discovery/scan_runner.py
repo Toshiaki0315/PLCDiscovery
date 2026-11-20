@@ -272,8 +272,11 @@ class CycleRunner:
             key = NotificationManager.threshold_key(target, threshold.label)
             return not self._suppressed(NotificationType.THRESHOLD_EXCEEDED, key)
 
-        for threshold, value in self.thresholds.check(target, points, may_notify):
+        crossed, to_notify = self.thresholds.evaluate(target, points, may_notify)
+        # Logged on every crossing, even while its notification is throttled
+        for threshold, value in crossed:
             logger.warning(f"{target}: threshold {threshold.label} exceeded (value {value:g})")
+        for threshold, value in to_notify:
             # notify() sends right away, before the loop moves on
             label, address = threshold.label, threshold.address
             await self._notify(lambda n: n.notify_threshold(target, label, value, plc_ip=plc_ip, address=address))

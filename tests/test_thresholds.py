@@ -261,7 +261,8 @@ def test_throttled_threshold_is_reported_while_still_exceeded(monkeypatch):
     assert sent == ["PLC1: D1 > 10 (value 50)", "PLC1: D1 > 10 (value 60)"]
 
 
-def test_short_excursion_within_interval_stays_suppressed(monkeypatch):
+def test_short_excursion_within_interval_stays_suppressed(monkeypatch, caplog):
+    """Not notified, but every crossing still reaches the log (console / GUI log pane)"""
     clock, sent = [1000.0], []
 
     async def run():
@@ -270,5 +271,20 @@ def test_short_excursion_within_interval_stays_suppressed(monkeypatch):
             clock[0] = 1000 + 60 * minute
             await runner.check_thresholds("PLC1", [_point("D1", value)], "10.0.0.1")
 
-    asyncio.run(run())
+    with caplog.at_level("WARNING", logger="plc_discovery.scan_runner"):
+        asyncio.run(run())
     assert sent == ["PLC1: D1 > 10 (value 50)"]  # back inside before it could be sent
+    logged = [r.getMessage() for r in caplog.records if "exceeded" in r.getMessage()]
+    assert logged == [
+        "PLC1: threshold D1 > 10 exceeded (value 50)",
+        "PLC1: threshold D1 > 10 exceeded (value 60)",
+    ]
+
+
+def test_evaluate_separates_crossings_from_notifications():
+    monitor = ThresholdMonitor([Threshold("D1", ">", 10)])
+    blocked = lambda threshold: False  # noqa: E731
+    assert monitor.evaluate("PLC1", [_point("D1", 50)], blocked) == ([(Threshold("D1", ">", 10), 50.0)], [])
+    # still outside: not a new crossing, but offered for notification again
+    assert monitor.evaluate("PLC1", [_point("D1", 55)]) == ([], [(Threshold("D1", ">", 10), 55.0)])
+    assert monitor.evaluate("PLC1", [_point("D1", 60)]) == ([], [])

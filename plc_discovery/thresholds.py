@@ -129,24 +129,30 @@ class ThresholdMonitor:
         self.thresholds = list(thresholds)
         # (target, threshold) pairs currently outside the limit
         self._exceeded: Set[Tuple[str, Threshold]] = set()
+        # ... and those whose excursion has been notified
+        self._notified: Set[Tuple[str, Threshold]] = set()
 
     def __bool__(self) -> bool:
         return bool(self.thresholds)
 
-    def check(
+    def evaluate(
         self,
         target: str,
         points: Iterable[DataPoint],
         may_notify: Optional[Callable[[Threshold], bool]] = None,
-    ) -> List[Tuple[Threshold, float]]:
+    ) -> Tuple[List[Tuple[Threshold, float]], List[Tuple[Threshold, float]]]:
         """
-        Thresholds newly exceeded by this cycle's points, with the value.
+        (crossed, to_notify) for this cycle's points, each with the value.
 
-        ``may_notify(threshold)`` False (the notification would be throttled)
-        leaves the crossing unrecorded, so it is reported on a later cycle
-        if the value is still outside the limit.
+        ``crossed``: limits the value went outside of in this cycle (for
+        the log). ``to_notify``: excursions not yet notified. While
+        ``may_notify(threshold)`` is False (the notification would be
+        throttled) an excursion stays unnotified and is offered again on
+        later cycles as long as the value is still outside the limit; one
+        that ends first is not notified.
         """
-        newly: List[Tuple[Threshold, float]] = []
+        crossed: List[Tuple[Threshold, float]] = []
+        to_notify: List[Tuple[Threshold, float]] = []
         by_address = {p.address.casefold(): p for p in points}
         for threshold in self.thresholds:
             point = by_address.get(threshold.address.casefold())
@@ -154,13 +160,26 @@ class ThresholdMonitor:
             if value is None:
                 continue  # not read this cycle: keep the previous state
             key = (target, threshold)
-            if threshold.exceeded(value):
-                if key not in self._exceeded and (may_notify is None or may_notify(threshold)):
-                    self._exceeded.add(key)
-                    newly.append((threshold, value))
-            else:
+            if not threshold.exceeded(value):
                 self._exceeded.discard(key)
-        return newly
+                self._notified.discard(key)
+                continue
+            if key not in self._exceeded:
+                self._exceeded.add(key)
+                crossed.append((threshold, value))
+            if key not in self._notified and (may_notify is None or may_notify(threshold)):
+                self._notified.add(key)
+                to_notify.append((threshold, value))
+        return crossed, to_notify
+
+    def check(
+        self,
+        target: str,
+        points: Iterable[DataPoint],
+        may_notify: Optional[Callable[[Threshold], bool]] = None,
+    ) -> List[Tuple[Threshold, float]]:
+        """The excursions to notify this cycle (see evaluate)"""
+        return self.evaluate(target, points, may_notify)[1]
 
     def unmatched(self, points: Iterable[DataPoint]) -> List[Threshold]:
         """Thresholds whose address is not among the points at all (not read)"""
