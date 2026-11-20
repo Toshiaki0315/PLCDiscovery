@@ -47,6 +47,7 @@ class NotificationType(Enum):
     PLC_UNREACHABLE = "plc_unreachable"
     PLC_RECOVERED = "plc_recovered"
     THRESHOLD_EXCEEDED = "threshold_exceeded"
+    THRESHOLD_CLEARED = "threshold_cleared"
     # Periodic summary while a periodic (monitoring) scan runs
     STATUS_REPORT = "status_report"
     CUSTOM = "custom"
@@ -59,15 +60,17 @@ CONFIGURABLE_EVENTS = {
     NotificationType.DISCOVERY_COMPLETE: "探索完了",
     NotificationType.STATUS_REPORT: "周期実行中の定期報告",
     NotificationType.PLC_UNREACHABLE: "周期実行中の通信断・復旧",
-    NotificationType.THRESHOLD_EXCEEDED: "周期実行中のしきい値超過",
+    NotificationType.THRESHOLD_EXCEEDED: "周期実行中のしきい値超過・復帰",
 }
 
 # Events also delivered to destinations that chose another event: outages
 # were sent as scan_error before plc_unreachable existed, and choosing
-# plc_unreachable ("通信断・復旧") also brings the recovery message
+# plc_unreachable ("通信断・復旧") also brings the recovery message, and
+# threshold_exceeded the message that the value is back inside
 EVENT_ALSO_FOR = {
     NotificationType.PLC_UNREACHABLE: (NotificationType.SCAN_ERROR,),
     NotificationType.PLC_RECOVERED: (NotificationType.PLC_UNREACHABLE, NotificationType.SCAN_ERROR),
+    NotificationType.THRESHOLD_CLEARED: (NotificationType.THRESHOLD_EXCEEDED,),
 }
 
 # Notification destination types offered in configuration
@@ -619,6 +622,33 @@ class NotificationManager:
             message=f"{target}: {condition} (value {value:g})",
             priority=NotificationPriority.HIGH,
             data={"plc_ip": plc_ip, "target": target, "condition": condition, "value": value, **extra_data},
+            throttle_key=self.threshold_key(target, condition),
+        )
+        return await self.notify(event)
+
+    async def notify_threshold_cleared(
+        self,
+        target: str,
+        condition: str,
+        value: float,
+        duration_seconds: float = 0.0,
+        plc_ip: Optional[str] = None,
+        **extra_data: Any,
+    ) -> Dict[str, bool]:
+        """A notified excursion is over: the value is back inside its limit"""
+        event = NotificationEvent(
+            type=NotificationType.THRESHOLD_CLEARED,
+            title="PLC Threshold Back to Normal",
+            message=f"{target}: {condition} back to normal (value {value:g}, outside for {duration_seconds:.0f}s)",
+            priority=NotificationPriority.NORMAL,
+            data={
+                "plc_ip": plc_ip,
+                "target": target,
+                "condition": condition,
+                "value": value,
+                "duration_seconds": round(duration_seconds, 1),
+                **extra_data,
+            },
             throttle_key=self.threshold_key(target, condition),
         )
         return await self.notify(event)

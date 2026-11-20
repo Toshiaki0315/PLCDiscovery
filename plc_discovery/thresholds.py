@@ -7,6 +7,9 @@ notification is sent when a condition becomes true; it is sent again only
 after the value has gone back inside the limit (one message per excursion,
 not one per cycle).
 
+When the value goes back inside the limit, THRESHOLD_CLEARED is sent
+with how long it was outside (only for excursions that were notified).
+
 Written in the config file::
 
     thresholds:
@@ -14,19 +17,24 @@ Written in the config file::
         op: ">"
         value: 80
         name: Furnace temperature   # optional
+        target: 192.168.1.10        # optional: only this PLC (IP or label)
+        hysteresis: 2               # optional: back inside only at <= 78
+        for_cycles: 3               # optional: outside 3 cycles in a row
 
-or on the command line: ``--threshold "D100>80" --threshold "D200<=10"``.
+or on the command line: ``--threshold "D100>80" --threshold "D200<=10"``
+(command-line and GUI conditions apply to every target, without
+hysteresis, from the first cycle).
 
 The value compared is the converted value when a data type is applied
 (FLOAT, DWORD, ...), otherwise the raw word. Addresses that were not read
-successfully are skipped.
+successfully are skipped and keep the previous state.
 """
 
 import math
 import operator
 import re
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, Iterable, List, NamedTuple, Optional, Set, Tuple
 
 from .config import DataPoint, StatusCode
 
@@ -49,6 +57,12 @@ class Threshold:
     op: str
     value: float
     name: Optional[str] = None
+    # Only this target (its IP or its label); None: every target
+    target: Optional[str] = None
+    # Back inside only once the value is this far inside the limit (> / >= / < / <=)
+    hysteresis: float = 0.0
+    # Consecutive read cycles outside the limit before it counts as exceeded
+    for_cycles: int = 1
 
     @property
     def condition(self) -> str:
@@ -62,8 +76,23 @@ class Threshold:
         # Device addresses and CIP tag names are case-insensitive
         return address.casefold() == self.address.casefold()
 
+    def applies_to(self, target: str, plc_ip: Optional[str] = None) -> bool:
+        """Whether this threshold is watched on the target (label or IP)"""
+        if self.target is None:
+            return True
+        wanted = self.target.casefold()
+        return wanted == target.casefold() or (plc_ip is not None and wanted == plc_ip.casefold())
+
     def exceeded(self, value: float) -> bool:
         return OPERATORS[self.op](value, self.value)
+
+    def back_inside(self, value: float) -> bool:
+        """Whether an exceeded value has returned inside (past the hysteresis)"""
+        if self.op in (">", ">="):
+            return not OPERATORS[self.op](value, self.value - self.hysteresis)
+        if self.op in ("<", "<="):
+            return not OPERATORS[self.op](value, self.value + self.hysteresis)
+        return not self.exceeded(value)
 
 
 def _number(value: Any, where: str) -> float:
@@ -102,7 +131,26 @@ def threshold_from_dict(item: Any, where: str = "threshold") -> Threshold:
     if "value" not in item:
         raise ValueError(f"{where}.value is required")
     name = item.get("name")
-    return Threshold(address, op, _number(item["value"], where), str(name) if name else None)
+    target = item.get("target")
+    if target is not None and not (isinstance(target, str) and target.strip()):
+        raise ValueError(f"{where}.target must be an IP address or target label, got {target!r}")
+    hysteresis = _number(item.get("hysteresis", 0), f"{where}.hysteresis")
+    if hysteresis < 0:
+        raise ValueError(f"{where}.hysteresis must be 0 or more, got {item.get('hysteresis')!r}")
+    if hysteresis and op in ("==", "!="):
+        raise ValueError(f"{where}.hysteresis cannot be used with {op}")
+    for_cycles = item.get("for_cycles", 1)
+    if isinstance(for_cycles, bool) or not isinstance(for_cycles, int) or for_cycles < 1:
+        raise ValueError(f"{where}.for_cycles must be a whole number of 1 or more, got {for_cycles!r}")
+    return Threshold(
+        address,
+        op,
+        _number(item["value"], where),
+        str(name) if name else None,
+        target=target.strip() if target else None,
+        hysteresis=hysteresis,
+        for_cycles=for_cycles,
+    )
 
 
 def parse_thresholds(texts: Iterable[str]) -> List[Threshold]:
@@ -122,66 +170,119 @@ def numeric_value(point: DataPoint) -> Optional[float]:
     return None
 
 
+class ThresholdEvent(NamedTuple):
+    threshold: Threshold
+    value: float
+    # Back inside: seconds the value was outside the limit
+    duration: float = 0.0
+
+
+class ThresholdCheck(NamedTuple):
+    """What one cycle changed, see ThresholdMonitor.evaluate"""
+
+    crossed: List[ThresholdEvent]  # went outside the limit (log)
+    returned: List[ThresholdEvent]  # came back inside (log)
+    exceeded: List[ThresholdEvent]  # excursions to notify now
+    cleared: List[ThresholdEvent]  # notified excursions now over, to notify
+
+
+# may_notify(threshold, kind): kind is "exceeded" or "cleared"
+MayNotify = Callable[[Threshold, str], bool]
+
+
 class ThresholdMonitor:
-    """Which thresholds became exceeded in the latest cycle, per target"""
+    """Per target, which thresholds are exceeded and what has been notified"""
 
     def __init__(self, thresholds: Iterable[Threshold]):
         self.thresholds = list(thresholds)
-        # (target, threshold) pairs currently outside the limit
-        self._exceeded: Set[Tuple[str, Threshold]] = set()
-        # ... and those whose excursion has been notified
-        self._notified: Set[Tuple[str, Threshold]] = set()
+        Key = Tuple[str, Threshold]
+        # Excursions in progress, with the time the value first went outside
+        self._exceeded: Dict[Key, float] = {}
+        # Consecutive cycles outside the limit, not yet for_cycles long
+        self._pending: Dict[Key, Tuple[int, float]] = {}
+        # Excursions the receiver was told about (exceeded, not yet cleared)
+        self._notified: Set[Key] = set()
+        # Notified excursions that ended but whose clear is not sent yet
+        self._unsent_clear: Dict[Key, ThresholdEvent] = {}
 
     def __bool__(self) -> bool:
         return bool(self.thresholds)
+
+    def for_target(self, target: str, plc_ip: Optional[str] = None) -> List[Threshold]:
+        return [t for t in self.thresholds if t.applies_to(target, plc_ip)]
 
     def evaluate(
         self,
         target: str,
         points: Iterable[DataPoint],
-        may_notify: Optional[Callable[[Threshold], bool]] = None,
-    ) -> Tuple[List[Tuple[Threshold, float]], List[Tuple[Threshold, float]]]:
+        may_notify: Optional[MayNotify] = None,
+        plc_ip: Optional[str] = None,
+        now: float = 0.0,
+    ) -> ThresholdCheck:
         """
-        (crossed, to_notify) for this cycle's points, each with the value.
+        Update the state with this cycle's points (read at loop time ``now``).
 
-        ``crossed``: limits the value went outside of in this cycle (for
-        the log). ``to_notify``: excursions not yet notified. While
-        ``may_notify(threshold)`` is False (the notification would be
-        throttled) an excursion stays unnotified and is offered again on
-        later cycles as long as the value is still outside the limit; one
-        that ends first is not notified.
+        A value counts as exceeded after ``for_cycles`` read cycles in a row
+        outside the limit, and as back inside once it is ``hysteresis``
+        inside it. The receiver is kept in line with that state: an
+        excursion is notified once, and its end is notified if it was.
+        While ``may_notify`` is False for a notification (it would be
+        throttled) it stays unsent and is offered again on later cycles; an
+        excursion that ends before it could be notified is never notified.
         """
-        crossed: List[Tuple[Threshold, float]] = []
-        to_notify: List[Tuple[Threshold, float]] = []
+        result = ThresholdCheck([], [], [], [])
         by_address = {p.address.casefold(): p for p in points}
-        for threshold in self.thresholds:
+        for threshold in self.for_target(target, plc_ip):
             point = by_address.get(threshold.address.casefold())
             value = numeric_value(point) if point is not None else None
             if value is None:
                 continue  # not read this cycle: keep the previous state
             key = (target, threshold)
-            if not threshold.exceeded(value):
-                self._exceeded.discard(key)
+            if key in self._exceeded:
+                if threshold.back_inside(value):
+                    event = ThresholdEvent(threshold, value, now - self._exceeded.pop(key))
+                    result.returned.append(event)
+                    if key in self._notified:
+                        self._unsent_clear[key] = event
+            elif threshold.exceeded(value):
+                count, since = self._pending.get(key, (0, now))
+                if count + 1 >= threshold.for_cycles:
+                    self._pending.pop(key, None)
+                    self._exceeded[key] = since
+                    result.crossed.append(ThresholdEvent(threshold, value))
+                else:
+                    self._pending[key] = (count + 1, since)
+            else:
+                self._pending.pop(key, None)
+
+            # Bring the receiver in line with the state
+            if key in self._exceeded:
+                # Outside again before the clear went out: still what it was told
+                self._unsent_clear.pop(key, None)
+                if key not in self._notified and (may_notify is None or may_notify(threshold, "exceeded")):
+                    self._notified.add(key)
+                    result.exceeded.append(ThresholdEvent(threshold, value))
+            elif key in self._notified and (may_notify is None or may_notify(threshold, "cleared")):
                 self._notified.discard(key)
-                continue
-            if key not in self._exceeded:
-                self._exceeded.add(key)
-                crossed.append((threshold, value))
-            if key not in self._notified and (may_notify is None or may_notify(threshold)):
-                self._notified.add(key)
-                to_notify.append((threshold, value))
-        return crossed, to_notify
+                result.cleared.append(self._unsent_clear.pop(key, ThresholdEvent(threshold, value)))
+        return result
 
     def check(
         self,
         target: str,
         points: Iterable[DataPoint],
-        may_notify: Optional[Callable[[Threshold], bool]] = None,
+        may_notify: Optional[MayNotify] = None,
     ) -> List[Tuple[Threshold, float]]:
         """The excursions to notify this cycle (see evaluate)"""
-        return self.evaluate(target, points, may_notify)[1]
+        return [(e.threshold, e.value) for e in self.evaluate(target, points, may_notify).exceeded]
 
-    def unmatched(self, points: Iterable[DataPoint]) -> List[Threshold]:
-        """Thresholds whose address is not among the points at all (not read)"""
+    def unmatched(self, points: Iterable[DataPoint], target: str = "", plc_ip: Optional[str] = None) -> List[Threshold]:
+        """The target's thresholds whose address is not among the points at all (not read)"""
         addresses = {p.address.casefold() for p in points}
-        return [t for t in self.thresholds if t.address.casefold() not in addresses]
+        thresholds = self.for_target(target, plc_ip) if target else self.thresholds
+        return [t for t in thresholds if t.address.casefold() not in addresses]
+
+    def unknown_targets(self, names: Iterable[str]) -> List[Threshold]:
+        """Thresholds limited to a target that is none of these labels / IPs"""
+        known = {n.casefold() for n in names}
+        return [t for t in self.thresholds if t.target is not None and t.target.casefold() not in known]

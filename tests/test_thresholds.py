@@ -258,7 +258,11 @@ def test_throttled_threshold_is_reported_while_still_exceeded(monkeypatch):
             await runner.check_thresholds("PLC1", [_point("D1", value)], "10.0.0.1")
 
     asyncio.run(run())
-    assert sent == ["PLC1: D1 > 10 (value 50)", "PLC1: D1 > 10 (value 60)"]
+    assert sent == [
+        "PLC1: D1 > 10 (value 50)",
+        "PLC1: D1 > 10 back to normal (value 5, outside for 60s)",
+        "PLC1: D1 > 10 (value 60)",  # throttled at minute 2, sent at minute 10
+    ]
 
 
 def test_short_excursion_within_interval_stays_suppressed(monkeypatch, caplog):
@@ -273,7 +277,8 @@ def test_short_excursion_within_interval_stays_suppressed(monkeypatch, caplog):
 
     with caplog.at_level("WARNING", logger="plc_discovery.scan_runner"):
         asyncio.run(run())
-    assert sent == ["PLC1: D1 > 10 (value 50)"]  # back inside before it could be sent
+    # 60 was back inside before it could be sent: neither it nor its end is notified
+    assert sent == ["PLC1: D1 > 10 (value 50)", "PLC1: D1 > 10 back to normal (value 5, outside for 60s)"]
     logged = [r.getMessage() for r in caplog.records if "exceeded" in r.getMessage()]
     assert logged == [
         "PLC1: threshold D1 > 10 exceeded (value 50)",
@@ -282,12 +287,15 @@ def test_short_excursion_within_interval_stays_suppressed(monkeypatch, caplog):
 
 
 def test_evaluate_separates_crossings_from_notifications():
-    monitor = ThresholdMonitor([Threshold("D1", ">", 10)])
-    blocked = lambda threshold: False  # noqa: E731
-    assert monitor.evaluate("PLC1", [_point("D1", 50)], blocked) == ([(Threshold("D1", ">", 10), 50.0)], [])
+    t = Threshold("D1", ">", 10)
+    monitor = ThresholdMonitor([t])
+    blocked = lambda threshold, kind: False  # noqa: E731
+    check = monitor.evaluate("PLC1", [_point("D1", 50)], blocked)
+    assert [(e.threshold, e.value) for e in check.crossed] == [(t, 50.0)] and check.exceeded == []
     # still outside: not a new crossing, but offered for notification again
-    assert monitor.evaluate("PLC1", [_point("D1", 55)]) == ([], [(Threshold("D1", ">", 10), 55.0)])
-    assert monitor.evaluate("PLC1", [_point("D1", 60)]) == ([], [])
+    check = monitor.evaluate("PLC1", [_point("D1", 55)])
+    assert check.crossed == [] and [(e.threshold, e.value) for e in check.exceeded] == [(t, 55.0)]
+    assert monitor.evaluate("PLC1", [_point("D1", 60)]) == ([], [], [], [])
 
 
 def _run_main(monkeypatch, tmp_path, *args):
@@ -327,3 +335,120 @@ def test_periodic_range_scan_says_watching(monkeypatch, tmp_path, capsys):
     out = capsys.readouterr().out
     assert "Watching 1 threshold(s): D100 > 80" in out and "ignored" not in out
     periodic.assert_awaited_once()
+
+
+def _values(monitor, target, values, plc_ip=None, kind="exceeded"):
+    """Run one cycle per value (None: not read); the values notified as ``kind``, per cycle"""
+    out = []
+    for minute, v in enumerate(values):
+        point = _point("D1", v) if v is not None else _point("D1", None, StatusCode.NG_TIMEOUT)
+        check = monitor.evaluate(target, [point], plc_ip=plc_ip, now=60.0 * minute)
+        out.append([e.value for e in getattr(check, kind)])
+    return out
+
+
+def test_threshold_limited_to_a_target():
+    monitor = ThresholdMonitor([Threshold("D1", ">", 10, target="10.0.0.1"), Threshold("D1", ">", 90, target="Line2")])
+    assert _values(monitor, "10.0.0.1 (SLMP:5001)", [50], plc_ip="10.0.0.1") == [[50.0]]  # by IP
+    assert _values(monitor, "line2", [50, 95]) == [[], [95.0]]  # by label, case-insensitive
+    assert _values(monitor, "10.0.0.2", [99], plc_ip="10.0.0.2") == [[]]
+    assert monitor.unknown_targets(["10.0.0.1", "10.0.0.1 (SLMP:5001)"]) == [monitor.thresholds[1]]
+
+
+def test_hysteresis_keeps_the_excursion_until_inside_by_the_margin():
+    monitor = ThresholdMonitor([Threshold("D1", ">", 80, hysteresis=2)])
+    assert _values(monitor, "PLC1", [81, 79, 81, 78, 81]) == [[81.0], [], [], [], [81.0]]
+    monitor = ThresholdMonitor([Threshold("D1", "<=", 10, hysteresis=5)])
+    assert _values(monitor, "PLC1", [10, 14, 15.5, 9], kind="cleared") == [[], [], [15.5], []]
+
+
+def test_for_cycles_needs_consecutive_read_cycles_outside():
+    monitor = ThresholdMonitor([Threshold("D1", ">", 10, for_cycles=3)])
+    # 50, 50, 5 resets; unread cycles neither count nor reset
+    values = [50, 50, 5, 50, None, 50, 50, 60]
+    assert _values(monitor, "PLC1", values) == [[], [], [], [], [], [], [50.0], []]
+
+
+def test_cleared_carries_the_duration_and_only_follows_a_notified_excursion():
+    monitor = ThresholdMonitor([Threshold("D1", ">", 10, for_cycles=2)])
+    events = []
+    for minute, v in enumerate([50, 5, 50, 50, 50, 5]):
+        check = monitor.evaluate("PLC1", [_point("D1", v)], now=60.0 * minute)
+        events += [("exceeded", e.value) for e in check.exceeded]
+        events += [("cleared", e.value, e.duration) for e in check.cleared]
+    # the one-cycle 50 never counted; the excursion started at minute 2
+    assert events == [("exceeded", 50.0), ("cleared", 5.0, 180.0)]
+
+
+def test_throttled_clear_is_sent_later_with_the_original_values():
+    monitor = ThresholdMonitor([Threshold("D1", ">", 10)])
+    allow = {"exceeded": True, "cleared": False}
+    monitor.evaluate("PLC1", [_point("D1", 50)], lambda t, k: allow[k], now=0)
+    check = monitor.evaluate("PLC1", [_point("D1", 5)], lambda t, k: allow[k], now=60)
+    assert check.returned and not check.cleared
+    allow["cleared"] = True
+    check = monitor.evaluate("PLC1", [_point("D1", 7)], lambda t, k: allow[k], now=120)
+    assert [(e.value, e.duration) for e in check.cleared] == [(5.0, 60.0)]
+
+
+def test_config_extras_validation():
+    t = threshold_from_dict(
+        {"address": "D1", "op": ">", "value": 1, "target": " 10.0.0.1 ", "hysteresis": 0.5, "for_cycles": 3}
+    )
+    assert (t.target, t.hysteresis, t.for_cycles) == ("10.0.0.1", 0.5, 3)
+    for extra in (
+        {"target": ""},
+        {"target": 5},
+        {"hysteresis": -1},
+        {"hysteresis": "x"},
+        {"for_cycles": 0},
+        {"for_cycles": 1.5},
+        {"for_cycles": True},
+    ):
+        with pytest.raises(ValueError):
+            threshold_from_dict({"address": "D1", "op": ">", "value": 1, **extra})
+    with pytest.raises(ValueError, match="hysteresis cannot be used with =="):
+        threshold_from_dict({"address": "D1", "op": "==", "value": 1, "hysteresis": 1})
+
+
+def test_threshold_cleared_reaches_threshold_exceeded_subscribers():
+    sent = []
+    manager = NotificationManager()
+    manager.add_custom("t", lambda e: sent.append(e), events=[NotificationType.THRESHOLD_EXCEEDED])
+    asyncio.run(manager.notify_threshold_cleared("PLC1", "D100 > 80", 70.0, duration_seconds=125, address="D100"))
+    assert sent[0].type == NotificationType.THRESHOLD_CLEARED
+    assert sent[0].message == "PLC1: D100 > 80 back to normal (value 70, outside for 125s)"
+    assert sent[0].data["duration_seconds"] == 125
+
+
+def test_unknown_threshold_target_is_warned(caplog):
+    async def run():
+        runner = CycleRunner(None, thresholds=ThresholdMonitor([Threshold("D1", ">", 1, target="10.0.0.99")]))
+        runner.warn_unknown_threshold_targets(["10.0.0.1", "10.0.0.1"])
+
+    with caplog.at_level("WARNING", logger="plc_discovery.scan_runner"):
+        asyncio.run(run())
+    assert [r.getMessage() for r in caplog.records] == [
+        "threshold D1 > 1 is never checked: target 10.0.0.99 is not scanned (use one of: 10.0.0.1)"
+    ]
+
+
+def test_runner_sends_cleared_notification():
+    notifier = MagicMock()
+    sent = []
+
+    async def notify(send):
+        await send(notifier)
+
+    notifier.notify_threshold = AsyncMock(side_effect=lambda *a, **k: sent.append("exceeded"))
+    notifier.notify_threshold_cleared = AsyncMock(side_effect=lambda *a, **k: sent.append(("cleared", a, k)))
+
+    async def run():
+        runner = CycleRunner(None, notify=notify, thresholds=ThresholdMonitor([Threshold("D1", ">", 10)]))
+        await runner.check_thresholds("PLC1", [_point("D1", 50)], "10.0.0.1")
+        await runner.check_thresholds("PLC1", [_point("D1", 5)], "10.0.0.1")
+
+    asyncio.run(run())
+    assert sent[0] == "exceeded"
+    _, args, kwargs = sent[1]
+    assert args[:3] == ("PLC1", "D1 > 10", 5.0) and kwargs["plc_ip"] == "10.0.0.1" and kwargs["address"] == "D1"

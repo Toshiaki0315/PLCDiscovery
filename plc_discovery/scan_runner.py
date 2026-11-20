@@ -255,31 +255,64 @@ class CycleRunner:
         await self._notify(lambda n: n.notify_status_report(message, has_problems=problems, iteration=iteration))
 
     async def check_thresholds(self, target: str, points: List[DataPoint], plc_ip: str) -> None:
-        """THRESHOLD_EXCEEDED for each limit this cycle newly crossed"""
+        """
+        THRESHOLD_EXCEEDED for each limit newly exceeded, THRESHOLD_CLEARED
+        when a notified excursion is over; crossings are logged every time.
+        """
         if not self.thresholds:
             return
         if points and target not in self._threshold_coverage_checked:
             # Once per target, on the first cycle that read anything: a limit
             # on an address outside the ranges / tags would never be checked
             self._threshold_coverage_checked.add(target)
-            for threshold in self.thresholds.unmatched(points):
+            for threshold in self.thresholds.unmatched(points, target, plc_ip):
                 logger.warning(
                     f"{target}: threshold {threshold.label} is never checked: "
                     f"{threshold.address} is not in the scanned ranges / tags"
                 )
 
-        def may_notify(threshold: Threshold) -> bool:
-            key = NotificationManager.threshold_key(target, threshold.label)
-            return not self._suppressed(NotificationType.THRESHOLD_EXCEEDED, key)
+        def may_notify(threshold: Threshold, kind: str) -> bool:
+            event_type = (
+                NotificationType.THRESHOLD_CLEARED if kind == "cleared" else NotificationType.THRESHOLD_EXCEEDED
+            )
+            return not self._suppressed(event_type, NotificationManager.threshold_key(target, threshold.label))
 
-        crossed, to_notify = self.thresholds.evaluate(target, points, may_notify)
+        now = asyncio.get_running_loop().time()
+        check = self.thresholds.evaluate(target, points, may_notify, plc_ip=plc_ip, now=now)
         # Logged on every crossing, even while its notification is throttled
-        for threshold, value in crossed:
-            logger.warning(f"{target}: threshold {threshold.label} exceeded (value {value:g})")
-        for threshold, value in to_notify:
-            # notify() sends right away, before the loop moves on
-            label, address = threshold.label, threshold.address
+        for event in check.crossed:
+            logger.warning(f"{target}: threshold {event.threshold.label} exceeded (value {event.value:g})")
+        for event in check.returned:
+            logger.info(
+                f"{target}: threshold {event.threshold.label} back to normal "
+                f"(value {event.value:g}, outside for {event.duration:.0f}s)"
+            )
+        # notify() sends right away, before the loop moves on
+        for event in check.exceeded:
+            label, address, value = event.threshold.label, event.threshold.address, event.value
             await self._notify(lambda n: n.notify_threshold(target, label, value, plc_ip=plc_ip, address=address))
+        for event in check.cleared:
+            label, address, value, duration = (
+                event.threshold.label,
+                event.threshold.address,
+                event.value,
+                event.duration,
+            )
+            await self._notify(
+                lambda n: n.notify_threshold_cleared(
+                    target, label, value, duration_seconds=duration, plc_ip=plc_ip, address=address
+                )
+            )
+
+    def warn_unknown_threshold_targets(self, names: Sequence[str]) -> None:
+        """Warn about thresholds limited to a target that is not scanned (labels and IPs)"""
+        if not self.thresholds:
+            return
+        for threshold in self.thresholds.unknown_targets(names):
+            logger.warning(
+                f"threshold {threshold.label} is never checked: target {threshold.target} is not scanned "
+                f"(use one of: {', '.join(dict.fromkeys(names))})"
+            )
 
     def _suppressed(self, event_type: NotificationType, key: str) -> bool:
         """True while the notifier's min_interval would drop this event"""

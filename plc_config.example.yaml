@@ -225,7 +225,8 @@ notification_settings:
 # Event types: scan_complete, scan_error, discovery_complete, status_report,
 # plc_unreachable (periodic scan: a PLC stopped answering, and when it
 # answers again; also sent to destinations that chose scan_error),
-# threshold_exceeded (periodic scan: a value crossed a limit in thresholds)
+# threshold_exceeded (periodic scan: a value crossed a limit in thresholds,
+# and threshold_cleared when a notified value is back inside)
 notifications:
   # Webhook notification
   - name: main_webhook
@@ -262,10 +263,14 @@ notifications:
 
 # Thresholds watched during periodic range scans (--interval): a
 # threshold_exceeded notification is sent once when a value crosses its
-# limit, and again only after it went back inside. Operators: > >= < <= == !=
-# (CLI: --threshold "D100>80")
+# limit, and again only after it went back inside; threshold_cleared tells
+# when it is back inside. Operators: > >= < <= == !=
+# (CLI: --threshold "D100>80"; target, hysteresis and for_cycles only here)
 # thresholds:
 #   - address: D100
 #     op: ">"
 #     value: 80
 #     name: Furnace temperature
+#     target: 192.168.1.10   # optional: only this PLC (IP or target label)
+#     hysteresis: 2          # optional: back inside only at <= 78
+#     for_cycles: 3          # optional: exceeded after 3 cycles in a row

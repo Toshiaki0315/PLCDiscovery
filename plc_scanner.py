@@ -491,6 +491,8 @@ async def run_periodic_scan(
             notify=lambda send: _notify(notifier, send),
             thresholds=ThresholdMonitor(thresholds or []),
         )
+        # A threshold's target: a label or an IP of one of the targets
+        runner.warn_unknown_threshold_targets([name for key in collectors for name in (key, ips[key])])
         interrupted = False
         try:
             iteration = 0
