@@ -8,7 +8,7 @@ its memory can be read, written or changed automatically (sine, ramp,
 random) while scanners read them, e.g. to try thresholds and hysteresis.
 
 Areas and addresses follow what plc_scanner.py reads:
-- SLMP: D, W, R (words), M, X, Y (bits); address = device number
+- SLMP: D, W, R, ZR, SD (words), M, X, Y, B, L, SM (bits); address = device number
 - Modbus/TCP: HR, IR (words), COIL, DI (bits)
 - EtherNet/IP SLC: N7 (words)
 - EtherNet/IP Logix / Omron: TAG; address = tag name (numeric scalar tags)
@@ -45,7 +45,7 @@ logger = logging.getLogger("Simulator-Control")
 Address = Union[int, str]
 
 # Areas holding single bits (written as 0 / 1)
-BIT_AREAS = {"M", "X", "Y", "COIL", "DI"}
+BIT_AREAS = {"M", "X", "Y", "B", "L", "SM", "COIL", "DI"}
 
 WAVEFORMS = ("sine", "ramp", "random")
 WAVEFORM_LABELS = {"sine": "サイン波", "ramp": "のこぎり波", "random": "ランダム"}
@@ -69,7 +69,7 @@ KINDS: Tuple[SimulatorKind, ...] = (
         "SLMP（三菱・キーエンス）",
         5001,
         "5000-5100,7000-7050",
-        ("D", "W", "R", "M", "X", "Y"),
+        ("D", "W", "R", "ZR", "SD", "M", "X", "Y", "B", "L", "SM"),
         "--mode range --target {host} --protocol slmp --port {port} --device D --range 0-99",
     ),
     SimulatorKind(
