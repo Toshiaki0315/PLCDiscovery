@@ -157,10 +157,11 @@ def test_x_is_numbered_like_the_scanner_and_pymcprotocol(simulator):
         mc.close()
 
 
-def test_polling_does_not_flood_the_log(simulator, caplog):
+def test_polling_does_not_flood_the_log(caplog):
     """A gateway polls every few ms: reads log at DEBUG, connections and unsupported commands still show"""
-    _, port = simulator
     caplog.set_level(logging.INFO, logger="SLMP-Simulator")
+    controller = SimulatorController()  # its own server: no late lines from other tests' connections
+    port = controller.start("slmp", "127.0.0.1", 0)
     with socket.create_connection(("127.0.0.1", port)) as sock:
         read = _frame(0x0401, 0x0000, _device(0, D) + struct.pack("<H", 1))
         random_read = _frame(0x0403, 0x0000, bytes([1, 0]) + _device(0, D))
@@ -171,5 +172,9 @@ def test_polling_does_not_flood_the_log(simulator, caplog):
     deadline = time.time() + 3
     while "Connection closed" not in caplog.text and time.time() < deadline:
         time.sleep(0.01)
+    controller.shutdown()
     messages = [r.getMessage() for r in caplog.records if r.name == "SLMP-Simulator"]
-    assert [m.split(" ")[0] for m in messages] == ["Connection", "Unsupported", "Connection"]
+    # Other tests' connections may still log their close here: check what this one logged, not the order
+    assert not [m for m in messages if m.startswith(("Read", "Random read", "Block read"))]
+    assert "Unsupported command: 1401 subcommand 0000" in messages
+    assert "Connection from" in caplog.text and "Connection closed" in caplog.text
