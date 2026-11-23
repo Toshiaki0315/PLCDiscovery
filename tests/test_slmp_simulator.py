@@ -264,7 +264,9 @@ def test_writes_when_writable(writable_port, client, plctype):
 def test_write_errors_and_nothing_half_written(writable_port):
     with socket.create_connection(("127.0.0.1", writable_port)) as sock:
         # random write: D0 fine, D5000 denied -> C055 and D0 untouched
-        sock.sendall(_frame(0x1402, 0x0000, bytes([2, 0]) + _device(0, D) + b"\x09\x00" + _device(5000, D) + b"\x01\x00"))
+        sock.sendall(
+            _frame(0x1402, 0x0000, bytes([2, 0]) + _device(0, D) + b"\x09\x00" + _device(5000, D) + b"\x01\x00")
+        )
         sock.sendall(_frame(0x1401, 0x0000, _device(12288, D) + struct.pack("<HH", 1, 1)))  # past D12287
         sock.sendall(_frame(0x1401, 0x0000, _device(0, D) + struct.pack("<H", 2) + b"\x01\x00"))  # data short
         sock.sendall(_frame(0x0401, 0x0000, _device(0, D) + struct.pack("<H", 1)))
