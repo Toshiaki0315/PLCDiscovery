@@ -36,6 +36,8 @@ SLMP_IO_NO = 0x03FF
 SLMP_STATION = 0x00
 # Longest request accepted (a 960-point block read is far shorter)
 MAX_REQUEST_LENGTH = 8192
+# Distinct error lines remembered per connection (see SLMPProtocol._log_once)
+MAX_LOGGED_ERRORS = 1000
 
 # Device codes (binary, Q/L series; the iQ-R format uses the same codes in 2 bytes)
 DEVICE_CODES = {
@@ -208,6 +210,18 @@ class SLMPProtocol(asyncio.Protocol):
         self.device = device
         self.transport = None
         self.buffer = b""
+        # Error lines already logged on this connection: a client polling
+        # every few ms repeats the same failing request, logged once here
+        self._logged: set = set()
+
+    def _log_once(self, level: int, message: str) -> None:
+        """Log ``message`` at ``level`` the first time on this connection, then at DEBUG"""
+        if message in self._logged:
+            logger.debug(message)
+            return
+        if len(self._logged) < MAX_LOGGED_ERRORS:
+            self._logged.add(message)
+        logger.log(level, message)
 
     def connection_made(self, transport):
         self.transport = transport
@@ -227,7 +241,7 @@ class SLMPProtocol(asyncio.Protocol):
             try:
                 response = self._process_frame(frame)
             except Exception as e:  # never let one bad request kill the connection
-                logger.error(f"Error processing frame: {e}")
+                self._log_once(logging.ERROR, f"Error processing frame: {e}")
                 continue
             if response and self.transport is not None:
                 self.transport.write(response)
@@ -278,9 +292,9 @@ class SLMPProtocol(asyncio.Protocol):
             data = self._handle(command, subcommand, body[6:])
         except SLMPError as e:
             if e.code == ERR_UNSUPPORTED:
-                logger.warning(f"Unsupported command: {command:04X} subcommand {subcommand:04X}")
+                self._log_once(logging.WARNING, f"Unsupported command: {command:04X} subcommand {subcommand:04X}")
             else:
-                logger.info(f"Command {command:04X}: {e}")
+                self._log_once(logging.INFO, f"Command {command:04X}: {e}")
             return self._response(prefix, route, e.code, error_info=route + body[2:6])
         return self._response(prefix, route, 0, data)
 

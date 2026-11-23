@@ -157,24 +157,54 @@ def test_x_is_numbered_like_the_scanner_and_pymcprotocol(simulator):
         mc.close()
 
 
-def test_polling_does_not_flood_the_log(caplog):
-    """A gateway polls every few ms: reads log at DEBUG, connections and unsupported commands still show"""
-    caplog.set_level(logging.INFO, logger="SLMP-Simulator")
+def _polled_log(frames, repeat):
+    """SLMP-Simulator log lines while one connection sends ``frames`` ``repeat`` times (own server)"""
+    caplog_lines = []
+
+    class Collect(logging.Handler):
+        def emit(self, record):
+            caplog_lines.append((record.levelno, record.getMessage()))
+
+    sim_logger = logging.getLogger("SLMP-Simulator")
+    handler, old_level = Collect(logging.DEBUG), sim_logger.level
+    sim_logger.addHandler(handler)
+    sim_logger.setLevel(logging.DEBUG)
     controller = SimulatorController()  # its own server: no late lines from other tests' connections
-    port = controller.start("slmp", "127.0.0.1", 0)
-    with socket.create_connection(("127.0.0.1", port)) as sock:
-        read = _frame(0x0401, 0x0000, _device(0, D) + struct.pack("<H", 1))
-        random_read = _frame(0x0403, 0x0000, bytes([1, 0]) + _device(0, D))
-        block_read = _frame(0x0406, 0x0000, bytes([1, 0]) + _device(0, D) + struct.pack("<H", 1))
-        bit_read = _frame(0x0401, 0x0001, _device(0, M) + struct.pack("<H", 1))
-        sock.sendall((read + random_read + block_read + bit_read) * 25 + _frame(0x1401, 0x0000))
-        _recv(sock, 101)
-    deadline = time.time() + 3
-    while "Connection closed" not in caplog.text and time.time() < deadline:
-        time.sleep(0.01)
-    controller.shutdown()
-    messages = [r.getMessage() for r in caplog.records if r.name == "SLMP-Simulator"]
-    # Other tests' connections may still log their close here: check what this one logged, not the order
-    assert not [m for m in messages if m.startswith(("Read", "Random read", "Block read"))]
-    assert "Unsupported command: 1401 subcommand 0000" in messages
-    assert "Connection from" in caplog.text and "Connection closed" in caplog.text
+    try:
+        port = controller.start("slmp", "127.0.0.1", 0, denied="5000-5100")
+        with socket.create_connection(("127.0.0.1", port)) as sock:
+            sock.sendall(b"".join(frames) * repeat)
+            _recv(sock, len(frames) * repeat)
+        deadline = time.time() + 3
+        while not any(m == "Connection closed" for _, m in caplog_lines) and time.time() < deadline:
+            time.sleep(0.01)
+    finally:
+        controller.shutdown()
+        sim_logger.removeHandler(handler)
+        sim_logger.setLevel(old_level)
+    lines = [m for level, m in caplog_lines if level >= logging.INFO]
+    start = next(i for i, m in enumerate(lines) if m.startswith("Connection from"))
+    return lines[start:]  # from the connection on (start-up lines dropped)
+
+
+def test_polling_does_not_flood_the_log():
+    """A gateway polls every few ms: reads log at DEBUG, connections and unsupported commands still show"""
+    read = _frame(0x0401, 0x0000, _device(0, D) + struct.pack("<H", 1))
+    random_read = _frame(0x0403, 0x0000, bytes([1, 0]) + _device(0, D))
+    block_read = _frame(0x0406, 0x0000, bytes([1, 0]) + _device(0, D) + struct.pack("<H", 1))
+    bit_read = _frame(0x0401, 0x0001, _device(0, M) + struct.pack("<H", 1))
+    lines = _polled_log([read, random_read, block_read, bit_read], 25)
+    assert [line.split(" ")[0] for line in lines] == ["Connection", "Connection"]
+
+
+def test_repeated_errors_are_logged_once_per_connection():
+    """Polling a denied address or an unsupported command shows each error once, not every few ms"""
+    denied = _frame(0x0403, 0x0000, bytes([2, 0]) + _device(0, D) + _device(5000, D))
+    write = _frame(0x1401, 0x0000)
+    other_denied = _frame(0x0401, 0x0000, _device(5050, D) + struct.pack("<H", 1))
+    lines = _polled_log([denied, write, other_denied], 30)
+    assert lines[1:-1] == [
+        "Command 0403: access denied: D5000",
+        "Unsupported command: 1401 subcommand 0000",
+        "Command 0401: access denied: D5050",
+    ]
