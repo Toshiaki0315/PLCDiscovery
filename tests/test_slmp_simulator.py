@@ -160,16 +160,20 @@ def test_x_is_numbered_like_the_scanner_and_pymcprotocol(simulator):
 def _polled_log(frames, repeat):
     """SLMP-Simulator log lines while one connection sends ``frames`` ``repeat`` times (own server)"""
     caplog_lines = []
+    controller = SimulatorController()
 
     class Collect(logging.Handler):
         def emit(self, record):
-            caplog_lines.append((record.levelno, record.getMessage()))
+            # The logger is shared by every SLMP server: keep only this
+            # controller's (its own event loop thread), not a late
+            # "Connection closed" from another test's server
+            if record.thread == controller._thread.ident:
+                caplog_lines.append((record.levelno, record.getMessage()))
 
     sim_logger = logging.getLogger("SLMP-Simulator")
     handler, old_level = Collect(logging.DEBUG), sim_logger.level
     sim_logger.addHandler(handler)
     sim_logger.setLevel(logging.DEBUG)
-    controller = SimulatorController()  # its own server: no late lines from other tests' connections
     try:
         port = controller.start("slmp", "127.0.0.1", 0, denied="5000-5100")
         with socket.create_connection(("127.0.0.1", port)) as sock:
