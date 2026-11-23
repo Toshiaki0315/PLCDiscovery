@@ -218,6 +218,8 @@ class TestFINSTCPSelection:
                 "127.0.0.1",
                 "--protocol",
                 "fins-tcp",
+                "--port",  # the fixture moves off 9600 when it is taken
+                str(fins_simulator.port),
                 "--device",
                 "DM",
                 "--range",
