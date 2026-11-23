@@ -4,11 +4,15 @@ SLMP (Seamless Message Protocol) Simulator
 
 Simulates a Mitsubishi/Keyence PLC that responds to the SLMP / MC protocol
 (binary code, 3E and 4E frames): batch, random and block reads, CPU model
-name and loopback test. Used for testing PLC Discovery tool, or another
-SLMP client (e.g. a device gateway), without physical hardware.
+name and loopback test, and with --writable batch / random writes. Used for
+testing PLC Discovery tool, or another SLMP client (e.g. a device gateway),
+without physical hardware.
+
+Device numbers end where a Q03UDVCPU's do (see DEVICE_LIMITS): reading past
+them is answered with C056, like the real CPU.
 
 Usage:
-    python slmp_simulator.py [--host 127.0.0.1] [--port 5001]
+    python slmp_simulator.py [--host 127.0.0.1] [--port 5001] [--writable]
 """
 
 import asyncio
@@ -21,9 +25,9 @@ logger = logging.getLogger("SLMP-Simulator")
 
 # Shared CLI helpers (support both direct execution and package import)
 try:
-    from .common import parse_denied_ranges, run_simulator, simulator_parser
+    from .common import parse_denied_ranges, peer_text, run_simulator, simulator_parser
 except ImportError:
-    from common import parse_denied_ranges, run_simulator, simulator_parser  # type: ignore[no-redef]
+    from common import parse_denied_ranges, peer_text, run_simulator, simulator_parser  # type: ignore[no-redef]
 
 # SLMP frame constants (binary code)
 SLMP_SUBHEADER = 0x00D0  # 3E response subheader 'D0 00'
@@ -66,12 +70,21 @@ DEVICE_CODES = {
     "CC": 0xC3,   # Counter coil
 }
 DEVICE_NAMES = {code: name for name, code in DEVICE_CODES.items()}
+# Points of each device (numbers 0 to points - 1): the default parameters of
+# a Q03UDVCPU (file registers R / ZR: 32K / 96K points of the standard RAM)
+DEVICE_LIMITS = {
+    "D": 12288, "W": 8192, "R": 32768, "ZR": 98304, "SD": 2048, "SW": 2048,
+    "TN": 2048, "CN": 1024, "M": 8192, "X": 8192, "Y": 8192, "L": 8192,
+    "F": 2048, "V": 2048, "B": 8192, "SM": 2048, "SB": 2048, "DX": 8192,
+    "DY": 8192, "TS": 2048, "TC": 2048, "CS": 1024, "CC": 1024,
+}
 # Devices holding one bit per number (a word read packs 16 of them)
 BIT_DEVICES = {"M", "X", "Y", "L", "F", "V", "B", "SM", "SB", "DX", "DY", "TS", "TC", "CS", "CC"}
 
 # End codes
 ERR_ILLEGAL_DEVICE = 0xC055       # used for denied / unknown devices (as before)
 ERR_POINTS = 0xC051               # number of points out of range
+ERR_ADDRESS_RANGE = 0xC056        # beyond the device's last number
 ERR_UNSUPPORTED = 0xC059          # command / subcommand not supported
 ERR_REQUEST_LENGTH = 0xC061       # request data length does not match
 
@@ -81,6 +94,8 @@ MAX_BATCH_BITS = 7168
 MAX_RANDOM_POINTS = 192           # word points + double word points
 MAX_BLOCK_POINTS = 960
 MAX_BLOCKS = 120
+MAX_RANDOM_WRITE_SIZE = 1920      # word points x 12 + double word points x 14
+MAX_RANDOM_WRITE_BITS = 188
 
 
 class SLMPError(Exception):
@@ -94,16 +109,25 @@ class SLMPError(Exception):
 class SLMPDevice:
     """Simulated SLMP device memory"""
 
-    def __init__(self, denied_ranges: Optional[List[Tuple[int, int]]] = None):
+    def __init__(
+        self,
+        denied_ranges: Optional[List[Tuple[int, int]]] = None,
+        writable: bool = False,
+        limits: Optional[Dict[str, int]] = None,
+    ):
         """
         Initialize device memory.
 
         Args:
             denied_ranges: List of (start, end) tuples for addresses that should return errors
+            writable: Accept write commands (1401 / 1402); otherwise they are unsupported (C059)
+            limits: Points per device, overriding DEVICE_LIMITS
         """
         # Every device starts empty (reads as 0); bit devices hold 0 / 1
         self.memory: Dict[str, Dict[int, int]] = {name: {} for name in DEVICE_CODES}
         self.denied_ranges = denied_ranges or []
+        self.writable = writable
+        self.limits = {**DEVICE_LIMITS, **(limits or {})}
         # Answer to Read CPU Model Name (0101)
         self.cpu_model = "Q03UDVCPU"
         self.cpu_code = 0x0366
@@ -137,9 +161,16 @@ class SLMPDevice:
                 return True
         return False
 
-    def _check(self, device: str, address: int, count: int) -> None:
+    def check_range(self, device: str, address: int, count: int = 1) -> None:
+        """C056 unless numbers ``address`` .. ``address + count - 1`` exist on this CPU"""
         if device not in self.memory:
             raise SLMPError(ERR_ILLEGAL_DEVICE, f"unknown device {device}")
+        limit = self.limits[device]
+        if address < 0 or address + count > limit:
+            raise SLMPError(ERR_ADDRESS_RANGE, f"{device}{address} x {count} beyond {device}0-{device}{limit - 1}")
+
+    def _check(self, device: str, address: int, count: int) -> None:
+        self.check_range(device, address, count)
         for addr in range(address, address + count):
             if self.is_address_denied(device, addr):
                 raise SLMPError(ERR_ILLEGAL_DEVICE, f"access denied: {device}{addr}")
@@ -163,6 +194,26 @@ class SLMPDevice:
         self._check(device, address, count)
         return [self.memory[device].get(addr, 0) & 1 for addr in range(address, address + count)]
 
+    def write_words(self, device: str, address: int, values: List[int]) -> None:
+        """Write words from ``address``; a bit device takes 16 bits per word (LSB first)"""
+        if device in BIT_DEVICES:
+            self._check(device, address, len(values) * 16)
+            for i, word in enumerate(values):
+                for k in range(16):
+                    self.memory[device][address + i * 16 + k] = (word >> k) & 1
+            return
+        self._check(device, address, len(values))
+        for i, word in enumerate(values):
+            self.memory[device][address + i] = word & 0xFFFF
+
+    def write_bits(self, device: str, address: int, values: List[int]) -> None:
+        """Write bits of a bit device"""
+        if device not in BIT_DEVICES:
+            raise SLMPError(ERR_ILLEGAL_DEVICE, f"{device} is not a bit device")
+        self._check(device, address, len(values))
+        for i, bit in enumerate(values):
+            self.memory[device][address + i] = bit & 1
+
     def read_word(self, device: str, address: int, count: int) -> Tuple[Optional[List[int]], int]:
         """Read word data: (values or None, end code)"""
         try:
@@ -184,6 +235,11 @@ def _pack_words(values: List[int]) -> bytes:
     return b"".join(struct.pack("<H", v & 0xFFFF) for v in values)
 
 
+def _unpack_bits(data: bytes, count: int) -> List[int]:
+    """``count`` points packed two per byte, the first in the upper 4 bits"""
+    return [(data[i // 2] >> (0 if i % 2 else 4)) & 1 for i in range(count)]
+
+
 def _pack_bits(values: List[int]) -> bytes:
     """Two points per byte, the first in the upper 4 bits"""
     data = bytearray()
@@ -202,8 +258,8 @@ class SLMPProtocol(asyncio.Protocol):
     device numbers where noted): batch read in word / bit units (0401,
     subcommand 0000 / 0001, iQ-R 0002 / 0003), random read (0403, 0000 /
     0002), block read (0406, 0000 / 0002), read CPU model name (0101) and
-    loopback test (0619). The simulator is read-only: writes are answered
-    as unsupported.
+    loopback test (0619). Batch / random writes (1401 / 1402) only when the
+    device is writable; otherwise they are answered as unsupported (C059).
     """
 
     def __init__(self, device: SLMPDevice):
@@ -225,11 +281,11 @@ class SLMPProtocol(asyncio.Protocol):
 
     def connection_made(self, transport):
         self.transport = transport
-        peername = transport.get_extra_info('peername')
-        logger.info(f"Connection from {peername}")
+        self.peer = peer_text(transport)
+        logger.info(f"Connection from {self.peer}")
 
     def connection_lost(self, exc):
-        logger.info("Connection closed")
+        logger.info(f"Connection closed: {getattr(self, 'peer', '?')}")
 
     def data_received(self, data: bytes):
         """Answer every complete frame; a frame may arrive in pieces or several at once"""
@@ -316,6 +372,13 @@ class SLMPProtocol(asyncio.Protocol):
             return self._random_read(data, iqr)
         if command == 0x0406 and subcommand in (0x0000, 0x0002):
             return self._block_read(data, iqr)
+        if command in (0x1401, 0x1402) and subcommand in (0x0000, 0x0001, 0x0002, 0x0003):
+            if not self.device.writable:
+                raise SLMPError(ERR_UNSUPPORTED)  # read-only unless started with --writable
+            bit_units = subcommand in (0x0001, 0x0003)
+            if command == 0x1401:
+                return self._batch_write(data, iqr, bit_units)
+            return self._random_write(data, iqr, bit_units)
         if command == 0x0101 and subcommand == 0x0000:
             name = self.device.cpu_model.encode("ascii")[:16].ljust(16, b" ")
             return name + struct.pack("<H", self.device.cpu_code)
@@ -412,10 +475,78 @@ class SLMPProtocol(asyncio.Protocol):
         logger.debug(f"Block read: {word_blocks} word block(s), {bit_blocks} bit block(s)")
         return _pack_words(values)
 
+    def _batch_write(self, data: bytes, iqr: bool, bit_units: bool) -> bytes:
+        device, number, offset = self._device_spec(data, 0, iqr)
+        points, offset = self._points(data, offset)
+        limit = MAX_BATCH_BITS if bit_units else MAX_BATCH_WORDS
+        if not 1 <= points <= limit:
+            raise SLMPError(ERR_POINTS, f"{points} points (1-{limit})")
+        size = (points + 1) // 2 if bit_units else points * 2
+        if len(data) != offset + size:
+            raise SLMPError(ERR_REQUEST_LENGTH)
+        values = data[offset:]
+        if bit_units:
+            self.device.write_bits(device, number, _unpack_bits(values, points))
+        else:
+            self.device.write_words(device, number, list(struct.unpack(f"<{points}H", values)))
+        unit = "points" if bit_units else "words"
+        self._log_once(logging.INFO, f"Write: {device}{number} x {points} {unit}")
+        return b""
 
-async def run_server(host: str, port: int, denied_ranges: List[Tuple[int, int]]):
+    def _random_write(self, data: bytes, iqr: bool, bit_units: bool) -> bytes:
+        spec_size = 6 if iqr else 4
+        if bit_units:
+            if len(data) < 1:
+                raise SLMPError(ERR_REQUEST_LENGTH)
+            count = data[0]
+            if not 1 <= count <= MAX_RANDOM_WRITE_BITS:
+                raise SLMPError(ERR_POINTS, f"{count} points (1-{MAX_RANDOM_WRITE_BITS})")
+            value_size = 2 if iqr else 1  # the iQ-R format sets / resets in 2 bytes
+            if len(data) != 1 + count * (spec_size + value_size):
+                raise SLMPError(ERR_REQUEST_LENGTH)
+            writes = []
+            offset = 1
+            for _ in range(count):
+                device, number, offset = self._device_spec(data, offset, iqr)
+                writes.append((device, number, data[offset]))
+                offset += value_size
+            for device, number, _ in writes:  # all checked before any is written
+                self.device._check(device, number, 1)
+                if device not in BIT_DEVICES:
+                    raise SLMPError(ERR_ILLEGAL_DEVICE, f"{device} is not a bit device")
+            for device, number, value in writes:
+                self.device.write_bits(device, number, [value])
+            self._log_once(logging.INFO, f"Random write: {count} bit(s)")
+            return b""
+        if len(data) < 2:
+            raise SLMPError(ERR_REQUEST_LENGTH)
+        word_count, dword_count = data[0], data[1]
+        if word_count + dword_count == 0 or word_count * 12 + dword_count * 14 > MAX_RANDOM_WRITE_SIZE:
+            raise SLMPError(ERR_POINTS, f"{word_count} word(s), {dword_count} double word(s)")
+        if len(data) != 2 + word_count * (spec_size + 2) + dword_count * (spec_size + 4):
+            raise SLMPError(ERR_REQUEST_LENGTH)
+        words = []
+        offset = 2
+        for index in range(word_count + dword_count):
+            device, number, offset = self._device_spec(data, offset, iqr)
+            if index < word_count:
+                words.append((device, number, [struct.unpack("<H", data[offset:offset + 2])[0]]))
+                offset += 2
+            else:
+                value = struct.unpack("<I", data[offset:offset + 4])[0]
+                words.append((device, number, [value & 0xFFFF, value >> 16]))  # low word first
+                offset += 4
+        for device, number, values in words:  # all checked before any is written
+            self.device._check(device, number, len(values) * (16 if device in BIT_DEVICES else 1))
+        for device, number, values in words:
+            self.device.write_words(device, number, values)
+        self._log_once(logging.INFO, f"Random write: {word_count} word(s), {dword_count} double word(s)")
+        return b""
+
+
+async def run_server(host: str, port: int, denied_ranges: List[Tuple[int, int]], writable: bool = False):
     """Run SLMP simulator server"""
-    device = SLMPDevice(denied_ranges)
+    device = SLMPDevice(denied_ranges, writable=writable)
 
     loop = asyncio.get_event_loop()
     server = await loop.create_server(
@@ -426,6 +557,7 @@ async def run_server(host: str, port: int, denied_ranges: List[Tuple[int, int]])
     addr = server.sockets[0].getsockname()
     logger.info(f"SLMP Simulator running on {addr[0]}:{addr[1]}")
     logger.info(f"Denied address ranges: {denied_ranges}")
+    logger.info("Writes: " + ("accepted (--writable)" if writable else "refused (read-only; --writable to accept)"))
 
     async with server:
         await server.serve_forever()
@@ -433,9 +565,11 @@ async def run_server(host: str, port: int, denied_ranges: List[Tuple[int, int]])
 
 def main():
     parser = simulator_parser("SLMP PLC Simulator", 5001, "5000-5100,7000-7050")
+    parser.add_argument("--writable", action="store_true",
+                        help="Accept batch / random writes (1401 / 1402); read-only by default")
     args = parser.parse_args()
     denied_ranges = parse_denied_ranges(args.denied)
-    run_simulator(run_server(args.host, args.port, denied_ranges), logger)
+    run_simulator(run_server(args.host, args.port, denied_ranges, args.writable), logger)
 
 
 if __name__ == "__main__":

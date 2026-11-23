@@ -19,9 +19,9 @@ logger = logging.getLogger("S7-Simulator")
 
 # Shared CLI helpers (support both direct execution and package import)
 try:
-    from .common import parse_denied_ranges, run_simulator, simulator_parser
+    from .common import parse_denied_ranges, peer_text, run_simulator, simulator_parser
 except ImportError:
-    from common import parse_denied_ranges, run_simulator, simulator_parser  # type: ignore[no-redef]
+    from common import parse_denied_ranges, peer_text, run_simulator, simulator_parser  # type: ignore[no-redef]
 
 # S7comm constants
 S7_PROTOCOL_ID = 0x32
@@ -168,11 +168,11 @@ class COTPProtocol(asyncio.Protocol):
 
     def connection_made(self, transport):
         self.transport = transport
-        peername = transport.get_extra_info('peername')
-        logger.info(f"Connection from {peername}")
+        self.peer = peer_text(transport)
+        logger.info(f"Connection from {self.peer}")
 
     def connection_lost(self, exc):
-        logger.info("Connection closed")
+        logger.info(f"Connection closed: {getattr(self, 'peer', '?')}")
 
     def data_received(self, data: bytes):
         """Process received TPKT/COTP/S7comm data"""

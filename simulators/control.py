@@ -14,31 +14,35 @@ Areas and addresses follow what plc_scanner.py reads:
 - EtherNet/IP Logix / Omron: TAG; address = tag name (numeric scalar tags)
 - S7: DB1, M; address = word index (byte offset = address * 2, big-endian)
 - FINS: DM, HR, W (words)
+
+The GUI's state (settings, values written by hand, automatic changes) can
+be saved to a JSON file and applied again (SavedState, apply_state).
 """
 
 import asyncio
+import json
 import logging
 import math
 import random
 import threading
 from concurrent.futures import Future
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 
 try:
-    from .common import parse_denied_ranges
+    from .common import parse_denied_ranges, peer_text
     from .ethernet_ip_simulator import EtherNetIPDevice, EtherNetIPProtocol
     from .fins_simulator import FINSSimulator, FINSTCPServerProtocol, FINSUDPServerProtocol
     from .modbus_simulator import ModbusDevice, ModbusProtocol
     from .s7_simulator import COTPProtocol, S7Device
-    from .slmp_simulator import SLMPDevice, SLMPProtocol
+    from .slmp_simulator import SLMPDevice, SLMPError, SLMPProtocol
 except ImportError:
-    from common import parse_denied_ranges  # type: ignore[no-redef]
+    from common import parse_denied_ranges, peer_text  # type: ignore[no-redef]
     from ethernet_ip_simulator import EtherNetIPDevice, EtherNetIPProtocol  # type: ignore[no-redef]
     from fins_simulator import FINSSimulator, FINSTCPServerProtocol, FINSUDPServerProtocol  # type: ignore[no-redef]
     from modbus_simulator import ModbusDevice, ModbusProtocol  # type: ignore[no-redef]
     from s7_simulator import COTPProtocol, S7Device  # type: ignore[no-redef]
-    from slmp_simulator import SLMPDevice, SLMPProtocol  # type: ignore[no-redef]
+    from slmp_simulator import SLMPDevice, SLMPError, SLMPProtocol  # type: ignore[no-redef]
 
 logger = logging.getLogger("Simulator-Control")
 
@@ -61,6 +65,8 @@ class SimulatorKind:
     areas: Tuple[str, ...]
     # plc_scanner.py arguments reading this simulator ({host} / {port})
     scanner_args: str
+    # Writes from clients can be allowed (read-only by default)
+    writable: bool = False
 
 
 KINDS: Tuple[SimulatorKind, ...] = (
@@ -71,6 +77,7 @@ KINDS: Tuple[SimulatorKind, ...] = (
         "5000-5100,7000-7050",
         ("D", "W", "R", "ZR", "SD", "M", "X", "Y", "B", "L", "SM"),
         "--mode range --target {host} --protocol slmp --port {port} --device D --range 0-99",
+        writable=True,
     ),
     SimulatorKind(
         "modbus",
@@ -214,6 +221,11 @@ def write_value(kind: str, device: Any, area: str, address: Address, value: floa
         block[index * 2], block[index * 2 + 1] = word >> 8, word & 0xFF
         return
     memory = _area_dict(kind, device, area)
+    if kind == "slmp":
+        try:
+            device.check_range(area, index)  # e.g. D12288 does not exist on the simulated CPU
+        except SLMPError as e:
+            raise ValueError(str(e)) from None
     if area in BIT_AREAS:
         bit = 1 if value else 0
         memory[index] = bool(bit) if kind == "modbus" else bit
@@ -246,6 +258,10 @@ class _Running:
     # Open client connections (TCP transports): closed on stop, since
     # Server.close() only stops accepting new ones
     connections: Set[Any]
+    denied: Optional[str] = None
+    writable: bool = False
+    # Values written through the controller (by hand), saved with the state
+    written: Dict[Tuple[str, Address], float] = field(default_factory=dict)
 
 
 def _tracked(factory: Callable[[], Any], connections: Set[Any]) -> Callable[[], Any]:
@@ -328,11 +344,20 @@ class SimulatorController:
         running = self._running.get(key)
         return running.port if running else None
 
-    def start(self, key: str, host: str = "127.0.0.1", port: Optional[int] = None, denied: Optional[str] = None) -> int:
+    def start(
+        self,
+        key: str,
+        host: str = "127.0.0.1",
+        port: Optional[int] = None,
+        denied: Optional[str] = None,
+        writable: bool = False,
+    ) -> int:
         """Start one simulator; returns the port it listens on"""
         kind = KINDS_BY_KEY[key]
         if key in self._running:
             raise ValueError(f"{kind.title} is already running")
+        if writable and not kind.writable:
+            raise ValueError(f"{kind.title} cannot accept writes")
         port = kind.port if port is None else port
         if not 0 <= port <= 65535:
             raise ValueError(f"port must be 0-65535, got {port}")
@@ -340,12 +365,17 @@ class SimulatorController:
             denied_ranges = parse_denied_ranges(kind.denied if denied is None else denied)
         except ValueError:
             raise ValueError(f"invalid denied ranges {denied!r} (e.g. 5000-5100,7000-7050)") from None
-        running = self._call(self._start(kind, host, port, denied_ranges))
+        running = self._call(self._start(kind, host, port, denied_ranges, writable))
+        running.denied = (kind.denied if denied is None else denied) if kind.denied is not None else None
+        running.writable = writable
         self._running[key] = running
-        logger.info(f"{kind.title} started on {host}:{running.port}")
+        writes = "; writes accepted" if writable else ""
+        logger.info(f"{kind.title} started on {host}:{running.port}{writes}")
         return int(running.port)
 
-    async def _start(self, kind: SimulatorKind, host: str, port: int, denied: List[Tuple[int, int]]) -> _Running:
+    async def _start(
+        self, kind: SimulatorKind, host: str, port: int, denied: List[Tuple[int, int]], writable: bool
+    ) -> _Running:
         loop = asyncio.get_running_loop()
         closers: List[Callable[[], Any]] = []
         connections: Set[Any] = set()
@@ -365,7 +395,7 @@ class SimulatorController:
             closers.append(server.close)
             return _Running(kind, host, bound, device, closers, connections)
         factories: Dict[str, Callable[[], Any]] = {
-            "slmp": lambda: SLMPDevice(denied),
+            "slmp": lambda: SLMPDevice(denied, writable=writable),
             "modbus": lambda: ModbusDevice(denied),
             "eip": lambda: EtherNetIPDevice(denied),
             "logix": lambda: EtherNetIPDevice(mode="logix"),
@@ -405,6 +435,23 @@ class SimulatorController:
         self._call(close())
         logger.info(f"{running.kind.title} stopped")
 
+    def clients(self, key: str) -> List[str]:
+        """Remote ends ('ip:port') of the TCP clients connected to a running simulator"""
+        running = self._running.get(key)
+        if running is None:
+            return []
+        connections = running.connections
+
+        async def peers() -> List[str]:  # the set changes on the loop thread
+            return sorted(peer_text(t) for t in connections)
+
+        return list(self._call(peers()))
+
+    def settings(self, key: str) -> Optional[Tuple[str, int, Optional[str], bool]]:
+        """(host, port, denied ranges, writable) of a running simulator"""
+        running = self._running.get(key)
+        return (running.host, running.port, running.denied, running.writable) if running else None
+
     def stop_all(self) -> None:
         for key in list(self._running):
             self.stop(key)
@@ -427,13 +474,28 @@ class SimulatorController:
 
         return float(self._call(get()))
 
-    def write(self, key: str, area: str, address: Address, value: float) -> None:
+    def _write(self, key: str, area: str, address: Address, value: float) -> None:
         device = self._device(key)
 
         async def put() -> None:
             write_value(key, device, area, address, value)
 
         self._call(put())
+
+    def write(self, key: str, area: str, address: Address, value: float) -> None:
+        """Write a value by hand (remembered for the saved state)"""
+        self._write(key, area, address, value)
+        running = self._running.get(key)
+        if running is not None:
+            running.written[(area, address)] = value
+
+    def written_values(self) -> List[Tuple[str, str, Address, float]]:
+        """(kind, area, address, value) written by hand into the running simulators"""
+        return [
+            (key, area, address, value)
+            for key, running in self._running.items()
+            for (area, address), value in running.written.items()
+        ]
 
     def tags(self, key: str) -> List[str]:
         """Numeric scalar tags of a running Logix / Omron simulator"""
@@ -460,10 +522,12 @@ class SimulatorController:
         device = self._device(generator.kind)
         # A bad area / address / tag or a limit the area cannot hold (e.g. a
         # maximum over 65535 for a word) fails here, not later in the loop
-        self.write(generator.kind, generator.area, generator.address, generator.high)
-        self.write(generator.kind, generator.area, generator.address, generator.low)
+        self._write(generator.kind, generator.area, generator.address, generator.high)
+        self._write(generator.kind, generator.area, generator.address, generator.low)
         key = (generator.kind, generator.area, generator.address)
         self.stop_generator(*key)
+        # The automatic change owns the address now: no hand-written value to restore
+        self._running[generator.kind].written.pop((generator.area, generator.address), None)
 
         async def run() -> None:
             started = asyncio.get_running_loop().time()
@@ -490,3 +554,164 @@ class SimulatorController:
     def stop_all_generators(self) -> None:
         for key in list(self._generators):
             self.stop_generator(*key)
+
+
+# --- Saved state (the GUI's "save" / "load") --------------------------------
+
+STATE_VERSION = 1
+
+
+@dataclass
+class SimulatorSetting:
+    port: int
+    denied: Optional[str] = None
+    writable: bool = False
+    running: bool = False
+
+
+@dataclass
+class SavedState:
+    """Settings of every simulator, values written by hand and automatic changes"""
+
+    host: str = "127.0.0.1"
+    simulators: Dict[str, SimulatorSetting] = field(default_factory=dict)
+    values: List[Tuple[str, str, Address, float]] = field(default_factory=list)
+    generators: List[Generator] = field(default_factory=list)
+
+    def to_json(self) -> str:
+        data = {
+            "version": STATE_VERSION,
+            "host": self.host,
+            "simulators": {
+                key: {"port": s.port, "denied": s.denied, "writable": s.writable, "running": s.running}
+                for key, s in self.simulators.items()
+            },
+            "values": [{"kind": k, "area": a, "address": addr, "value": v} for k, a, addr, v in self.values],
+            "generators": [
+                {
+                    "kind": g.kind,
+                    "area": g.area,
+                    "address": g.address,
+                    "waveform": g.waveform,
+                    "min": g.low,
+                    "max": g.high,
+                    "period": g.period,
+                }
+                for g in self.generators
+            ],
+        }
+        return json.dumps(data, ensure_ascii=False, indent=2) + "\n"
+
+    @classmethod
+    def from_json(cls, text: str) -> "SavedState":
+        """Parse a saved state; ValueError names what is wrong"""
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"not a JSON file: {e}") from None
+        if not isinstance(data, dict) or data.get("version") != STATE_VERSION:
+            raise ValueError(f"not a simulator state file (version {STATE_VERSION} expected)")
+        state = cls(host=_text(data.get("host", "127.0.0.1"), "host"))
+        simulators = data.get("simulators", {})
+        if not isinstance(simulators, dict):
+            raise ValueError("simulators: must be a mapping")
+        for key, item in simulators.items():
+            kind = _kind(key, "simulators")
+            if not isinstance(item, dict):
+                raise ValueError(f"simulators.{key}: must be a mapping")
+            port = item.get("port", kind.port)
+            if isinstance(port, bool) or not isinstance(port, int) or not 0 <= port <= 65535:
+                raise ValueError(f"simulators.{key}.port: 0-65535 expected, got {port!r}")
+            denied = item.get("denied")
+            if denied is not None:
+                denied = _text(denied, f"simulators.{key}.denied")
+            writable = item.get("writable", False) is True
+            if writable and not kind.writable:
+                raise ValueError(f"simulators.{key}.writable: {kind.title} cannot accept writes")
+            state.simulators[key] = SimulatorSetting(port, denied, writable, item.get("running", False) is True)
+        for i, item in enumerate(_items(data, "values")):
+            where = f"values[{i}]"
+            state.values.append(
+                (
+                    _kind(item.get("kind"), where).key,
+                    _text(item.get("area"), f"{where}.area"),
+                    _address(item.get("address"), where),
+                    _number(item.get("value"), f"{where}.value"),
+                )
+            )
+        for i, item in enumerate(_items(data, "generators")):
+            where = f"generators[{i}]"
+            waveform = item.get("waveform")
+            if waveform not in WAVEFORMS:
+                raise ValueError(f"{where}.waveform: one of {', '.join(WAVEFORMS)} expected, got {waveform!r}")
+            state.generators.append(
+                Generator(
+                    _kind(item.get("kind"), where).key,
+                    _text(item.get("area"), f"{where}.area"),
+                    _address(item.get("address"), where),
+                    waveform,
+                    _number(item.get("min"), f"{where}.min"),
+                    _number(item.get("max"), f"{where}.max"),
+                    _number(item.get("period"), f"{where}.period"),
+                )
+            )
+        return state
+
+
+def _text(value: Any, where: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{where}: text expected, got {value!r}")
+    return value
+
+
+def _kind(key: Any, where: str) -> SimulatorKind:
+    if key not in KINDS_BY_KEY:
+        raise ValueError(f"{where}: unknown simulator {key!r} (known: {', '.join(KINDS_BY_KEY)})")
+    return KINDS_BY_KEY[key]
+
+
+def _address(value: Any, where: str) -> Address:
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        raise ValueError(f"{where}.address: number or tag name expected, got {value!r}")
+    return value if isinstance(value, str) else int(value)
+
+
+def _number(value: Any, where: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{where}: number expected, got {value!r}")
+    return float(value)
+
+
+def _items(data: Dict[str, Any], name: str) -> List[Dict[str, Any]]:
+    items = data.get(name, [])
+    if not isinstance(items, list) or not all(isinstance(i, dict) for i in items):
+        raise ValueError(f"{name}: list of mappings expected")
+    return items
+
+
+def apply_state(controller: SimulatorController, state: SavedState) -> List[str]:
+    """
+    Stop everything, then start the simulators saved as running and restore
+    their values and automatic changes. Returns what could not be restored
+    (the rest is still applied).
+    """
+    problems: List[str] = []
+    controller.stop_all()
+    for key, setting in state.simulators.items():
+        if not setting.running:
+            continue
+        try:
+            controller.start(key, state.host, setting.port, setting.denied, setting.writable)
+        except (OSError, ValueError) as e:
+            problems.append(f"{KINDS_BY_KEY[key].title}: not started: {e}")
+    for key, area, address, value in state.values:
+        try:
+            controller.write(key, area, address, value)
+        except ValueError as e:
+            problems.append(f"{KINDS_BY_KEY[key].title} {area} {address}: {e}")
+    for generator in state.generators:
+        try:
+            controller.start_generator(generator)
+        except ValueError as e:
+            problems.append(f"{generator.label}: {e}")
+    return problems

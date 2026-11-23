@@ -180,7 +180,7 @@ def _polled_log(frames, repeat):
             sock.sendall(b"".join(frames) * repeat)
             _recv(sock, len(frames) * repeat)
         deadline = time.time() + 3
-        while not any(m == "Connection closed" for _, m in caplog_lines) and time.time() < deadline:
+        while not any(m.startswith("Connection closed") for _, m in caplog_lines) and time.time() < deadline:
             time.sleep(0.01)
     finally:
         controller.shutdown()
@@ -212,3 +212,74 @@ def test_repeated_errors_are_logged_once_per_connection():
         "Unsupported command: 1401 subcommand 0000",
         "Command 0401: access denied: D5050",
     ]
+
+
+# --- device ranges and writes ----------------------------------------------
+
+
+@pytest.fixture
+def writable_port():
+    controller = SimulatorController()
+    port = controller.start("slmp", "127.0.0.1", 0, denied="5000-5100", writable=True)
+    yield port
+    controller.shutdown()
+
+
+@pytest.mark.parametrize(
+    "command, subcommand, data, end_code",
+    [
+        (0x0401, 0x0000, _device(12287, D) + struct.pack("<H", 1), 0),  # last D of a Q03UDVCPU
+        (0x0401, 0x0000, _device(12287, D) + struct.pack("<H", 2), 0xC056),  # runs past it
+        (0x0401, 0x0000, _device(12288, D) + struct.pack("<H", 1), 0xC056),
+        (0x0401, 0x0000, _device(8176, M) + struct.pack("<H", 1), 0),  # M8176-M8191 as one word
+        (0x0401, 0x0000, _device(8177, M) + struct.pack("<H", 1), 0xC056),
+        (0x0401, 0x0001, _device(8192, X) + struct.pack("<H", 1), 0xC056),
+    ],
+)
+def test_reads_past_the_last_device_number_answer_c056(conn, command, subcommand, data, end_code):
+    conn.sendall(_frame(command, subcommand, data))
+    ((code, _, _),) = _recv(conn)
+    assert code == end_code
+
+
+@pytest.mark.parametrize("client, plctype", [(pymcprotocol.Type3E, "Q"), (pymcprotocol.Type3E, "iQ-R")])
+def test_writes_when_writable(writable_port, client, plctype):
+    mc = client(plctype=plctype)
+    mc.connect("127.0.0.1", writable_port)
+    try:
+        mc.batchwrite_wordunits("D10", [1, -2, 3])
+        assert mc.batchread_wordunits("D10", 3) == [1, -2, 3]
+        mc.batchwrite_bitunits("M200", [1, 0, 1])
+        assert mc.batchread_bitunits("M200", 3) == [1, 0, 1]
+        mc.randomwrite(["D20", "M300"], [7, 5], ["D30"], [0x0002_0001])  # M300 word: bits 0 and 2
+        assert mc.batchread_wordunits("D20", 1) == [7]
+        assert mc.batchread_bitunits("M300", 3) == [1, 0, 1]
+        assert mc.batchread_wordunits("D30", 2) == [1, 2]  # low word first
+        mc.randomwrite_bitunits(["M400", "Y1F"], [1, 1])
+        assert mc.batchread_bitunits("M400", 1) == [1] and mc.batchread_bitunits("Y1F", 1) == [1]
+    finally:
+        mc.close()
+
+
+def test_write_errors_and_nothing_half_written(writable_port):
+    with socket.create_connection(("127.0.0.1", writable_port)) as sock:
+        # random write: D0 fine, D5000 denied -> C055 and D0 untouched
+        sock.sendall(_frame(0x1402, 0x0000, bytes([2, 0]) + _device(0, D) + b"\x09\x00" + _device(5000, D) + b"\x01\x00"))
+        sock.sendall(_frame(0x1401, 0x0000, _device(12288, D) + struct.pack("<HH", 1, 1)))  # past D12287
+        sock.sendall(_frame(0x1401, 0x0000, _device(0, D) + struct.pack("<H", 2) + b"\x01\x00"))  # data short
+        sock.sendall(_frame(0x0401, 0x0000, _device(0, D) + struct.pack("<H", 1)))
+        (denied, _, _), (past, _, _), (short, _, _), (read, data, _) = _recv(sock, 4)
+    assert (denied, past, short) == (0xC055, 0xC056, 0xC061)
+    assert read == 0 and _words(data) == [0]
+
+
+def test_writes_are_refused_unless_writable(conn):
+    conn.sendall(_frame(0x1401, 0x0000, _device(0, D) + struct.pack("<HH", 1, 99)))
+    ((code, _, _),) = _recv(conn)
+    assert code == 0xC059
+
+
+def test_connection_closed_names_the_client():
+    lines = _polled_log([_frame(0x0401, 0x0000, _device(0, D) + struct.pack("<H", 1))], 1)
+    peer = lines[0].removeprefix("Connection from ")
+    assert lines[-1] == f"Connection closed: {peer}" and ":" in peer

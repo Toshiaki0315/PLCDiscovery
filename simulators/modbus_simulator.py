@@ -20,9 +20,9 @@ logger = logging.getLogger("Modbus-Simulator")
 
 # Shared CLI helpers (support both direct execution and package import)
 try:
-    from .common import parse_denied_ranges, run_simulator, simulator_parser
+    from .common import parse_denied_ranges, peer_text, run_simulator, simulator_parser
 except ImportError:
-    from common import parse_denied_ranges, run_simulator, simulator_parser  # type: ignore[no-redef]
+    from common import parse_denied_ranges, peer_text, run_simulator, simulator_parser  # type: ignore[no-redef]
 
 # Modbus Function Codes
 FC_READ_COILS = 0x01
@@ -173,11 +173,11 @@ class ModbusProtocol(asyncio.Protocol):
 
     def connection_made(self, transport):
         self.transport = transport
-        peername = transport.get_extra_info('peername')
-        logger.info(f"Connection from {peername}")
+        self.peer = peer_text(transport)
+        logger.info(f"Connection from {self.peer}")
 
     def connection_lost(self, exc):
-        logger.info("Connection closed")
+        logger.info(f"Connection closed: {getattr(self, 'peer', '?')}")
 
     def data_received(self, data: bytes):
         """Process received Modbus/TCP frame"""

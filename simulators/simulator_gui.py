@@ -4,7 +4,7 @@ PLC simulator GUI: start / stop each protocol simulator, change the values
 the scanner reads (by hand or automatically) and watch the log.
 
 Usage:
-    python simulators/simulator_gui.py [--host 127.0.0.1] [--start-all]
+    python simulators/simulator_gui.py [--host 127.0.0.1] [--start-all] [--state FILE]
 
 Only the standard library (with Tkinter) is needed, like the simulators.
 """
@@ -15,7 +15,7 @@ import os
 import queue
 import sys
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 from typing import Dict, List, Optional
 
@@ -28,8 +28,11 @@ if __package__ in (None, ""):
         WAVEFORM_LABELS,
         WAVEFORMS,
         Generator,
+        SavedState,
         SimulatorController,
         SimulatorKind,
+        SimulatorSetting,
+        apply_state,
         scanner_command,
     )
 else:
@@ -39,14 +42,31 @@ else:
         WAVEFORM_LABELS,
         WAVEFORMS,
         Generator,
+        SavedState,
         SimulatorController,
         SimulatorKind,
+        SimulatorSetting,
+        apply_state,
         scanner_command,
     )
 
 APP_TITLE = "PLC シミュレータ"
 HOSTS = ("127.0.0.1", "0.0.0.0")
 LOG_LINES = 2000
+STATE_FILES = [("シミュレータの状態", "*.json"), ("すべてのファイル", "*")]
+
+
+def clients_text(clients: List[str]) -> str:
+    """'3: 192.168.1.14, 127.0.0.1 ×2' for the connection column (ports change every connection: left out)"""
+    if not clients:
+        return "0"
+    counts: Dict[str, int] = {}
+    for client in clients:
+        host = client.rsplit(":", 1)[0]
+        counts[host] = counts.get(host, 0) + 1
+    shown = [f"{host} ×{n}" if n > 1 else host for host, n in sorted(counts.items())]
+    more = "、ほか" if len(shown) > 2 else ""
+    return f"{len(clients)}: {', '.join(shown[:2])}{more}"
 
 
 class QueueLogHandler(logging.Handler):
@@ -65,31 +85,39 @@ class QueueLogHandler(logging.Handler):
 
 
 class _Row:
-    """One simulator's line: port, denied ranges, state and start/stop"""
+    """One simulator's line: port, denied ranges, writes, state, connections and start/stop"""
 
     def __init__(self, app: "SimulatorApp", parent: tk.Misc, row: int, kind: SimulatorKind):
         self.kind = kind
         self.var_port = tk.StringVar(value=str(kind.port))
         self.var_denied = tk.StringVar(value=kind.denied or "（固定）")
         self.var_state = tk.StringVar(value="停止中")
+        self.var_writable = tk.BooleanVar(value=False)
+        self.var_clients = tk.StringVar(value="-")
         ttk.Label(parent, text=kind.title).grid(row=row, column=0, sticky=tk.W, padx=4, pady=2)
         self.ent_port = ttk.Entry(parent, textvariable=self.var_port, width=7)
         self.ent_port.grid(row=row, column=1, padx=4)
         self.ent_denied = ttk.Entry(parent, textvariable=self.var_denied, width=22)
         self.ent_denied.grid(row=row, column=2, padx=4, sticky=tk.EW)
-        self.lbl_state = ttk.Label(parent, textvariable=self.var_state, width=16)
-        self.lbl_state.grid(row=row, column=3, padx=4, sticky=tk.W)
+        self.chk_writable = ttk.Checkbutton(parent, variable=self.var_writable)
+        self.chk_writable.grid(row=row, column=3, padx=4)
+        self.lbl_state = ttk.Label(parent, textvariable=self.var_state, width=14)
+        self.lbl_state.grid(row=row, column=4, padx=4, sticky=tk.W)
+        ttk.Label(parent, textvariable=self.var_clients, width=30).grid(row=row, column=5, padx=4, sticky=tk.W)
         self.btn = ttk.Button(parent, text="起動", width=6, command=lambda: app.toggle(kind.key))
-        self.btn.grid(row=row, column=4, padx=4)
+        self.btn.grid(row=row, column=6, padx=4)
         ttk.Button(parent, text="コマンド", width=8, command=lambda: app.show_command(kind.key)).grid(
-            row=row, column=5, padx=4
+            row=row, column=7, padx=4
         )
 
     def update(self, running: bool, port: Optional[int]) -> None:
         state = tk.DISABLED if running else tk.NORMAL
         self.ent_port.configure(state=state)
         self.ent_denied.configure(state=tk.DISABLED if running or self.kind.denied is None else tk.NORMAL)
+        self.chk_writable.configure(state=tk.DISABLED if running or not self.kind.writable else tk.NORMAL)
         self.var_state.set(f"実行中（{port}）" if running else "停止中")
+        if not running:
+            self.var_clients.set("-")
         self.btn.configure(text="停止" if running else "起動")
 
 
@@ -138,16 +166,18 @@ class SimulatorApp:
         )
         ttk.Button(top, text="すべて停止", command=self.stop_all).pack(side=tk.RIGHT, padx=2)
         ttk.Button(top, text="すべて起動", command=self.start_all).pack(side=tk.RIGHT, padx=2)
+        ttk.Button(top, text="状態を読み込む…", command=self.load_state).pack(side=tk.RIGHT, padx=2)
+        ttk.Button(top, text="状態を保存…", command=self.save_state).pack(side=tk.RIGHT, padx=2)
 
         sims = ttk.LabelFrame(main, text="シミュレータ", padding=6)
         sims.pack(fill=tk.X, pady=6)
-        for col, text in enumerate(("種類", "ポート", "読めないアドレス", "状態")):
+        for col, text in enumerate(("種類", "ポート", "読めないアドレス", "書き込み可", "状態", "接続中のクライアント")):
             ttk.Label(sims, text=text).grid(row=0, column=col, sticky=tk.W, padx=4)
         sims.columnconfigure(2, weight=1)
         for i, kind in enumerate(KINDS, start=1):
             self.rows[kind.key] = _Row(self, sims, i, kind)
         cmd = ttk.Frame(sims)
-        cmd.grid(row=len(KINDS) + 1, column=0, columnspan=6, sticky=tk.EW, pady=(6, 0))
+        cmd.grid(row=len(KINDS) + 1, column=0, columnspan=8, sticky=tk.EW, pady=(6, 0))
         ttk.Label(cmd, text="スキャナーのコマンド:").pack(side=tk.LEFT)
         ttk.Entry(cmd, textvariable=self.var_command, state="readonly").pack(
             side=tk.LEFT, fill=tk.X, expand=True, padx=4
@@ -234,8 +264,9 @@ class SimulatorApp:
             messagebox.showwarning("入力エラー", f"{row.kind.title}: ポートには数値を入力してください。")
             return False
         denied = row.var_denied.get().strip() if row.kind.denied is not None else None
+        writable = row.var_writable.get() and row.kind.writable
         try:
-            self.controller.start(key, self.var_host.get().strip() or "127.0.0.1", port, denied)
+            self.controller.start(key, self.var_host.get().strip() or "127.0.0.1", port, denied, writable)
         except Exception as e:
             logging.getLogger("Simulator-GUI").error(f"{row.kind.title}: failed to start: {e}")
             messagebox.showerror(
@@ -263,6 +294,66 @@ class SimulatorApp:
     def stop_all(self) -> None:
         self.controller.stop_all()
         self._refresh_rows()
+
+    # -- saved state --
+
+    def current_state(self) -> SavedState:
+        """What the window shows now: each simulator's settings, hand-written values, automatic changes"""
+        state = SavedState(host=self.var_host.get().strip() or "127.0.0.1")
+        for key, row in self.rows.items():
+            settings = self.controller.settings(key)
+            if settings is not None:
+                _, port, denied, writable = settings
+                state.simulators[key] = SimulatorSetting(port, denied, writable, running=True)
+                continue
+            try:
+                port = int(row.var_port.get())
+            except ValueError:
+                port = row.kind.port
+            denied = row.var_denied.get().strip() if row.kind.denied is not None else None
+            state.simulators[key] = SimulatorSetting(port, denied, bool(row.var_writable.get()), running=False)
+        state.values = self.controller.written_values()
+        state.generators = self.controller.generators()
+        return state
+
+    def save_state(self) -> None:
+        path = filedialog.asksaveasfilename(
+            title="状態を保存", defaultextension=".json", filetypes=STATE_FILES, initialfile="simulator_state.json"
+        )
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(self.current_state().to_json())
+        except OSError as e:
+            messagebox.showerror("保存できません", str(e))
+            return
+        logging.getLogger("Simulator-GUI").info(f"state saved: {path}")
+
+    def load_state(self, path: Optional[str] = None) -> None:
+        path = path or filedialog.askopenfilename(title="状態を読み込む", filetypes=STATE_FILES)
+        if not path:
+            return
+        try:
+            with open(path, encoding="utf-8") as f:
+                state = SavedState.from_json(f.read())
+        except (OSError, ValueError) as e:
+            messagebox.showerror("読み込めません", f"{path}\n\n{e}")
+            return
+        self.var_host.set(state.host)
+        for key, setting in state.simulators.items():
+            row = self.rows[key]
+            row.var_port.set(str(setting.port))
+            if row.kind.denied is not None and setting.denied is not None:
+                row.var_denied.set(setting.denied)
+            row.var_writable.set(setting.writable)
+        problems = apply_state(self.controller, state)
+        self._refresh_rows()
+        logging.getLogger("Simulator-GUI").info(f"state loaded: {path}")
+        for problem in problems:
+            logging.getLogger("Simulator-GUI").error(problem)
+        if problems:
+            messagebox.showwarning("一部を復元できませんでした", "\n".join(problems))
 
     def show_command(self, key: str) -> None:
         kind = KINDS_BY_KEY[key]
@@ -404,6 +495,9 @@ class SimulatorApp:
             self.txt_log.see(tk.END)
             self.txt_log.configure(state=tk.DISABLED)
         self._update_current()
+        for key, row in self.rows.items():
+            if self.controller.is_running(key):
+                row.var_clients.set(clients_text(self.controller.clients(key)))
         self.root.after(500, self._poll)
 
     def close(self) -> None:
@@ -418,10 +512,13 @@ def main(argv: Optional[List[str]] = None) -> None:
     parser = argparse.ArgumentParser(description="PLC simulator GUI")
     parser.add_argument("--host", default="127.0.0.1", help="Address to listen on (default 127.0.0.1)")
     parser.add_argument("--start-all", action="store_true", help="Start every simulator at once")
+    parser.add_argument("--state", metavar="FILE", help="Apply a state saved from the window (JSON)")
     args = parser.parse_args(argv)
     root = tk.Tk()
     app = SimulatorApp(root, host=args.host)
-    if args.start_all:
+    if args.state:
+        root.after(100, lambda: app.load_state(args.state))
+    elif args.start_all:
         root.after(100, app.start_all)
     root.mainloop()
 

@@ -15,10 +15,14 @@ import pytest
 from plc_discovery.cli_args import parse_args
 from plc_discovery.collector import PLCDataCollector
 from plc_discovery.config import DeviceType, NetworkConfig, PLCInfo, Protocol, StatusCode
+from simulators.common import peer_text
 from simulators.control import (
     KINDS,
     Generator,
+    SavedState,
     SimulatorController,
+    SimulatorSetting,
+    apply_state,
     read_value,
     scanner_command,
     wave_value,
@@ -88,6 +92,7 @@ def test_memory_layout_matches_what_the_simulators_serve():
         ("slmp", SLMPDevice(), "Q", 0, 1, "unknown area"),
         ("slmp", SLMPDevice(), "D", -1, 1, "0 or more"),
         ("slmp", SLMPDevice(), "D", 0, float("nan"), "finite"),
+        ("slmp", SLMPDevice(), "D", 12288, 1, "beyond D0-D12287"),  # no such D on the simulated CPU
         ("logix", EtherNetIPDevice(mode="logix"), "TAG", "Nope", 1, "unknown tag"),
         ("logix", EtherNetIPDevice(mode="logix"), "TAG", "Recipe", 1, "not a number"),
         ("s7", S7Device(), "I", 0, 1, "unknown area"),
@@ -190,7 +195,7 @@ def test_gui_module_imports_without_a_display(monkeypatch):
     except ImportError:
         tk = MagicMock()
         monkeypatch.setitem(sys.modules, "tkinter", tk)
-        for name in ("messagebox", "ttk", "scrolledtext"):
+        for name in ("filedialog", "messagebox", "ttk", "scrolledtext"):
             monkeypatch.setitem(sys.modules, f"tkinter.{name}", getattr(tk, name))
     monkeypatch.delitem(sys.modules, "simulators.simulator_gui", raising=False)
     from simulators import simulator_gui
@@ -222,3 +227,114 @@ def test_generator_limits_outside_the_area_are_rejected(controller):
     with pytest.raises(ValueError, match="16-bit word"):
         controller.start_generator(Generator("modbus", "HR", 1, "ramp", 0, 70000, 1))
     assert controller.generators() == []
+
+
+def test_scanner_reports_numbers_past_the_cpu_as_illegal(controller):
+    port = controller.start("slmp", "127.0.0.1", 0)
+    statuses = [p.status for p in _read_d(port, 12286, 12289)]
+    assert statuses == [StatusCode.OK, StatusCode.OK, StatusCode.NG_ILLEGAL_ADDR, StatusCode.NG_ILLEGAL_ADDR]
+
+
+def test_clients_and_settings(controller):
+    port = controller.start("slmp", "127.0.0.1", 0, denied="0-0", writable=True)
+    assert controller.clients("slmp") == []
+    with socket.create_connection(("127.0.0.1", port)) as sock:
+        deadline = time.time() + 3
+        while not controller.clients("slmp") and time.time() < deadline:
+            time.sleep(0.01)
+        assert controller.clients("slmp") == [f"127.0.0.1:{sock.getsockname()[1]}"]
+    assert controller.settings("slmp") == ("127.0.0.1", port, "0-0", True)
+    assert controller.clients("modbus") == [] and controller.settings("modbus") is None
+    with pytest.raises(ValueError, match="cannot accept writes"):
+        controller.start("modbus", "127.0.0.1", 0, writable=True)
+
+
+def test_peer_text():
+    transport = MagicMock()
+    transport.get_extra_info.return_value = ("::1", 5001, 0, 0)
+    assert peer_text(transport) == "::1:5001"
+    transport.get_extra_info.return_value = None
+    assert peer_text(transport) == "?" and peer_text(None) == "?"
+
+
+def test_written_values_are_remembered_until_stop(controller):
+    controller.start("slmp", "127.0.0.1", 0)
+    controller.write("slmp", "D", 1, 11)
+    controller.write("slmp", "D", 2, 22)
+    controller.start_generator(Generator("slmp", "D", 2, "sine", 0, 5, 10))  # takes D2 over
+    assert controller.written_values() == [("slmp", "D", 1, 11)]
+    controller.stop("slmp")
+    assert controller.written_values() == []
+
+
+def test_state_round_trip_and_apply(controller):
+    state = SavedState(
+        host="127.0.0.1",
+        simulators={
+            "slmp": SimulatorSetting(0, "0-0", True, running=True),
+            "modbus": SimulatorSetting(1502, "1-2", False, running=False),
+            "logix": SimulatorSetting(0, None, False, running=True),
+        },
+        values=[("slmp", "D", 3, 33.0), ("logix", "TAG", "Temp", 21.5)],
+        generators=[Generator("slmp", "D", 4, "ramp", 0, 10, 5)],
+    )
+    loaded = SavedState.from_json(state.to_json())
+    assert loaded == state
+    assert apply_state(controller, loaded) == []
+    assert controller.settings("slmp")[2:] == ("0-0", True) and not controller.is_running("modbus")
+    assert controller.read("slmp", "D", 3) == 33 and controller.read("logix", "TAG", "Temp") == 21.5
+    assert [g.address for g in controller.generators()] == [4]
+
+
+def test_apply_state_reports_what_failed_and_restores_the_rest(controller):
+    with socket.socket() as busy:
+        busy.bind(("127.0.0.1", 0))
+        busy.listen()
+        state = SavedState(
+            simulators={
+                "slmp": SimulatorSetting(0, None, False, running=True),
+                "modbus": SimulatorSetting(busy.getsockname()[1], None, False, running=True),
+            },
+            values=[("slmp", "D", 1, 5.0), ("slmp", "D", 99999, 1.0), ("modbus", "HR", 0, 1.0)],
+        )
+        problems = apply_state(controller, state)
+    assert controller.read("slmp", "D", 1) == 5
+    assert len(problems) == 3
+    assert "not started" in problems[0] and "beyond" in problems[1] and "not running" in problems[2]
+
+
+@pytest.mark.parametrize(
+    "text, message",
+    [
+        ("{", "not a JSON file"),
+        ('{"version": 2}', "version 1 expected"),
+        ('{"version": 1, "simulators": {"plc5": {}}}', "unknown simulator"),
+        ('{"version": 1, "simulators": {"slmp": {"port": 70000}}}', "0-65535"),
+        ('{"version": 1, "simulators": {"modbus": {"writable": true}}}', "cannot accept writes"),
+        ('{"version": 1, "values": [{"kind": "slmp", "area": "D", "address": 0, "value": "x"}]}', "number expected"),
+        (
+            '{"version": 1, "generators": [{"kind": "slmp", "area": "D", "address": 0, "waveform": "square",'
+            ' "min": 0, "max": 1, "period": 1}]}',
+            "waveform",
+        ),
+    ],
+)
+def test_bad_state_files_are_rejected(text, message):
+    with pytest.raises(ValueError, match=message):
+        SavedState.from_json(text)
+
+
+def test_clients_column_text(monkeypatch):
+    try:
+        import tkinter  # noqa: F401
+    except ImportError:
+        tk = MagicMock()
+        monkeypatch.setitem(sys.modules, "tkinter", tk)
+        for name in ("filedialog", "messagebox", "ttk", "scrolledtext"):
+            monkeypatch.setitem(sys.modules, f"tkinter.{name}", getattr(tk, name))
+    monkeypatch.delitem(sys.modules, "simulators.simulator_gui", raising=False)
+    from simulators.simulator_gui import clients_text
+
+    assert clients_text([]) == "0"
+    assert clients_text(["127.0.0.1:5", "192.168.1.14:7", "127.0.0.1:6"]) == "3: 127.0.0.1 ×2, 192.168.1.14"
+    assert clients_text(["10.0.0.1:1", "10.0.0.2:1", "10.0.0.3:1"]) == "3: 10.0.0.1, 10.0.0.2、ほか"

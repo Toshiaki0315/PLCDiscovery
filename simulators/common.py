@@ -6,7 +6,7 @@ Command-line plumbing shared by the protocol simulators: the --host / --port
 import argparse
 import asyncio
 import logging
-from typing import Coroutine, List, Optional, Tuple
+from typing import Any, Coroutine, List, Optional, Tuple
 
 DEFAULT_HOST_HELP = "Host to bind to (default 127.0.0.1; 0.0.0.0 = all interfaces)"
 
@@ -19,6 +19,14 @@ def parse_denied_ranges(text: Optional[str]) -> List[Tuple[int, int]]:
             start, end = range_str.split("-")
             ranges.append((int(start), int(end)))
     return ranges
+
+
+def peer_text(transport: Any) -> str:
+    """'192.168.1.14:50408' for a connection's remote end ('?' when unknown)"""
+    peer = transport.get_extra_info("peername") if transport is not None else None
+    if isinstance(peer, (tuple, list)) and len(peer) >= 2:
+        return f"{peer[0]}:{peer[1]}"
+    return str(peer) if peer else "?"
 
 
 def simulator_parser(description: str, default_port: int, default_denied: Optional[str] = None

@@ -36,7 +36,7 @@ Python 3.10 以上をインストールしてあれば、起動スクリプト�
 | GUI を起動 | `start_gui.bat` をダブルクリック | `./start_gui.sh`（macOS は `start_gui.command` をダブルクリックでも可） |
 | コマンドライン版 | `plc_scanner.bat <オプション>` | `./plc_scanner.sh <オプション>` |
 | PLC シミュレータ（テスト用） | `start_simulators.bat` をダブルクリック | `./start_simulators.sh`（macOS は `start_simulators.command` も可） |
-| PLC シミュレータの GUI（値の書き換え・自動変化） | `start_simulator_gui.bat` をダブルクリック | `./start_simulator_gui.sh`（macOS は `start_simulator_gui.command` も可） |
+| PLC シミュレータの GUI（値の書き換え・自動変化・接続中のクライアント・状態の保存） | `start_simulator_gui.bat` をダブルクリック | `./start_simulator_gui.sh`（macOS は `start_simulator_gui.command` も可） |
 
 ```bat
 plc_scanner.bat --mode range --target 192.168.1.10 --device D --range 0-99
