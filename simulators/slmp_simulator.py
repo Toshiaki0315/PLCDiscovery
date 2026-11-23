@@ -346,9 +346,9 @@ class SLMPProtocol(asyncio.Protocol):
         if not 1 <= points <= limit:
             raise SLMPError(ERR_POINTS, f"{points} points (1-{limit})")
         if bit_units:
-            logger.info(f"Read bits: {device}{number} x {points} points")
+            logger.debug(f"Read bits: {device}{number} x {points} points")
             return _pack_bits(self.device.bits(device, number, points))
-        logger.info(f"Read: {device}{number} x {points} words")
+        logger.debug(f"Read: {device}{number} x {points} words")
         return _pack_words(self.device.words(device, number, points))
 
     def _random_read(self, data: bytes, iqr: bool) -> bytes:
@@ -369,7 +369,7 @@ class SLMPProtocol(asyncio.Protocol):
             values += self.device.words(device, number, 1)
         for device, number in specs[word_count:]:
             values += self.device.words(device, number, 2)  # low word first
-        logger.info(f"Random read: {word_count} word(s), {dword_count} double word(s)")
+        logger.debug(f"Random read: {word_count} word(s), {dword_count} double word(s)")
         return _pack_words(values)
 
     def _block_read(self, data: bytes, iqr: bool) -> bytes:
@@ -395,7 +395,7 @@ class SLMPProtocol(asyncio.Protocol):
         # Word blocks and bit blocks alike are read in words (16 bits each)
         for device, number, points in blocks:
             values += self.device.words(device, number, points)
-        logger.info(f"Block read: {word_blocks} word block(s), {bit_blocks} bit block(s)")
+        logger.debug(f"Block read: {word_blocks} word block(s), {bit_blocks} bit block(s)")
         return _pack_words(values)
 
 

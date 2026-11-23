@@ -4,8 +4,10 @@ The SLMP simulator as other SLMP clients (e.g. a device gateway) see it:
 CPU model name, loopback, framing and error answers.
 """
 
+import logging
 import socket
 import struct
+import time
 
 import pymcprotocol
 import pytest
@@ -153,3 +155,21 @@ def test_x_is_numbered_like_the_scanner_and_pymcprotocol(simulator):
         assert mc.batchread_bitunits("X1F", 1) == [1]
     finally:
         mc.close()
+
+
+def test_polling_does_not_flood_the_log(simulator, caplog):
+    """A gateway polls every few ms: reads log at DEBUG, connections and unsupported commands still show"""
+    _, port = simulator
+    caplog.set_level(logging.INFO, logger="SLMP-Simulator")
+    with socket.create_connection(("127.0.0.1", port)) as sock:
+        read = _frame(0x0401, 0x0000, _device(0, D) + struct.pack("<H", 1))
+        random_read = _frame(0x0403, 0x0000, bytes([1, 0]) + _device(0, D))
+        block_read = _frame(0x0406, 0x0000, bytes([1, 0]) + _device(0, D) + struct.pack("<H", 1))
+        bit_read = _frame(0x0401, 0x0001, _device(0, M) + struct.pack("<H", 1))
+        sock.sendall((read + random_read + block_read + bit_read) * 25 + _frame(0x1401, 0x0000))
+        _recv(sock, 101)
+    deadline = time.time() + 3
+    while "Connection closed" not in caplog.text and time.time() < deadline:
+        time.sleep(0.01)
+    messages = [r.getMessage() for r in caplog.records if r.name == "SLMP-Simulator"]
+    assert [m.split(" ")[0] for m in messages] == ["Connection", "Unsupported", "Connection"]
