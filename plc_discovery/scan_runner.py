@@ -445,14 +445,15 @@ class CycleRunner:
                     on_delivered()
 
         task.add_done_callback(finished)
-        try:
-            await asyncio.wait_for(asyncio.shield(task), NOTIFY_WAIT_SECONDS)
-        except asyncio.TimeoutError:
+        # asyncio.wait, not wait_for: before Python 3.12 wait_for drops a
+        # cancellation that arrives just as the notification finishes, and
+        # the read cycle would then ignore the request to stop
+        done, _ = await asyncio.wait({task}, timeout=NOTIFY_WAIT_SECONDS)
+        if not done:
             logger.info(f"Notification '{event_type.value}' is taking long; reading continues meanwhile")
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:  # _notify helpers do not raise; a custom one might
-            logger.debug(f"Notification '{event_type.value}' failed: {e}")
+        elif not task.cancelled() and task.exception() is not None:
+            # _notify helpers do not raise; a custom one might
+            logger.debug(f"Notification '{event_type.value}' failed: {task.exception()}")
 
     async def drain(self, timeout: float = 15.0) -> None:
         """Wait (bounded) for notifications still being sent, e.g. before the run ends"""

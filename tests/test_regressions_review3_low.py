@@ -5,6 +5,7 @@ Regressions from the third code review (low findings):
 - audit console output never fails the operation being recorded
 - the GUI worker stays busy until the GUI has handled a job's result
 - the large-scan estimate includes the packet interval between batches
+- a request to stop is not lost while a notification is being sent
 """
 
 import asyncio
@@ -19,6 +20,7 @@ from plc_discovery.audit_log import AuditLogger
 from plc_discovery.config import NetworkConfig
 from plc_discovery.discovery import LARGE_SCAN_WARNING_HOSTS, PLCDiscovery
 from plc_discovery.protocols.ethernet_ip import _tag_hex, _tag_points, _value_points
+from plc_discovery.scan_runner import CycleRunner
 
 # ----------------------------------------------------------------------
 # Hex of tag values
@@ -172,3 +174,44 @@ def test_large_scan_estimate_includes_the_packet_interval(caplog):
     batches = len(hosts) / 10
     expected_minutes = batches * (2 * 1.0 + 1.0) / 60  # two timeouts and one interval per batch
     assert f"~{expected_minutes:.0f} minutes" in caplog.text
+
+
+# ----------------------------------------------------------------------
+# Stopping while a notification is being sent
+# ----------------------------------------------------------------------
+
+
+def test_stop_request_is_not_lost_while_a_notification_finishes():
+    """
+    asyncio.wait_for of Python 3.10 / 3.11 drops a cancellation that arrives
+    when the awaited notification has just finished: the periodic scan went
+    on reading after it was told to stop (and CI hung on that test).
+    """
+
+    async def notify(send):
+        return True
+
+    async def stopped_after(ticks):
+        runner = CycleRunner(None, notify=notify)
+
+        async def cycle():
+            await runner.track_outage("PLC1", False, "10.0.0.1")
+            await asyncio.sleep(3600)  # the rest of the read cycle
+
+        task = asyncio.ensure_future(cycle())
+        for _ in range(ticks):
+            await asyncio.sleep(0)
+        task.cancel()
+        try:
+            await asyncio.wait_for(task, timeout=5)
+        except asyncio.CancelledError:
+            return True
+        except asyncio.TimeoutError:
+            return False
+        return False
+
+    async def run():
+        # Whatever the moment of the request: before, while and after the send
+        return [await stopped_after(ticks) for ticks in range(8)]
+
+    assert asyncio.run(run()) == [True] * 8
