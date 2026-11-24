@@ -97,7 +97,14 @@ def test_dead_link_is_not_searched_or_learned():
     points = asyncio.run(handler.read_device_range(DeviceRange(DeviceType.HR, 0, 299)))
     assert len(points) == 300 and all(p.status != StatusCode.OK for p in points)
     assert handler.get_denied_addresses() == set()
-    assert handler.requests <= 8  # retries of the first chunk and its two halves, not 2N timeouts
+    # Nothing was ever read, so the link cannot be told from the range: the
+    # first chunk is searched for an address that answers with half the
+    # budget (4 retries + 8), then nothing more - not 2N timeouts
+    assert handler.requests <= 4 + BaseProtocolHandler.UNANSWERED_SEARCH_BUDGET // 2 + 1
+    # Later scans: one request for the chunk known to be unanswered
+    before = handler.requests
+    asyncio.run(handler.read_device_range(DeviceRange(DeviceType.HR, 0, 299)))
+    assert handler.requests - before <= 1
 
 
 def test_link_lost_during_a_scan_stops_the_search():

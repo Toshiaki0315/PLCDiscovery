@@ -111,12 +111,16 @@ def test_settings_file_is_private_and_keeps_its_permissions(tmp_path):
 def restore_root_logger():
     root = logging.getLogger()
     level, handlers = root.level, list(root.handlers)
+    # _apply_config_logging also quietens the protocol libraries' loggers
+    libraries = {name: logging.getLogger(name).level for name in ("pycomm3", "pymodbus")}
     yield root
     for handler in list(root.handlers):
         if handler not in handlers:
             root.removeHandler(handler)
             handler.close()
     root.setLevel(level)
+    for name, library_level in libraries.items():
+        logging.getLogger(name).setLevel(library_level)
 
 
 def _loader(logging_section):
@@ -132,8 +136,11 @@ def test_config_log_level_and_file_are_applied(tmp_path, restore_root_logger):
     plc_scanner._apply_config_logging(MagicMock(verbose=False, quiet=False), loader)
     assert restore_root_logger.level == logging.WARNING
     logging.getLogger("plc_discovery.test").warning("to the file")
+    # Only the handler under test: other tests may leave handlers on the
+    # root logger whose streams are closed by now
     for handler in restore_root_logger.handlers:
-        handler.flush()
+        if isinstance(handler, logging.FileHandler):
+            handler.flush()
     assert "to the file" in log_file.read_text(encoding="utf-8")
 
 

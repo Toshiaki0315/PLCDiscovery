@@ -15,7 +15,7 @@ from .audit_log import get_audit_logger
 from .collector import PLCDataCollector, unreached_points
 from .config import DataPoint, DeviceRange, NetworkConfig, PLCInfo, ScanMode, StatusCode
 from .discovery import target_labels
-from .scan_runner import collect_items
+from .scan_runner import collect_items, no_answer_error
 from .utils import success_rate_text
 
 logger = logging.getLogger(__name__)
@@ -178,7 +178,13 @@ class ParallelPLCScanner:
 
                 denied_addresses = collector.get_denied_addresses()
                 denied_statuses = collector.get_denied_statuses()
-                success = True
+                # Connected but nothing answered: a failure, with the data
+                # (every address NG_TIMEOUT / NG_COMM_ERROR) kept
+                error_message = no_answer_error(data_points)
+                success = error_message is None
+                if error_message:
+                    logger.error(f"Error scanning {plc.ip_address}: {error_message}")
+                    self._audit.log_error(f"Scan failed: {error_message}", {"plc_ip": plc.ip_address})
 
         except Exception as e:
             error_message = str(e)

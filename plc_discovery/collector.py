@@ -165,6 +165,15 @@ class PLCDataCollector:
             self._handler.mark_needs_reconnect()
         return comm_error_points(device_range)
 
+    def _keep_partial_points(self) -> None:
+        """
+        Interrupted (Ctrl+C) in the middle of a range: keep the points of
+        the chunks already read, so the caller can still write them.
+        """
+        if self._handler is not None:
+            self._collected_data.extend(self._handler.partial_points)
+            self._handler.partial_points = []
+
     async def collect_full_scan(self) -> List[DataPoint]:
         """
         Perform full scan of all default device ranges.
@@ -229,6 +238,9 @@ class PLCDataCollector:
 
             try:
                 data_points = await self._handler.read_device_range(device_range)
+            except asyncio.CancelledError:
+                self._keep_partial_points()
+                raise
             except Exception as e:
                 # Continue with the next range - don't stop on errors
                 data_points = self._read_error_points(device_range, e)
@@ -267,6 +279,9 @@ class PLCDataCollector:
 
         try:
             data_points = await self._handler.read_device_range(device_range)
+        except asyncio.CancelledError:
+            self._keep_partial_points()
+            raise
         except Exception as e:
             data_points = self._read_error_points(device_range, e)
         self._collected_data.extend(data_points)

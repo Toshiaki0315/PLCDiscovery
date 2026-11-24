@@ -53,7 +53,7 @@ def test_config_validation_of_filters_limits_and_output():
     loader.config["discovery"]["protocols"] = []
     loader._file_config = {"discovery": {"protocols": []}}
     loader.config["network"]["max_concurrent"] = 100000
-    loader.config["output"]["encoding"] = "euc-jp"
+    loader.config["output"]["encoding"] = "no-such-encoding"
     loader.config["output"]["directory"] = 5
     errors = "\n".join(loader.validate())
     for fragment in ("discovery.protocols", "network.max_concurrent", "output.encoding", "output.directory"):

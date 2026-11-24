@@ -192,6 +192,35 @@ def status_report_message(
     return "\n".join(lines), problems
 
 
+# Statuses of a request the PLC did not answer (as opposed to an answer
+# saying that the address is invalid or unsupported)
+NO_ANSWER_STATUSES = (StatusCode.NG_TIMEOUT, StatusCode.NG_COMM_ERROR)
+
+
+def plc_answered(points: Sequence[DataPoint]) -> bool:
+    """
+    True when the PLC answered at least one request of a read (with data or
+    with an address error). False when every point is a timeout or a
+    communication error: the PLC is hung, switched off or disconnected,
+    even if the transport still looks connected (UDP has no connection; a
+    TCP connection survives a pulled cable for a long time).
+    Nothing read (no points) says nothing: True.
+    """
+    return not points or any(point.status not in NO_ANSWER_STATUSES for point in points)
+
+
+def no_answer_error(points: Sequence[DataPoint]) -> Optional[str]:
+    """Why a scan whose requests all went unanswered is a failure (None otherwise)"""
+    if plc_answered(points):
+        return None
+    counts = ", ".join(
+        f"{sum(1 for p in points if p.status == status)} {status.value}"
+        for status in NO_ANSWER_STATUSES
+        if any(p.status == status for p in points)
+    )
+    return f"the PLC answered none of the {len(points)} addresses read ({counts})"
+
+
 def next_cycle_wait(interval: float, cycle_started: float) -> float:
     """Seconds until the next cycle: a fixed period, minus the time spent reading"""
     return max(0.0, interval - (asyncio.get_running_loop().time() - cycle_started))
@@ -296,10 +325,15 @@ class CycleRunner:
                 )
 
         def may_notify(threshold: Threshold, kind: str) -> bool:
-            event_type = (
-                NotificationType.THRESHOLD_CLEARED if kind == "cleared" else NotificationType.THRESHOLD_EXCEEDED
-            )
-            return not self._suppressed(event_type, NotificationManager.threshold_key(target, threshold.label))
+            exceeded, cleared = NotificationType.THRESHOLD_EXCEEDED, NotificationType.THRESHOLD_CLEARED
+            event_type, opposite = (cleared, exceeded) if kind == "cleared" else (exceeded, cleared)
+            key = NotificationManager.threshold_key(target, threshold.label)
+            # One at a time per limit: while "exceeded" is still being sent
+            # (slow webhook), "cleared" waits - it would otherwise arrive
+            # first and leave the receiver believing the limit is exceeded
+            if (opposite, key) in self._in_flight:
+                return False
+            return not self._suppressed(event_type, key)
 
         now = asyncio.get_running_loop().time()
         check = self.thresholds.evaluate(target, points, may_notify, plc_ip=plc_ip, now=now)

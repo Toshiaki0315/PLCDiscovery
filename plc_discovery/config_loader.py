@@ -5,6 +5,7 @@ Supports loading configuration from YAML or JSON files.
 Provides validation and default values for all settings.
 """
 
+import codecs
 import json
 import logging
 import math
@@ -25,6 +26,7 @@ except ImportError:
 from .config import DeviceRange, DeviceType, NetworkConfig, PLCInfo, Protocol, ScanMode, range_size_error
 from .data_types import ByteOrder, DataType, DataTypeManager
 from .names import parse_byte_order, parse_device_type, parse_protocol
+from .output import normalize_csv_encoding
 from .thresholds import Threshold, threshold_from_dict
 from .utils import ip_range_error, target_address_error
 
@@ -156,6 +158,21 @@ KNOWN_TOP_LEVEL_KEYS = (
     "thresholds",
     *KNOWN_SECTION_KEYS,
 )
+
+
+def is_known_encoding(name: Any) -> bool:
+    """True if Python has a codec of this name (the CSV writer's aliases included)"""
+    try:
+        codecs.lookup(str(normalize_csv_encoding(str(name).strip())))
+    except LookupError:
+        return False
+    return True
+
+
+def log_level_number(name: Any) -> Optional[int]:
+    """logging level of a name as the logging module knows it (WARN, Critical, ...), else None"""
+    level = logging.getLevelName(str(name or "").strip().upper())
+    return level if isinstance(level, int) and level > logging.NOTSET else None
 
 
 def integer_error(value: Any, minimum: int) -> Optional[str]:
@@ -542,17 +559,21 @@ class ConfigLoader:
 
         # Validate output settings (the command line limits these by itself)
         out = self.config.get("output") or {}
-        if out.get("encoding") is not None and str(out["encoding"]).lower() not in OUTPUT_ENCODINGS:
+        if out.get("encoding") is not None and not is_known_encoding(out["encoding"]):
+            # Anything the CSV writer can use is accepted (cp932, sjis, utf8,
+            # euc-jp, ...): only a name no codec exists for is an error
             errors.append(
-                f"output.encoding: unknown encoding {out['encoding']!r} (allowed: {', '.join(OUTPUT_ENCODINGS)})"
+                f"output.encoding: unknown encoding {out['encoding']!r} " f"(e.g. {', '.join(OUTPUT_ENCODINGS)}, cp932)"
             )
         if out.get("directory") is not None and not isinstance(out["directory"], str):
             errors.append(f"output.directory must be a path, got {out['directory']!r}")
 
         # Validate the log level (a typo would silently leave INFO in effect)
         log_level = (self.config.get("logging") or {}).get("level")
-        if log_level is not None and str(log_level).upper() not in ("DEBUG", "INFO", "WARNING", "ERROR"):
-            errors.append(f"logging.level: unknown level {log_level!r} (allowed: DEBUG, INFO, WARNING, ERROR)")
+        if log_level is not None and log_level_number(log_level) is None:
+            errors.append(
+                f"logging.level: unknown level {log_level!r} (allowed: DEBUG, INFO, WARNING, ERROR, CRITICAL)"
+            )
 
         # Validate targets
         for i, target in enumerate(self.config.get("targets") or []):
