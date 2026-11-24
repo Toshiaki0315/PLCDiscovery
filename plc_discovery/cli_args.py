@@ -258,8 +258,9 @@ Examples:
     parser.add_argument(
         "--db-track-history",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Track value changes in database (disable with --no-db-track-history)",
+        default=None,
+        help="Track value changes in database (default: the config file's setting, else on; "
+        "disable with --no-db-track-history)",
     )
 
     # Report generation

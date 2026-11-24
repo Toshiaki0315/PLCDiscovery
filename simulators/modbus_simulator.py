@@ -20,9 +20,15 @@ logger = logging.getLogger("Modbus-Simulator")
 
 # Shared CLI helpers (support both direct execution and package import)
 try:
-    from .common import parse_denied_ranges, peer_text, run_simulator, simulator_parser
+    from .common import parse_denied_ranges, peer_text, run_simulator, serve_until_stopped, simulator_parser
 except ImportError:
-    from common import parse_denied_ranges, peer_text, run_simulator, simulator_parser  # type: ignore[no-redef]
+    from common import (  # type: ignore[no-redef]
+        parse_denied_ranges,
+        peer_text,
+        run_simulator,
+        serve_until_stopped,
+        simulator_parser,
+    )
 
 # Modbus Function Codes
 FC_READ_COILS = 0x01
@@ -398,8 +404,7 @@ async def run_server(host: str, port: int, denied_ranges: List[Tuple[int, int]])
     logger.info(f"Modbus/TCP Simulator running on {addr[0]}:{addr[1]}")
     logger.info(f"Denied address ranges: {denied_ranges}")
 
-    async with server:
-        await server.serve_forever()
+    await serve_until_stopped(server, logger)
 
 
 def main():

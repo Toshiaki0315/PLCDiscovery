@@ -109,6 +109,41 @@ def target_labels(plcs: List[PLCInfo]) -> List[str]:
     return labels
 
 
+# Handler options that select another device behind the same IP, protocol
+# and port (a Modbus unit behind a gateway, a FINS node, an S7 rack/slot)
+_INSTANCE_OPTIONS = ("unit_id", "dest_node", "rack", "slot", "db_number")
+
+
+def target_instances(plcs: List[PLCInfo]) -> List[Optional[str]]:
+    """
+    What tells targets with the same IP, protocol and port apart, for each
+    target (None for a target that is alone on its IP, protocol and port).
+
+    Their protocol and port are the same, so file names and database rows
+    built from those alone would mix the targets' data. The name is made of
+    the options that select the device (e.g. "unit_id2"); targets without
+    such options, or with the same ones, are numbered in the order given.
+    """
+    groups: Dict[Tuple[str, Optional[Protocol], Optional[int]], List[int]] = {}
+    for index, plc in enumerate(plcs):
+        groups.setdefault((plc.ip_address, plc.protocol, plc.port), []).append(index)
+    instances: List[Optional[str]] = [None] * len(plcs)
+    for indexes in groups.values():
+        if len(indexes) < 2:
+            continue
+        seen: Dict[str, int] = {}
+        for index in indexes:
+            options = plcs[index].options or {}
+            name = "_".join(f"{key}{options[key]}" for key in _INSTANCE_OPTIONS if key in options)
+            seen[name] = seen.get(name, 0) + 1
+            if not name:
+                name = str(seen[name])
+            elif seen[name] > 1:
+                name = f"{name}_{seen[name]}"
+            instances[index] = name
+    return instances
+
+
 ARP_SKIPPED_MESSAGE = (
     "ARP scan skipped: administrator (root) rights are required for raw packets. "
     "PLC discovery continues; MAC addresses are read from the OS ARP cache instead."
@@ -383,11 +418,29 @@ class PLCDiscovery:
             conf.verb = 0  # Suppress scapy output
             arp_request = Ether(dst="ff:ff:ff:ff:ff:ff") / ARP(pdst=str(network))
 
+            def sweep():
+                options = {
+                    "timeout": self.config.discovery_timeout_ms / 1000,
+                    "verbose": False,
+                    # One request per address of the network: paced like
+                    # every other request, not sent as one broadcast burst
+                    "inter": self.config.packet_interval_ms / 1000,
+                }
+                try:
+                    # The interface of the network being scanned. Without
+                    # it scapy sends on the default-route interface: the
+                    # requests for a control LAN went out on the office LAN.
+                    # (looked up for a neighbour: this PC's own address
+                    # is routed through the loopback interface)
+                    neighbour = next(str(host) for host in network.hosts() if str(host) != ip)
+                    options["iface"] = conf.route.route(neighbour)[0]
+                except Exception as e:
+                    logger.debug(f"ARP scan: no interface found for {ip} ({e}); using scapy's default")
+                return srp(arp_request, **options)
+
             # Run ARP scan with timeout
             loop = asyncio.get_running_loop()
-            answered, _ = await loop.run_in_executor(
-                None, lambda: srp(arp_request, timeout=self.config.discovery_timeout_ms / 1000, verbose=False)
-            )
+            answered, _ = await loop.run_in_executor(None, sweep)
 
             for sent, received in answered:
                 mac_table[received.psrc] = received.hwsrc.upper()

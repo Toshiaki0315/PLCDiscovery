@@ -85,7 +85,13 @@ from plc_discovery.conversion import (  # noqa: F401
 )
 from plc_discovery.data_types import ByteOrder, DataType, DataTypeManager
 from plc_discovery.database import DatabaseConfig, DatabaseExporter
-from plc_discovery.discovery import PLCDiscovery, discover_plcs, merge_discovery_results, target_labels
+from plc_discovery.discovery import (
+    PLCDiscovery,
+    discover_plcs,
+    merge_discovery_results,
+    target_instances,
+    target_labels,
+)
 from plc_discovery.notifications import NotificationManager
 from plc_discovery.output import CSVExporter
 from plc_discovery.progress import RichProgressDisplay
@@ -225,7 +231,7 @@ async def run_parallel_scan(
     display.print_info(f"Starting parallel scan of {len(plcs)} PLCs (max {limit} concurrent)...")
     semaphore = asyncio.Semaphore(limit)
 
-    async def scan(label: str, plc_info: PLCInfo) -> ScanOutcome:
+    async def scan(label: str, plc_info: PLCInfo, instance: Optional[str]) -> ScanOutcome:
         async with semaphore:
             try:
                 return await run_single_scan(
@@ -240,6 +246,7 @@ async def run_parallel_scan(
                     type_manager,
                     db_exporter,
                     label=label,
+                    instance=instance,
                 )
             except Exception as e:
                 # One target's unexpected error never stops the others; its
@@ -247,12 +254,26 @@ async def run_parallel_scan(
                 outcome = ScanOutcome(plc_info.ip_address, label=label, error=str(e))
                 display.print_error(f"{label}: {e}")
                 outcome.data_points = _unreached_points(plc_info, mode, device_ranges)
-                ResultWriter(plc_info, exporter, display, db_exporter, label=label).export_points(outcome.data_points)
+                writer = ResultWriter(plc_info, exporter, display, db_exporter, label=label, instance=instance)
+                writer.export_points(outcome.data_points)
                 return outcome
 
     labels = target_labels(plcs)
-    outcomes = await asyncio.gather(*(scan(label, plc) for label, plc in zip(labels, plcs)))
-    results = dict(zip(labels, outcomes))
+    tasks = [
+        asyncio.ensure_future(scan(label, plc, instance))
+        for label, plc, instance in zip(labels, plcs, target_instances(plcs))
+    ]
+    try:
+        # return_exceptions: on Ctrl+C gather waits until every target has
+        # stopped. Without it, a target still waiting for its turn ended
+        # the wait at once, and the targets being scanned were cancelled a
+        # second time before they had written what they had read.
+        await asyncio.gather(*tasks, return_exceptions=True)
+    except asyncio.CancelledError:
+        _uncancel_current_task()
+    # A target that was still waiting for its turn when the scan was
+    # interrupted was not scanned and is not reported (as in a sequential scan)
+    results = {label: task.result() for label, task in zip(labels, tasks) if not task.cancelled()}
     display.print_scan_results(
         {
             label: {
@@ -353,11 +374,14 @@ async def run_single_scan(
     type_manager: Optional[DataTypeManager] = None,
     db_exporter: Optional[DatabaseExporter] = None,
     label: Optional[str] = None,
+    instance: Optional[str] = None,
 ) -> ScanOutcome:
     """
     Run a single (non-periodic) scan on one PLC.
 
-    ``label`` names the target in output when several targets share its IP.
+    ``label`` names the target in output when several targets share its IP;
+    ``instance`` tells it from targets with the same IP, protocol and port
+    (see target_instances).
 
     Connection failures are reported in the returned outcome instead of
     raising, so remaining targets are still scanned.
@@ -365,7 +389,7 @@ async def run_single_scan(
     audit = get_audit_logger()
     ip = plc_info.ip_address
     outcome = ScanOutcome(ip, label=label)
-    writer = ResultWriter(plc_info, exporter, display, db_exporter, label=label)
+    writer = ResultWriter(plc_info, exporter, display, db_exporter, label=label, instance=instance)
     labels = _range_labels(device_ranges)
     loop = asyncio.get_running_loop()
 
@@ -485,7 +509,10 @@ async def run_periodic_scan(
     targets = list(zip(target_labels(plc_infos), plc_infos))
     outcomes = {key: ScanOutcome(p.ip_address, label=key) for key, p in targets}
     daily = getattr(exporter, "periodic_csv", "per_cycle") == "daily"
-    writers = {key: ResultWriter(p, exporter, display, db_exporter, label=key, daily=daily) for key, p in targets}
+    writers = {
+        key: ResultWriter(p, exporter, display, db_exporter, label=key, daily=daily, instance=instance)
+        for (key, p), instance in zip(targets, target_instances(plc_infos))
+    }
     ips = {key: p.ip_address for key, p in targets}
 
     async with contextlib.AsyncExitStack() as stack:
@@ -787,12 +814,18 @@ def _create_db_exporter(
     if args.no_database:
         return None
     db_config = None
+    database_settings = config_loader.get_output_settings().get("database") if config_loader else None
+    if not isinstance(database_settings, dict):
+        database_settings = {}  # no config file, or "database:" left empty
     if args.database:
-        db_config = DatabaseConfig(enabled=True, path=args.database, track_history=args.db_track_history)
-    elif config_loader:
-        database_settings = config_loader.get_output_settings().get("database", {})
-        if database_settings.get("enabled"):
-            db_config = DatabaseConfig.from_dict(database_settings)
+        # --database only says where: retention and size limits still come
+        # from the config file. Without them the default 30-day retention
+        # deleted the history a config with max_history_days: 0 was keeping.
+        db_config = DatabaseConfig.from_dict({**database_settings, "enabled": True, "path": args.database})
+    elif database_settings.get("enabled"):
+        db_config = DatabaseConfig.from_dict(database_settings)
+    if db_config and args.db_track_history is not None:
+        db_config.track_history = args.db_track_history
     if not (db_config and db_config.enabled):
         return None
     try:
@@ -991,9 +1024,12 @@ async def _run_scans(
         )
         for label, outcome in parallel.items():
             results.add(label, outcome.success, outcome.error, outcome.data_points, outcome.denied_addresses)
+            results.interrupted = results.interrupted or outcome.interrupted
+        # Interrupted while every remaining target was still waiting for its turn
+        results.interrupted = results.interrupted or len(parallel) < len(plc_infos)
     else:
         # Single or sequential scan
-        for label, plc_info in zip(target_labels(plc_infos), plc_infos):
+        for label, plc_info, instance in zip(target_labels(plc_infos), plc_infos, target_instances(plc_infos)):
             outcome = await run_single_scan(
                 plc_info,
                 config,
@@ -1006,6 +1042,7 @@ async def _run_scans(
                 type_manager,
                 db_exporter,
                 label=label,
+                instance=instance,
             )
             results.add(label, outcome.success, outcome.error, outcome.data_points, outcome.denied_addresses)
             if outcome.interrupted:

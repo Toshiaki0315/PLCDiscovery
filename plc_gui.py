@@ -1109,6 +1109,13 @@ class PLCScannerApp(SettingsTabsMixin):
             # slow to answer must not keep the session open - then report
             # what was collected
             await collector.disconnect()
+            if not interval:
+                # A single scan (a full scan can take hours) stopped half-way:
+                # what was read so far is saved and shown, as the CLI does on
+                # Ctrl+C. A periodic run keeps its completed cycles instead.
+                points, path, denied_path = runner.save_partial(collector, writer)
+                if points:
+                    self._post("data", points, collector.get_statistics(), path, denied_path, iteration)
             await runner.drain()  # notifications a slow webhook is still receiving
             await PLCScannerApp._notify_collect_done(
                 outputs, ip, points, iteration, loop.time() - job_started, interrupted=True
@@ -1261,7 +1268,7 @@ class PLCScannerApp(SettingsTabsMixin):
         current = self.var_status.get()
         self._set_busy(False)
         if isinstance(exc, asyncio.CancelledError):
-            self.var_status.set("停止しました（完了した収集分のみCSVに保存されています）")
+            self.var_status.set("停止しました（読み取り済みの分はCSVに保存されています）")
             logging.info("ユーザー操作により停止しました")
         elif exc is not None:
             self.var_status.set("エラーで終了しました")

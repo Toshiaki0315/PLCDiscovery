@@ -42,6 +42,26 @@ def simulator_parser(description: str, default_port: int, default_denied: Option
     return parser
 
 
+async def serve_until_stopped(server: Any, logger: logging.Logger) -> None:
+    """
+    Keep a server (already listening: create_server starts it) running until
+    the task is cancelled (Ctrl+C), then close it.
+
+    Not ``async with server: await server.serve_forever()``: since Python
+    3.12 both wait for every connected client to leave, so Ctrl+C did not
+    stop a simulator while a scanner was still connected. The wait for the
+    clients is bounded here.
+    """
+    try:
+        await asyncio.Event().wait()
+    finally:
+        server.close()
+        try:
+            await asyncio.wait_for(server.wait_closed(), timeout=2)
+        except asyncio.TimeoutError:
+            logger.info("Simulator stopped with clients still connected")
+
+
 def run_simulator(server: Coroutine, logger: logging.Logger) -> None:
     """Run the server until Ctrl+C"""
     try:

@@ -315,9 +315,9 @@ python plc_scanner.py --mode full --target 192.168.1.10 --no-database
 | `--output-dir`, `-o` | 出力ディレクトリ。指定すると設定ファイルの値より優先 | ./plc_scan_results |
 | `--encoding` | CSV の文字コード（指定すると設定ファイルの値より優先）。`utf-8-sig`（BOM 付き UTF-8、Excel でそのまま開ける）／`utf-8`（BOM なし）／`shift-jis`（CP932。表せない文字は `?` に置き換え） | utf-8-sig |
 | `--audit-log` | 監査ログファイルパス | - |
-| `--database` | SQLiteデータベースパス | - |
+| `--database` | SQLiteデータベースパス。保持日数やサイズ上限は設定ファイルの `output.database` の値がそのまま使われます | - |
 | `--no-database` | データベース出力を無効化 | - |
-| `--db-track-history` | データベースの変更履歴追跡を有効化 | - |
+| `--db-track-history` / `--no-db-track-history` | データベースの変更履歴追跡の有効／無効 | 設定ファイルの値（なければ有効） |
 | `--report` | レポート形式 (html/pdf/json) | - |
 | `--report-output` | レポート出力パス（指定したパスをそのまま使用） | 出力ディレクトリ内に自動生成 |
 | `--report-title` | レポートタイトル | "PLC Discovery レポート" |
@@ -381,7 +381,7 @@ logging:
 | ファイル名 | 内容 |
 |------------|------|
 | `discovery_result_YYYYMMDD_HHMMSS.csv` | 検出されたPLC一覧（メーカー・機種・型式・ファームウェア・読み方〔`read_method`：アドレス／タグ一覧あり／変数名指定／データファイル〕など。識別情報が取れない機器は、プロトコルから分かるメーカー〔SLMP・S7・FINS〕と「〜対応PLC」を記入） |
-| `plc_data_<IP>_YYYYMMDD_HHMMSS.csv` | PLCデバイスデータ。同じIPを複数のプロトコルで読んだ場合は `plc_data_<IP>_<プロトコル>_<ポート>_…csv` |
+| `plc_data_<IP>_YYYYMMDD_HHMMSS.csv` | PLCデバイスデータ。同じIPを複数のプロトコルで読んだ場合は `plc_data_<IP>_<プロトコル>_<ポート>_…csv`。IP・プロトコル・ポートまで同じターゲット（ゲートウェイ配下の Modbus ユニットなど）は `…_<ポート>_unit_id2_…csv` のように区別され、データベースの `protocol` 列も `MODBUS_TCP/unit_id2` になります |
 | `access_denied_log.csv` | アクセス不可アドレス一覧（同じIPを複数のプロトコルで読んだ場合、`plc_ip` 列は `IP (プロトコル:ポート)`） |
 | `scan_summary_YYYYMMDD_HHMMSS.csv` | スキャン統計サマリー |
 | `audit.log` | 監査ログ（JSON Lines形式） |
@@ -560,10 +560,10 @@ SQLiteデータベースへの保存（オプション）:
 # データベース出力を有効にしてスキャン
 python plc_scanner.py --mode full --target 192.168.1.10 --database ./plc_data.db
 
-# 変更履歴追跡を有効に
+# 変更履歴追跡を無効に（既定は有効）
 python plc_scanner.py --mode range --target 192.168.1.10 \
   --device D --range 0-100 \
-  --database ./plc_data.db --db-track-history
+  --database ./plc_data.db --no-db-track-history
 
 # データベース出力を無効に（設定ファイルの設定を上書き）
 python plc_scanner.py --config plc_config.yaml --no-database

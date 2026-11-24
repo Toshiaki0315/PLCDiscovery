@@ -130,6 +130,11 @@ read_device_range() call and `UNANSWERED_SESSION_BUDGET` (96) per session;
 what is left is reported with its status, not learned, and read with a
 single request per scan from then on.
 
+While nothing has been read at all, an unanswered range cannot be told from
+a dead link. The first chunk of every later range is then asked once (also
+counted against the session budget), so a device type the PLC does answer
+is still read and gives the known-good address the search needs.
+
 A scan in which the PLC answered nothing (every request NG_TIMEOUT /
 NG_COMM_ERROR) is a failure and the target counts as unreachable, even if
 the transport still looks connected (`scan_runner.plc_answered`). Addresses
@@ -149,7 +154,9 @@ not count either way.
 The tool generates timestamped CSV files:
 - `discovery_result_YYYYMMDD_HHMMSS.csv` - Detected PLC list with IP, MAC, manufacturer, model, protocol
 - `plc_data_<IP>_YYYYMMDD_HHMMSS.csv` - Device data (address, value in hex, status, timestamp)
-  (`plc_data_<IP>_<PROTOCOL>_<port>_...csv` when several targets share the IP)
+  (`plc_data_<IP>_<PROTOCOL>_<port>_...csv` when several targets share the IP;
+  `..._<port>_unit_id2_...csv` when they also share protocol and port, see
+  `discovery.target_instances`)
 - `access_denied_log.csv` - Inaccessible addresses for reference in next session
 
 ### Critical Safety Requirements

@@ -75,10 +75,17 @@ class ResultWriter:
         db_exporter: Optional[DatabaseExporter] = None,
         label: Optional[str] = None,
         daily: bool = False,
+        instance: Optional[str] = None,
     ):
         self.ip = plc_info.ip_address
         self.protocol = plc_info.protocol.name if plc_info.protocol else None
         self.port = plc_info.port
+        # Set when another target has the same IP, protocol and port (two
+        # Modbus units behind one gateway; see target_instances): part of
+        # the file name and of the protocol stored in the database, so the
+        # targets' rows are never mixed or compared with each other
+        self.instance = instance
+        self.db_protocol = f"{self.protocol}/{instance}" if instance and self.protocol else self.protocol
         # "IP (PROTOCOL:port)" when another target shares the IP (target_labels)
         self.label = label or self.ip
         self.shared_ip = self.label != self.ip
@@ -122,6 +129,8 @@ class ResultWriter:
         try:
             # Protocol and port in the file name only when the IP is shared
             tag = f"{self.protocol}_{self.port}" if self.shared_ip else None
+            if tag and self.instance:
+                tag = f"{tag}_{self.instance}"
             hex_addresses = self.exporter.hex_addresses and self.protocol == "SLMP"
             if self.daily:
                 path = self.exporter.append_plc_data(points, self.ip, target_tag=tag, hex_addresses=hex_addresses)
@@ -131,7 +140,7 @@ class ResultWriter:
             self._failed("data CSV", e)
         if self.db_exporter and self.db_exporter.is_enabled:
             try:
-                db_count = self.db_exporter.export_plc_data(points, self.ip, protocol=self.protocol, port=self.port)
+                db_count = self.db_exporter.export_plc_data(points, self.ip, protocol=self.db_protocol, port=self.port)
                 self._info(f"Saved {db_count} records to database")
             except Exception as e:
                 self._failed("data to database", e)
@@ -153,7 +162,7 @@ class ResultWriter:
         if self.db_exporter and self.db_exporter.is_enabled:
             try:
                 self.db_exporter.export_denied_addresses(
-                    new, self.ip, statuses=statuses, protocol=self.protocol, port=self.port
+                    new, self.ip, statuses=statuses, protocol=self.db_protocol, port=self.port
                 )
             except Exception as e:
                 self._failed("denied addresses to database", e)
@@ -309,6 +318,21 @@ class CycleRunner:
             collector.clear_data()
         points = await collect_items(collector, self.items)
         points = apply_data_type_conversion(points, self.data_type, self.byte_order, self.type_manager)
+        path = writer.export_points(points)
+        denied_path = writer.export_new_denied(collector.get_denied_addresses(), collector.get_denied_statuses())
+        return CycleResult(points, path, denied_path)
+
+    def save_partial(self, collector: PLCDataCollector, writer: ResultWriter) -> CycleResult:
+        """
+        Convert and write what a read that was interrupted (stopped by the
+        user) had collected so far, with the addresses it had learned as
+        inaccessible. Nothing is written when nothing was read.
+        """
+        points = apply_data_type_conversion(
+            list(collector.get_collected_data()), self.data_type, self.byte_order, self.type_manager
+        )
+        if not points:
+            return CycleResult(points, None, None)
         path = writer.export_points(points)
         denied_path = writer.export_new_denied(collector.get_denied_addresses(), collector.get_denied_statuses())
         return CycleResult(points, path, denied_path)

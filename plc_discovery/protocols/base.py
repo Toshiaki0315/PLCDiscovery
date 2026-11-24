@@ -203,6 +203,13 @@ class BaseProtocolHandler(ABC):
             self.UNANSWERED_SEARCH_BUDGET if self._last_ok is not None else self.UNANSWERED_SEARCH_BUDGET // 2,
             self._unanswered_session_budget,
         )
+        # Nothing was ever read and an earlier range went unanswered: the
+        # link cannot be told from that range (a device that drops requests
+        # for invalid addresses looks just like a dead one). This range may
+        # be one the PLC answers, so its first chunk is asked once, whatever
+        # the circuit breaker says. An unanswered one is counted against the
+        # session budget, which bounds what a PLC that is really off costs.
+        probe = self._last_ok is None and self._comm_failure_streak > 0 and self._unanswered_session_budget > 0
 
         # Split into chunks based on max read size
         while start <= end:
@@ -232,9 +239,24 @@ class BaseProtocolHandler(ABC):
             await self._rate_limiter.wait()
 
             # Try to read chunk
+            probing, probe = probe, False
+            if probing:
+                self._comm_failure_streak = 0
             link_was_up = self._comm_failure_streak == 0
             chunk_key = (device_type, start, chunk_size)
-            if chunk_key in self._unanswered_chunks:
+            if probing:
+                data, status = await self._tracked_read(device_type, start, chunk_size)
+                if self._comm_failure_streak:
+                    # Not answered either: still nothing to tell the link
+                    # from the range. The rest is reported without requests.
+                    self._spend_unanswered()
+                    self._comm_failure_streak = max(self._comm_failure_streak, self.COMM_FAILURE_ABORT_THRESHOLD)
+                    results.extend(self._failed_points(device_type, start, end, status, learn=False))
+                    break
+                # The PLC is there (data or an error answer): the failures
+                # of the other range must not block the reads of this one
+                self.reset_circuit_breaker()
+            elif chunk_key in self._unanswered_chunks:
                 # Went unanswered before: one request, no retries. A periodic
                 # scan must not wait several timeouts for it in every cycle.
                 data, status = await self._tracked_read(device_type, start, chunk_size)
@@ -615,22 +637,27 @@ class BaseProtocolHandler(ABC):
                 self._spend_unanswered()
             outcomes.append((data, half_status, answered))
 
-        results: List[DataPoint] = []
-        for (half_start, half_end), (data, half_status, answered) in zip(halves, outcomes):
+        # A half the PLC answered with an error is split first: searching
+        # the unanswered half may end with the link taken to be down, and
+        # the answered half would then be reported wholly invalid unsplit
+        parts: Dict[int, List[DataPoint]] = {}
+        for index in sorted(range(len(halves)), key=lambda i: not outcomes[i][2]):
+            (half_start, half_end), (data, half_status, answered) = halves[index], outcomes[index]
             if half_status == StatusCode.OK and data is not None:
-                results.extend(self._ok_points(device_type, half_start, data))
+                parts[index] = self._ok_points(device_type, half_start, data)
             elif answered:
-                results.extend(
-                    await self._binary_search_read(device_type, half_start, half_end, known_failure=half_status)
+                self._comm_failure_streak = 0  # it answered: the other half's silence is not a dead link
+                parts[index] = await self._binary_search_read(
+                    device_type, half_start, half_end, known_failure=half_status
                 )
             elif await self._link_alive() is False:
                 # The link is down: not learned, nothing more is sent
-                results.extend(self._failed_points(device_type, half_start, half_end, half_status, learn=False))
+                parts[index] = self._failed_points(device_type, half_start, half_end, half_status, learn=False)
             else:
                 # Alive, or not known yet (nothing read so far): keep
                 # looking, within the budget
-                results.extend(await self._search_unanswered(device_type, half_start, half_end, half_status))
-        return results
+                parts[index] = await self._search_unanswered(device_type, half_start, half_end, half_status)
+        return [point for index in sorted(parts) for point in parts[index]]
 
     async def _edges_illegal(self, device_type: DeviceType, start: int, end: int) -> bool:
         """True if the first and the last address both fail with NG_ILLEGAL_ADDR"""
