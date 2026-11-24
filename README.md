@@ -917,7 +917,13 @@ python scripts/setup_database.py --status ./plc_data.db # ステータス表示
 
 監査ログはJSON Lines形式で記録されます。PLCへ送った読み取り要求は、結果（`READ_SUCCESS` / `READ_ERROR`）と
 所要時間つきで1件ずつ記録されます（EtherNet/IP のタグ読み出しは `device: "TAG"`）。
-GUI も、設定ファイルの `logging.audit_log` があれば同じ形式で記録します。
+GUI も、設定ファイルの `logging.audit_log` があれば同じ形式で記録します（探索の開始と結果、接続、
+スキャンの開始と完了、読み取り要求）。監査ログのファイルを切り替えるときは、実行中の処理が終わってから
+設定を読み込み直してください。
+
+EtherNet/IP のタグ値の16進表記は、タグの型の幅に合わせます（SINT は2桁、INT は4桁、DINT は8桁、LINT は16桁）。
+Logix の構造体メンバーも、コントローラから取得した構造体定義の型に合わせます。型が分からない場合
+（オムロンの構造体を丸ごと読んだ場合など）は、値が収まる最小の幅になります。
 
 ```json
 {"timestamp": "2024-01-01T00:00:00", "event_type": "SESSION_START", "session_id": "xxx"}

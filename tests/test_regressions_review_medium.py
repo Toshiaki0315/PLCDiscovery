@@ -130,7 +130,8 @@ def test_link_lost_during_a_scan_stops_the_search():
         (0x1_0000_0001, "LINT", "0x0000000100000001"),
         (2**63, "ULINT", "0x8000000000000000"),
         (5, "DINT[10]", "0x00000005"),
-        (1, "BOOL", "0x0001"),
+        (1, "BOOL", "0x01"),
+        (-1, "SINT", "0xFF"),
         # Type unknown (structure member): the smallest width holding the value
         (0x1_0000_0001, None, "0x0000000100000001"),
         (-40000, None, "0xFFFF63C0"),

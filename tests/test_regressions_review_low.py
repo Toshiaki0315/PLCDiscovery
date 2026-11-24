@@ -230,7 +230,7 @@ def test_s7_simulator_failed_item_is_four_bytes_and_pdu_size_follows_the_request
     assert data[:4] == bytes([0x0A, 0, 0, 0])  # return code, null transport size, length 0
     assert data[4:] == bytes([S7_RET_OK, 0x04]) + struct.pack(">H", 16) + b"\x12\x34"
 
-    for requested, granted in ((240, 240), (480, 480), (4096, 960)):
+    for requested, granted in ((120, 120), (240, 240), (480, 480), (4096, 960)):
         protocol._handle_setup_comm(1, bytes([0xF0, 0, 0, 1, 0, 1]) + struct.pack(">H", requested))
         assert struct.unpack(">H", sent[-1][0][6:8])[0] == granted
 

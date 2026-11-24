@@ -45,6 +45,8 @@ jobs:
           --cov-report=html \
           --cov-report=term-missing \
           --cov-fail-under=60
+      # A test that never ends must fail the job, not hold it for 6 hours
+      timeout-minutes: 15
     
     - name: Upload coverage HTML report
       uses: actions/upload-artifact@v7
