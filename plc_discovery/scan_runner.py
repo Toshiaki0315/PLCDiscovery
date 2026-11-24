@@ -204,28 +204,45 @@ def status_report_message(
 NO_ANSWER_STATUSES = (StatusCode.NG_TIMEOUT, StatusCode.NG_COMM_ERROR)
 
 
+def _requested(points: Sequence[DataPoint]) -> List[DataPoint]:
+    """The points a request was sent for (not those reported from the session's learned addresses)"""
+    return [point for point in points if not point.cached]
+
+
 def plc_answered(points: Sequence[DataPoint]) -> bool:
     """
     True when the PLC answered at least one request of a read (with data or
-    with an address error). False when every point is a timeout or a
-    communication error: the PLC is hung, switched off or disconnected,
-    even if the transport still looks connected (UDP has no connection; a
-    TCP connection survives a pulled cable for a long time).
-    Nothing read (no points) says nothing: True.
+    with an address error). False when requests went unanswered (timeout,
+    communication error) and nothing shows an answer: the PLC is hung,
+    switched off or disconnected, even if the transport still looks
+    connected (UDP has no connection; a TCP connection survives a pulled
+    cable for a long time).
+
+    Not an answer of the PLC, so neither proof nor disproof:
+    - an address the session learned as inaccessible (no request is sent for
+      it; it is in every cycle's result, whether the PLC is on or off)
+    - NG_UNSUPPORTED, which is mostly decided without a request (a device
+      type the protocol does not have, tags on a PLC without tags)
+    Nothing requested (no points, or only such points) says nothing: True.
     """
-    return not points or any(point.status not in NO_ANSWER_STATUSES for point in points)
+    requested = _requested(points)
+    if not any(point.status in NO_ANSWER_STATUSES for point in requested):
+        return True
+    return any(point.status in (StatusCode.OK, StatusCode.NG_ILLEGAL_ADDR) for point in requested)
 
 
 def no_answer_error(points: Sequence[DataPoint]) -> Optional[str]:
     """Why a scan whose requests all went unanswered is a failure (None otherwise)"""
     if plc_answered(points):
         return None
+    requested = _requested(points)
     counts = ", ".join(
-        f"{sum(1 for p in points if p.status == status)} {status.value}"
+        f"{sum(1 for p in requested if p.status == status)} {status.value}"
         for status in NO_ANSWER_STATUSES
-        if any(p.status == status for p in points)
+        if any(p.status == status for p in requested)
     )
-    return f"the PLC answered none of the {len(points)} addresses read ({counts})"
+    unanswered = sum(1 for p in requested if p.status in NO_ANSWER_STATUSES)
+    return f"the PLC answered none of the {unanswered} addresses read ({counts})"
 
 
 def next_cycle_wait(interval: float, cycle_started: float) -> float:

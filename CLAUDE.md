@@ -130,9 +130,12 @@ read_device_range() call and `UNANSWERED_SESSION_BUDGET` (96) per session;
 what is left is reported with its status, not learned, and read with a
 single request per scan from then on.
 
-A scan in which the PLC answered nothing (every point NG_TIMEOUT /
+A scan in which the PLC answered nothing (every request NG_TIMEOUT /
 NG_COMM_ERROR) is a failure and the target counts as unreachable, even if
-the transport still looks connected (`scan_runner.plc_answered`).
+the transport still looks connected (`scan_runner.plc_answered`). Addresses
+reported from the session's learned set (`DataPoint.cached`, no request is
+sent for them) and NG_UNSUPPORTED points are not answers of the PLC and do
+not count either way.
 
 **Constraints:**
 - Maximum split depth: 12 levels (log2(4096))
