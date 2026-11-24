@@ -61,6 +61,10 @@ SLMP_ADDRESS_END_CODES = (
     "c056",  # request exceeds the maximum address
     "c05b",  # CPU cannot access the specified device
     "c05c",  # request content error (device specification)
+    # Detected by the CPU itself (Q/L/iQ-R built-in Ethernet answers these
+    # instead of C056 for a device outside the configured range)
+    "4030",  # the specified device name cannot be handled
+    "4031",  # the specified device number is outside the range
 )
 
 
@@ -245,7 +249,7 @@ class SLMPHandler(BaseProtocolHandler):
         end_code = getattr(e, "errorcode", None)
         code_str = str(end_code).lower() if end_code is not None else error_str
 
-        if any(c in code_str for c in SLMP_ADDRESS_END_CODES) or "illegal" in error_str or "0x4001" in error_str:
+        if any(c in code_str for c in SLMP_ADDRESS_END_CODES) or "illegal" in error_str:
             logger.debug(f"SLMP illegal address: {device_type.value}{start_address} ({e})")
             return StatusCode.NG_ILLEGAL_ADDR
 

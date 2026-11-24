@@ -151,6 +151,7 @@ class _Collector:
 def test_periodic_scan_sends_threshold_notifications():
     notifier = MagicMock(report_interval_seconds=0)
     notifier.notify_threshold = AsyncMock()
+    notifier.notify_threshold_cleared = AsyncMock()
     notifier.notify_unreachable = AsyncMock()
 
     async def run():

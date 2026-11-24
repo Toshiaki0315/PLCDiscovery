@@ -599,14 +599,20 @@ async def resolve_target(
 
 async def _notify(
     notifier: Optional[NotificationManager], send: Callable[[NotificationManager], Awaitable[Any]]
-) -> None:
-    """Send a notification if configured; never let it break the scan"""
+) -> bool:
+    """
+    Send a notification if configured; never let it break the scan.
+
+    Returns False when it could not be delivered to any destination (the
+    caller may offer a state change again on a later cycle).
+    """
     if notifier is None:
-        return
+        return True
     try:
-        await send(notifier)
+        return NotificationManager.delivered(await send(notifier))
     except Exception as e:
         logger.warning(f"Notification failed: {e}")
+        return False
 
 
 def _exit_with_errors(prefix: str, errors: List[str]) -> None:

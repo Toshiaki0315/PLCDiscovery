@@ -26,8 +26,16 @@ from .thresholds import Threshold, ThresholdMonitor
 logger = logging.getLogger(__name__)
 
 ScanItem = Union[DeviceRange, TagRange]
-# Sends one notification: called with a function that takes the notifier
-Notify = Callable[[Callable[[Any], Awaitable[Any]]], Awaitable[None]]
+# Sends one notification: called with a function that takes the notifier.
+# Returns False when it could not be delivered to any destination (None, as
+# older helpers return, counts as delivered).
+Notify = Callable[[Callable[[Any], Awaitable[Any]]], Awaitable[Optional[bool]]]
+
+# After a state-change notification (outage, recovery, threshold) could not
+# be delivered, it is offered again on later cycles, but not before this
+# many seconds: an unreachable webhook must not add its timeouts and
+# retries to every read cycle.
+NOTIFY_RETRY_SECONDS = 60.0
 
 
 class Display(Interface):
@@ -229,6 +237,9 @@ class CycleRunner:
         self.thresholds = thresholds
         # Targets already checked for thresholds outside the scanned ranges
         self._threshold_coverage_checked: Set[str] = set()
+        # (event type, key) -> loop time before which an undelivered
+        # state-change notification is not offered again
+        self._retry_at: Dict[Tuple[NotificationType, str], float] = {}
 
     async def read(self, collector: PLCDataCollector, writer: ResultWriter) -> CycleResult:
         """Collect, convert and write one target; denied addresses are logged once"""
@@ -287,10 +298,17 @@ class CycleRunner:
                 f"{target}: threshold {event.threshold.label} back to normal "
                 f"(value {event.value:g}, outside for {event.duration:.0f}s)"
             )
-        # notify() sends right away, before the loop moves on
+        # notify() sends right away, before the loop moves on. One that could
+        # not be delivered is handed back and offered again on a later cycle.
         for event in check.exceeded:
             label, address, value = event.threshold.label, event.threshold.address, event.value
-            await self._notify(lambda n: n.notify_threshold(target, label, value, plc_ip=plc_ip, address=address))
+            key = NotificationManager.threshold_key(target, label)
+            if not await self._deliver(
+                NotificationType.THRESHOLD_EXCEEDED,
+                key,
+                lambda n: n.notify_threshold(target, label, value, plc_ip=plc_ip, address=address),
+            ):
+                self.thresholds.delivery_failed(target, event, "exceeded")
         for event in check.cleared:
             label, address, value, duration = (
                 event.threshold.label,
@@ -298,11 +316,15 @@ class CycleRunner:
                 event.value,
                 event.duration,
             )
-            await self._notify(
+            key = NotificationManager.threshold_key(target, label)
+            if not await self._deliver(
+                NotificationType.THRESHOLD_CLEARED,
+                key,
                 lambda n: n.notify_threshold_cleared(
                     target, label, value, duration_seconds=duration, plc_ip=plc_ip, address=address
-                )
-            )
+                ),
+            ):
+                self.thresholds.delivery_failed(target, event, "cleared")
 
     def warn_unknown_threshold_targets(self, names: Sequence[str]) -> None:
         """Warn about thresholds limited to a target that is not scanned (labels and IPs)"""
@@ -315,9 +337,29 @@ class CycleRunner:
             )
 
     def _suppressed(self, event_type: NotificationType, key: str) -> bool:
-        """True while the notifier's min_interval would drop this event"""
+        """
+        True while this event must wait: the notifier's min_interval would
+        drop it, or its last delivery failed less than NOTIFY_RETRY_SECONDS ago
+        """
+        retry_at = self._retry_at.get((event_type, key))
+        if retry_at is not None and asyncio.get_running_loop().time() < retry_at:
+            return True
         notifier = self.notifier
         return isinstance(notifier, NotificationManager) and notifier.is_suppressed(event_type, key)
+
+    async def _deliver(self, event_type: NotificationType, key: str, send: Callable[[Any], Awaitable[Any]]) -> bool:
+        """
+        Send a state-change notification. False when no destination received
+        it: the caller leaves the change unreported, so it is offered again
+        (after NOTIFY_RETRY_SECONDS) and the receiver ends up with the
+        current state even if the webhook was down when the change happened.
+        """
+        if await self._notify(send) is False:
+            self._retry_at[(event_type, key)] = asyncio.get_running_loop().time() + NOTIFY_RETRY_SECONDS
+            logger.warning(f"Notification '{event_type.value}' for {key} was not delivered; it will be retried")
+            return False
+        self._retry_at.pop((event_type, key), None)
+        return True
 
     async def track_outage(self, target: str, reachable: bool, plc_ip: str) -> None:
         """
@@ -335,11 +377,19 @@ class CycleRunner:
             if down_since is not None:
                 self._last_downtime[target] = now - down_since
             if target in self._reported_down and not self._suppressed(NotificationType.PLC_RECOVERED, target):
-                self._reported_down.discard(target)
                 downtime = self._last_downtime.get(target, 0.0)
-                await self._notify(lambda n: n.notify_recovered(target, plc_ip=plc_ip, downtime_seconds=downtime))
+                if await self._deliver(
+                    NotificationType.PLC_RECOVERED,
+                    target,
+                    lambda n: n.notify_recovered(target, plc_ip=plc_ip, downtime_seconds=downtime),
+                ):
+                    self._reported_down.discard(target)
             return
         self._down.setdefault(target, now)
         if target not in self._reported_down and not self._suppressed(NotificationType.PLC_UNREACHABLE, target):
-            self._reported_down.add(target)
-            await self._notify(lambda n: n.notify_unreachable(target, plc_ip=plc_ip))
+            # Marked as reported only once a destination received it: the
+            # webhook is often down together with the PLC (network failure)
+            if await self._deliver(
+                NotificationType.PLC_UNREACHABLE, target, lambda n: n.notify_unreachable(target, plc_ip=plc_ip)
+            ):
+                self._reported_down.add(target)

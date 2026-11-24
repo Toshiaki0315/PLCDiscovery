@@ -44,6 +44,14 @@ class BaseProtocolHandler(ABC):
     # _binary_search_read); smaller ranges are simply split
     EDGE_PROBE_MIN_COUNT = 4
 
+    # Whether a failed range whose two end addresses are invalid may be
+    # reported as wholly invalid without reading the addresses in between.
+    # Only safe where a device's addresses are one contiguous block (PLC
+    # device memory). Handlers of protocols with sparse address maps
+    # (Modbus register maps) turn it off: valid registers between two
+    # invalid ones would be reported - and learned - as inaccessible.
+    EDGE_PROBE_SHORTCUT = True
+
     # Highest address the protocol can encode (None = no local limit).
     # Requests beyond it are answered NG_ILLEGAL_ADDR without being sent:
     # libraries either wrap the address silently (wrong data) or raise
@@ -390,7 +398,7 @@ class BaseProtocolHandler(ABC):
         # which cost about 2N requests (R0-R32767: ~65,000 requests, hours of
         # waiting on a production PLC). A readable island strictly inside a
         # range whose both ends are invalid is the accepted trade-off.
-        if status == StatusCode.NG_ILLEGAL_ADDR and count >= self.EDGE_PROBE_MIN_COUNT:
+        if self.EDGE_PROBE_SHORTCUT and status == StatusCode.NG_ILLEGAL_ADDR and count >= self.EDGE_PROBE_MIN_COUNT:
             if await self._edges_illegal(device_type, start, end):
                 logger.debug(
                     f"{device_type.value}{start}-{device_type.value}{end}: both ends invalid; "

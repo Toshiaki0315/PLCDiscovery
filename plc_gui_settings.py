@@ -46,14 +46,18 @@ class JobOutputs:
             except Exception as e:
                 logging.error(f"データベースを開けませんでした（CSVへの保存は続けます）: {e}")
 
-    async def notify(self, send: Callable[[NotificationManager], Awaitable[Any]]) -> None:
-        """Send a notification if destinations are set; never stops the job"""
+    async def notify(self, send: Callable[[NotificationManager], Awaitable[Any]]) -> bool:
+        """
+        Send a notification if destinations are set; never stops the job.
+        False when it could not be delivered to any destination.
+        """
         if self.notifier is None or not self.notifier.has_handlers:
-            return
+            return True
         try:
-            await send(self.notifier)
+            return NotificationManager.delivered(await send(self.notifier))
         except Exception as e:
             logging.warning(f"通知の送信に失敗しました: {e}")
+            return False
 
     def close(self) -> None:
         if self.db:
