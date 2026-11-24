@@ -214,6 +214,11 @@ class ModbusHandler(BaseProtocolHandler):
             logger.debug(f"Modbus read timeout: {device_type.value}{start_address}")
             return None, StatusCode.NG_TIMEOUT
         except Exception as e:
+            # Connection closed / reset, or no response frame (pymodbus
+            # raises for both): the connection may be unusable, so it is
+            # re-established before the next request. Without this a
+            # restarted PLC was never reconnected.
+            self._needs_reconnect = True
             logger.debug(f"Modbus read error: {e}")
             return None, StatusCode.NG_COMM_ERROR
 

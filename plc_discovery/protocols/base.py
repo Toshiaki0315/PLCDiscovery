@@ -7,7 +7,7 @@ import dataclasses
 import logging
 import time
 from abc import ABC, abstractmethod
-from typing import Callable, Dict, List, Optional, Tuple, TypeVar
+from typing import Callable, Dict, List, Optional, Set, Tuple, TypeVar
 
 from ..audit_log import get_audit_logger
 from ..config import SAFE_READ_WORDS, DataPoint, DeviceRange, DeviceType, NetworkConfig, Protocol, StatusCode
@@ -64,6 +64,20 @@ class BaseProtocolHandler(ABC):
     # considered down and binary search stops issuing requests
     COMM_FAILURE_ABORT_THRESHOLD = 3
 
+    # Unanswered requests (each costs a full request timeout) that one
+    # read_device_range() call may spend on narrowing down ranges the PLC
+    # does not answer: enough to isolate one or two addresses in a chunk.
+    # With the default 5 s timeout this bounds the extra wait to about
+    # 80 s per call, however wide the unanswered range is.
+    UNANSWERED_SEARCH_BUDGET = 16
+
+    # The same for the whole session (all scans of a periodic run): enough
+    # to learn a handful of unanswered addresses. A device with a wide
+    # unanswered range would otherwise cost the per-call budget in every
+    # cycle for good; once this is spent, such chunks are read with a
+    # single request per scan and reported with their status.
+    UNANSWERED_SESSION_BUDGET = 96
+
     # Failures reported by the PLC itself (learned in the session cache)
     _PERMANENT_FAILURES = (StatusCode.NG_ILLEGAL_ADDR, StatusCode.NG_UNSUPPORTED)
 
@@ -89,6 +103,16 @@ class BaseProtocolHandler(ABC):
         # again to tell "the link is down" from "the PLC does not answer
         # requests for this range" (see _search_unanswered)
         self._last_ok: Optional[Tuple[DeviceType, int]] = None
+        self._unanswered_budget = self.UNANSWERED_SEARCH_BUDGET
+        # Unanswered requests left for such searches in this session
+        self._unanswered_session_budget = self.UNANSWERED_SESSION_BUDGET
+        # Chunks (device, start, size) that went unanswered while the link
+        # was up: read with one request, without retries, from then on
+        self._unanswered_chunks: Set[Tuple[DeviceType, int, int]] = set()
+        # A liveness probe went unanswered during the current chunk
+        self._probe_failed = False
+        # Points read so far by a read_device_range() call in progress
+        self.partial_points: List[DataPoint] = []
 
         # Set when a blocking request timed out while its worker thread may
         # still be using the client; the connection is re-established before
@@ -165,10 +189,20 @@ class BaseProtocolHandler(ABC):
         Returns:
             List of DataPoint objects
         """
-        results = []
+        results: List[DataPoint] = []
+        # What has been read so far, for a caller that is interrupted
+        # (Ctrl+C) in the middle of a long range
+        self.partial_points = results
         start = device_range.start_address
         end = device_range.end_address
         device_type = device_range.device_type
+        # Unanswered requests this call may spend on narrowing down ranges
+        # the PLC does not answer. Without a known-good address the link
+        # cannot be told from the range: look for one with half the budget.
+        self._unanswered_budget = min(
+            self.UNANSWERED_SEARCH_BUDGET if self._last_ok is not None else self.UNANSWERED_SEARCH_BUDGET // 2,
+            self._unanswered_session_budget,
+        )
 
         # Split into chunks based on max read size
         while start <= end:
@@ -198,28 +232,46 @@ class BaseProtocolHandler(ABC):
 
             # Try to read chunk
             link_was_up = self._comm_failure_streak == 0
-            data, status = await self._read_with_retry(device_type, start, chunk_size)
+            chunk_key = (device_type, start, chunk_size)
+            if chunk_key in self._unanswered_chunks:
+                # Went unanswered before: one request, no retries. A periodic
+                # scan must not wait several timeouts for it in every cycle.
+                data, status = await self._tracked_read(device_type, start, chunk_size)
+            else:
+                data, status = await self._read_with_retry(device_type, start, chunk_size)
 
             if status == StatusCode.OK and data:
                 # Success - add all data points
+                self._unanswered_chunks.discard(chunk_key)
                 results.extend(self._ok_points(device_type, start, data))
-            elif (
-                status in self._TRANSIENT_FAILURES and link_was_up and self._comm_failure_streak > 0 and chunk_size > 1
-            ):
-                # No answer although the PLC answered the request before
-                # this chunk: either the link just went down, or the device
-                # drops requests for some address in the chunk without
-                # answering (common on Modbus gateways). Find out which.
-                results.extend(await self._search_unanswered(device_type, start, start + chunk_size - 1, status))
             else:
-                # Error - use binary search to find bad addresses.
-                # The full chunk has just failed, so skip re-reading it.
-                chunk_results = await self._binary_search_read(
-                    device_type, start, start + chunk_size - 1, known_failure=status
-                )
-                results.extend(chunk_results)
+                unanswered = status in self._TRANSIENT_FAILURES and link_was_up and self._comm_failure_streak > 0
+                self._probe_failed = False
+                if unanswered:
+                    self._unanswered_chunks.add(chunk_key)
+                if unanswered and chunk_size > 1 and self._unanswered_budget > 0:
+                    # No answer although the PLC answered the request before
+                    # this chunk: either the link just went down, or the
+                    # device drops requests for some address in the chunk
+                    # without answering (common on Modbus gateways). Find
+                    # out which, within the budget.
+                    results.extend(await self._search_unanswered(device_type, start, start + chunk_size - 1, status))
+                else:
+                    # Error - use binary search to find bad addresses.
+                    # The full chunk has just failed, so skip re-reading it.
+                    chunk_results = await self._binary_search_read(
+                        device_type, start, start + chunk_size - 1, known_failure=status
+                    )
+                    results.extend(chunk_results)
+                if unanswered and not self._probe_failed and self._comm_failure_streak:
+                    # The chunk ended on unanswered requests. If the PLC
+                    # still answers a known-good address, the link is fine:
+                    # the following chunks are read (and searched) normally
+                    # instead of being taken for a dead link.
+                    await self._link_alive()
             start += chunk_size
 
+        self.partial_points = []
         return results
 
     # ------------------------------------------------------------------
@@ -470,19 +522,37 @@ class BaseProtocolHandler(ABC):
         results.extend(await self._binary_search_read(device_type, mid + 1, end, depth + 1))
         return results
 
-    async def _link_alive(self) -> bool:
-        """
-        True if the PLC answers a read of the address it last answered.
+    def _spend_unanswered(self) -> None:
+        """Count one unanswered request of a search against the budgets"""
+        self._unanswered_budget -= 1
+        self._unanswered_session_budget -= 1
+        if self._unanswered_session_budget == 0:
+            logger.warning(
+                f"{self.ip_address}: some address ranges are not answered and could not be narrowed down "
+                f"within {self.UNANSWERED_SESSION_BUDGET} requests; they are reported as read (NG_TIMEOUT / "
+                "NG_COMM_ERROR) and no longer searched in this session"
+            )
 
-        One request. False when nothing has been read successfully yet
-        (the link cannot be told apart from the range then).
+    async def _link_alive(self) -> Optional[bool]:
+        """
+        Whether the PLC answers a read of the address it last answered.
+
+        One request. None when nothing has been read successfully yet: the
+        link cannot be told apart from the range then.
         """
         if self._last_ok is None:
-            return False
+            return None
         device_type, address = self._last_ok
         await self._rate_limiter.wait()
         _, status = await self._tracked_read(device_type, address, 1)
-        return status not in self._TRANSIENT_FAILURES
+        if status in self._TRANSIENT_FAILURES:
+            self._spend_unanswered()
+            self._probe_failed = True
+            return False
+        # The PLC is there: failures counted against the link while a range
+        # went unanswered must not block the next reads
+        self.reset_circuit_breaker()
+        return True
 
     async def _search_unanswered(
         self, device_type: DeviceType, start: int, end: int, status: StatusCode
@@ -494,10 +564,17 @@ class BaseProtocolHandler(ABC):
         Some devices drop a request touching an invalid address instead of
         answering with an error. Reporting the whole chunk as NG_TIMEOUT
         would then hide every readable address in it. The range is halved;
-        a half that is not answered either is searched further only after
-        the PLC proved to be alive (it answered a read of a known-good
+        a half that is not answered either is searched further only while
+        the PLC proves to be alive (it answers a read of a known-good
         address), so a link that really went down costs a few requests,
         not 2N timeouts.
+
+        Every unanswered request costs a full timeout, so the search stops
+        after UNANSWERED_SEARCH_BUDGET of them per read_device_range() call;
+        what is left is reported with its status and not learned (the next
+        cycle continues where the learned addresses end). Before anything
+        was ever read there is no known-good address: the halves are then
+        searched for one within the (halved) budget.
 
         A single address that stays unanswered - checked twice, with the
         PLC alive before and after - is learned for the session with its
@@ -505,9 +582,11 @@ class BaseProtocolHandler(ABC):
         its timeout in every cycle.
         """
         count = end - start + 1
+        if self._unanswered_budget <= 0:
+            return self._failed_points(device_type, start, end, status, learn=False)
 
         if count == 1:
-            if not await self._link_alive():
+            if not await self._link_alive():  # down, or never confirmed
                 return self._failed_points(device_type, start, end, status, learn=False)
             await self._rate_limiter.wait()
             data, retry_status = await self._tracked_read(device_type, start, 1)
@@ -515,7 +594,8 @@ class BaseProtocolHandler(ABC):
                 return self._ok_points(device_type, start, data)
             if retry_status in self._PERMANENT_FAILURES:
                 return self._failed_points(device_type, start, end, retry_status)
-            confirmed = await self._link_alive()
+            self._spend_unanswered()
+            confirmed = await self._link_alive() is True
             return self._failed_points(device_type, start, end, retry_status, learn=False, learn_unanswered=confirmed)
 
         mid = (start + end) // 2
@@ -529,7 +609,10 @@ class BaseProtocolHandler(ABC):
             await self._rate_limiter.wait()
             data, half_status = await self._tracked_read(device_type, half_start, half_end - half_start + 1)
             # Answered with an error or a malformed response: the PLC is there
-            outcomes.append((data, half_status, self._comm_failure_streak == 0))
+            answered = self._comm_failure_streak == 0
+            if not answered:
+                self._spend_unanswered()
+            outcomes.append((data, half_status, answered))
 
         results: List[DataPoint] = []
         for (half_start, half_end), (data, half_status, answered) in zip(halves, outcomes):
@@ -539,11 +622,13 @@ class BaseProtocolHandler(ABC):
                 results.extend(
                     await self._binary_search_read(device_type, half_start, half_end, known_failure=half_status)
                 )
-            elif await self._link_alive():
-                results.extend(await self._search_unanswered(device_type, half_start, half_end, half_status))
-            else:
-                # The link is down (or nothing was ever read): not learned
+            elif await self._link_alive() is False:
+                # The link is down: not learned, nothing more is sent
                 results.extend(self._failed_points(device_type, half_start, half_end, half_status, learn=False))
+            else:
+                # Alive, or not known yet (nothing read so far): keep
+                # looking, within the budget
+                results.extend(await self._search_unanswered(device_type, half_start, half_end, half_status))
         return results
 
     async def _edges_illegal(self, device_type: DeviceType, start: int, end: int) -> bool:

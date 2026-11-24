@@ -124,7 +124,15 @@ error. A half that stays unanswered is searched further only after the PLC
 answered a read of the last address it was known to answer; otherwise the
 link is taken to be down and nothing more is sent. A single address that
 stays unanswered when checked twice is learned for the session as
-NG_TIMEOUT.
+NG_TIMEOUT. Each unanswered request costs a full timeout, so the search is
+bounded: `UNANSWERED_SEARCH_BUDGET` (16) unanswered requests per
+read_device_range() call and `UNANSWERED_SESSION_BUDGET` (96) per session;
+what is left is reported with its status, not learned, and read with a
+single request per scan from then on.
+
+A scan in which the PLC answered nothing (every point NG_TIMEOUT /
+NG_COMM_ERROR) is a failure and the target counts as unreachable, even if
+the transport still looks connected (`scan_runner.plc_answered`).
 
 **Constraints:**
 - Maximum split depth: 12 levels (log2(4096))

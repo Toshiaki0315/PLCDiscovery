@@ -48,7 +48,7 @@ from plc_discovery.config import (
 from plc_discovery.data_types import ByteOrder, DataType
 from plc_discovery.discovery import PLCDiscovery, discover_plcs, merge_discovery_results
 from plc_discovery.output import DEFAULT_OUTPUT_DIR, CSVExporter
-from plc_discovery.scan_runner import CycleRunner, ResultWriter, ScanItem, next_cycle_wait
+from plc_discovery.scan_runner import CycleRunner, ResultWriter, ScanItem, next_cycle_wait, plc_answered
 from plc_discovery.thresholds import Threshold, ThresholdMonitor, parse_thresholds
 from plc_discovery.utils import (
     MAX_IP_RANGE_HOSTS,
@@ -1069,7 +1069,8 @@ class PLCScannerApp(SettingsTabsMixin):
 
                 # Periodic monitoring: an error notification when the PLC stops
                 # answering (once per outage) and the periodic status report
-                unreachable = not collector.is_connected
+                # Connected is not enough: FINS/UDP has no connection to lose
+                unreachable = not collector.is_connected or not plc_answered(points)
                 await runner.track_outage(target, not unreachable, ip)
                 await runner.check_thresholds(target, points, ip)
                 await runner.report_if_due({ip: points}, [ip] if unreachable else [], iteration)

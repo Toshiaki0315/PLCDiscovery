@@ -71,7 +71,12 @@ from plc_discovery.config import (
     StatusCode,
     TagRange,
 )
-from plc_discovery.config_loader import MIN_INTERVAL_SECONDS, ConfigLoader, generate_config_template
+from plc_discovery.config_loader import (
+    MIN_INTERVAL_SECONDS,
+    ConfigLoader,
+    generate_config_template,
+    log_level_number,
+)
 from plc_discovery.conversion import (  # noqa: F401
     _split_address,
     apply_data_type_conversion,
@@ -91,6 +96,8 @@ from plc_discovery.scan_runner import (  # noqa: F401  (status_report_message re
     ScanItem,
     collect_items,
     next_cycle_wait,
+    no_answer_error,
+    plc_answered,
     status_report_message,
 )
 from plc_discovery.thresholds import Threshold, ThresholdMonitor
@@ -384,9 +391,20 @@ async def run_single_scan(
                 display.print_info("Running full scan...")
             else:
                 display.print_info(f"Scanning {', '.join(labels)}")
-            outcome.data_points = await collect_items(
-                collector, None if mode == ScanMode.FULL else list(device_ranges or [])
-            )
+            try:
+                outcome.data_points = await collect_items(
+                    collector, None if mode == ScanMode.FULL else list(device_ranges or [])
+                )
+            except (asyncio.CancelledError, KeyboardInterrupt):
+                # Ctrl+C in the middle of a scan (a full scan can take
+                # hours): what has been read so far is written like a
+                # finished scan, instead of being thrown away
+                outcome.interrupted = True
+                _uncancel_current_task()
+                outcome.data_points = list(collector.get_collected_data())
+                display.print_warning(
+                    f"Scan interrupted by user; saving the {len(outcome.data_points)} data points read so far"
+                )
 
             outcome.denied_addresses = collector.get_denied_addresses()
             denied_statuses = collector.get_denied_statuses()
@@ -420,7 +438,14 @@ async def run_single_scan(
     display.print_statistics(stats)
     if writer.error_count:
         outcome.error = writer.error_summary()
+    elif not plc_answered(outcome.data_points):
+        # Connected, but not one request was answered (PLC hung, cable
+        # pulled after connecting, wrong unit behind a gateway): the data
+        # is written as read, and the scan is a failure, not a success
+        outcome.error = no_answer_error(outcome.data_points)
+        display.print_error(_target_error(outcome.label or ip, outcome.error))
     else:
+        # Also when interrupted: the run then ends as "interrupted" (130)
         outcome.success = True
     return outcome
 
@@ -500,6 +525,8 @@ async def run_periodic_scan(
         # A threshold's target: a label or an IP of one of the targets
         runner.warn_unknown_threshold_targets([name for key in collectors for name in (key, ips[key])])
         interrupted = False
+        # Targets not answering in their latest cycle
+        down: Set[str] = set()
         try:
             iteration = 0
             while True:
@@ -509,18 +536,26 @@ async def run_periodic_scan(
 
                 for key, collector in collectors.items():
                     points = (await runner.read(collector, writers[key])).points
-                    if key not in reached and collector.is_connected:
+                    # Reachable = connected and answering: a handler without a
+                    # connection to lose (FINS/UDP) or with one that outlives
+                    # the PLC stays "connected" while nothing is answered
+                    answering = collector.is_connected and plc_answered(points)
+                    if answering:
+                        down.discard(key)
+                    else:
+                        down.add(key)
+                    if key not in reached and answering:
                         reached.add(key)
                         outcomes[key].error = None
                         display.print_success(f"{key}: connected")
                     outcomes[key].data_points = points
                     # PLC_UNREACHABLE once per outage, PLC_RECOVERED when it answers again
-                    await runner.track_outage(key, collector.is_connected, ips[key])
+                    await runner.track_outage(key, answering, ips[key])
                     await runner.check_thresholds(key, points, ips[key])
 
                 await runner.report_if_due(
                     {key: outcomes[key].data_points for key in collectors},
-                    [key for key in collectors if key not in reached],
+                    [key for key in collectors if key in down],
                     iteration,
                 )
 
@@ -556,6 +591,9 @@ async def run_periodic_scan(
                 pass  # never answered: keep the connection error from the start
             elif writers[key].error_count:
                 outcome.error = writers[key].error_summary(" during monitoring")
+            elif not plc_answered(outcome.data_points):
+                # Not answering when the monitoring ended
+                outcome.error = no_answer_error(outcome.data_points)
             else:
                 outcome.success = True
 
@@ -641,9 +679,6 @@ def _configure_logging(args: argparse.Namespace) -> None:
     quiet_third_party_loggers(args.verbose)
 
 
-LOG_LEVEL_NAMES = ("DEBUG", "INFO", "WARNING", "ERROR")
-
-
 def _apply_config_logging(args: argparse.Namespace, config_loader: Optional[ConfigLoader]) -> None:
     """
     Apply the config file's logging section: ``level`` (unless --verbose /
@@ -655,10 +690,10 @@ def _apply_config_logging(args: argparse.Namespace, config_loader: Optional[Conf
         return
     settings = config_loader.get_logging_settings()
     root = logging.getLogger()
-    level = str(settings.get("level") or "").upper()
-    if config_loader.is_set("logging", "level") and level in LOG_LEVEL_NAMES and not (args.verbose or args.quiet):
-        root.setLevel(getattr(logging, level))
-        quiet_third_party_loggers(level == "DEBUG")
+    level = log_level_number(settings.get("level"))
+    if config_loader.is_set("logging", "level") and level is not None and not (args.verbose or args.quiet):
+        root.setLevel(level)
+        quiet_third_party_loggers(level <= logging.DEBUG)
     log_file = settings.get("file")
     if log_file:
         try:
@@ -839,9 +874,14 @@ async def _resolve_targets(args, config_loader, config, display):
     if config_loader and not targets:
         for target in config_loader.get_targets():
             # --protocol / --port win over the file's targets, like every
-            # other command-line option
+            # other command-line option. The file's port and options belong
+            # to the file's protocol: with another protocol they are not
+            # used (Modbus frames were sent to the SLMP port otherwise).
+            other_protocol = protocol is not None and protocol != target.protocol
+            base = dataclasses.replace(target, options={}) if other_protocol else target
+            port = args.port or (None if other_protocol else target.port)
             resolved = await resolve_target(
-                target.ip_address, protocol or target.protocol, args.port or target.port, config, display, base=target
+                target.ip_address, protocol or target.protocol, port, config, display, base=base
             )
             if resolved:
                 plc_infos.append(resolved)
@@ -951,6 +991,10 @@ async def _run_scans(
                 label=label,
             )
             results.add(label, outcome.success, outcome.error, outcome.data_points, outcome.denied_addresses)
+            if outcome.interrupted:
+                # Ctrl+C: the remaining targets are not scanned
+                results.interrupted = True
+                break
 
 
 def _resolve_data_types_or_exit(args, config_loader, display):
