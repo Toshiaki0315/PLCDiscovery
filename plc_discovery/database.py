@@ -223,6 +223,14 @@ class DatabaseExporter:
         config = DatabaseConfig(enabled=True, path=path, track_history=track_history)
         return cls(config)
 
+    def _rollback_quietly(self) -> None:
+        """Drop the rows of an export that failed half-way (never raises)"""
+        try:
+            if self._connection is not None:
+                self._connection.rollback()
+        except Exception as e:
+            logger.debug(f"Rollback failed: {e}")
+
     @property
     def is_enabled(self) -> bool:
         """Check if database output is enabled"""
@@ -461,6 +469,12 @@ class DatabaseExporter:
                     ),
                 )
                 count += 1
+            except sqlite3.OperationalError:
+                # Database locked / disk full / file gone: every further row
+                # would wait for the busy timeout and fail the same way.
+                # Give up at once and let the caller report the failure.
+                self._rollback_quietly()
+                raise
             except Exception as e:
                 logger.warning(f"Failed to export PLC {plc.ip_address}: {e}")
 
@@ -528,7 +542,7 @@ class DatabaseExporter:
                         dp.data_type,
                         # NaN / Infinity stored as JSON null (valid JSON for any reader)
                         (
-                            json.dumps(json_safe(dp.converted_value), allow_nan=False)
+                            json.dumps(json_safe(dp.converted_value), allow_nan=False, default=str)
                             if dp.converted_value is not None
                             else None
                         ),
@@ -545,6 +559,20 @@ class DatabaseExporter:
                     if old_value is not None and old_value != dp.value:
                         self._record_change(plc_ip, dp.address, old_value, dp.value, protocol, port)
                     previous_values[dp.address] = dp.value
+
+            except sqlite3.OperationalError:
+
+                # Database locked / disk full / file gone: every further row
+
+                # would wait for the busy timeout and fail the same way.
+
+                # Give up at once and let the caller report the failure.
+
+                self._rollback_quietly()
+                # The rolled-back rows must not count as the latest values
+                self._latest_values.pop(target, None)
+
+                raise
 
             except Exception as e:
                 logger.warning(f"Failed to export data point {dp.address}: {e}")
@@ -605,6 +633,12 @@ class DatabaseExporter:
                     ),
                 )
                 count += 1
+            except sqlite3.OperationalError:
+                # Database locked / disk full / file gone: every further row
+                # would wait for the busy timeout and fail the same way.
+                # Give up at once and let the caller report the failure.
+                self._rollback_quietly()
+                raise
             except Exception as e:
                 logger.warning(f"Failed to export denied address {address}: {e}")
 

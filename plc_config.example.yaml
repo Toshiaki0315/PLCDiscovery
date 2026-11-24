@@ -8,9 +8,6 @@ network:
   # Timeout for discovery responses (milliseconds)
   discovery_timeout_ms: 1000
   
-  # Number of retries for discovery
-  discovery_retry_count: 3
-  
   # Interval between packets to avoid network overload (milliseconds)
   packet_interval_ms: 50
   
@@ -25,12 +22,9 @@ network:
 
 # Discovery settings
 discovery:
-  enabled: true
-  
-  # Scan the same network segment automatically
-  scan_same_segment: true
-  
-  # Additional IP ranges to scan (CIDR or hyphen notation)
+  # IP ranges to scan (CIDR or hyphen notation). Without any, the networks
+  # this PC is connected to are scanned (and UDP broadcast discovery is
+  # used); with ranges, only the ranges are scanned.
   ip_ranges:
     # - "192.168.1.0/24"
     # - "10.0.0.1-100"
@@ -51,7 +45,7 @@ targets:
   # - ip: "192.168.1.10"
   #   protocol: slmp
   #   port: 5001
-  #   name: "Main PLC"
+  #   name: "Main PLC"            # for your own reference (not used by the tool)
   #   manufacturer: "三菱電機"
   
   # Example: Omron PLC
@@ -124,12 +118,6 @@ output:
   #   shift-jis = CP932; characters it cannot represent are written as "?"
   encoding: utf-8-sig
   
-  # Output format: "csv" or "json"
-  format: csv
-  
-  # Include timestamp in filenames
-  include_timestamp: true
-  
   # SQLite database output (optional)
   database:
     # Enable/disable database output
@@ -155,16 +143,17 @@ output:
 
 # Logging settings
 logging:
-  # Log level: DEBUG, INFO, WARNING, ERROR
+  # Log level: DEBUG, INFO, WARNING, ERROR (--verbose / --quiet override it)
   level: INFO
   
-  # Log file path (optional, null for console only)
+  # Log file path (optional, null for console only): log lines are also
+  # appended to this file
   file: null
   
   # Audit log file path (for compliance/tracking)
   audit_log: "./plc_scan_results/audit.log"
   
-  # Log format
+  # Format of the lines in the log file
   format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
 # Data type conversion settings

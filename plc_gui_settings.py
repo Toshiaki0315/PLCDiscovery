@@ -14,6 +14,7 @@ from tkinter import filedialog, messagebox, ttk
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Coroutine, Dict, List, Optional, Sequence
 
 from plc_discovery import settings_file
+from plc_discovery.audit_log import get_audit_logger, init_audit_logger
 from plc_discovery.config import NetworkConfig
 from plc_discovery.database import DatabaseConfig, DatabaseExporter
 from plc_discovery.notifications import (
@@ -532,12 +533,35 @@ class SettingsTabsMixin:
         except Exception as e:
             messagebox.showerror("読み込みエラー", f"設定ファイルを読み込めませんでした:\n{e}")
             return
-        self._apply_settings(config)
+        try:
+            self._apply_settings(config)
+        except Exception as e:
+            # A value of the wrong type (max_size_mb: "100"): the window must
+            # still open - under pythonw a crash here showed nothing at all
+            logging.error(f"設定ファイルの値を画面に反映できませんでした（{path}）: {e}")
+            if not quiet:
+                messagebox.showerror("読み込みエラー", f"設定ファイルの値に誤りがあります:\n{e}")
+        self._start_audit_log(config)
         if errors:
             logging.warning("設定ファイルに誤りがあります: " + " / ".join(errors[:5]))
         logging.info(f"設定を読み込みました: {path}")
         if not quiet:
             self.var_status.set(f"設定を読み込みました ← {path}")
+
+    def _start_audit_log(self, config: Dict) -> None:
+        """
+        Open the audit log named by logging.audit_log, as the CLI does, so
+        scans started from the GUI are recorded too. Never stops the GUI.
+        """
+        try:
+            log_settings = settings_file.section(config, "logging", default={}) or {}
+            audit_file = log_settings.get("audit_log") if isinstance(log_settings, dict) else None
+            if audit_file and get_audit_logger().log_file != str(audit_file):
+                init_audit_logger(str(audit_file), enabled=True)
+                get_audit_logger().log_session_start({"source": "gui"})
+                logging.info(f"監査ログを記録します: {audit_file}")
+        except Exception as e:
+            logging.warning(f"監査ログを開始できませんでした: {e}")
 
     def _job_outputs(self) -> JobOutputs:
         """ジョブ開始時の④⑤タブの設定。不正な値は ValueError"""

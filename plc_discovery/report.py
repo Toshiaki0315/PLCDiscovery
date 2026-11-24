@@ -263,7 +263,7 @@ class ReportGenerator:
         }
         # NaN / Infinity (e.g. a FLOAT decoded from 0xFFFF 0xFFFF) are not valid
         # JSON; write them as null so strict parsers (JSON.parse, jq) accept the file
-        return json.dumps(json_safe(report_dict), indent=2, ensure_ascii=False, allow_nan=False)
+        return json.dumps(json_safe(report_dict), indent=2, ensure_ascii=False, allow_nan=False, default=str)
 
     def _get_theme_css(self) -> str:
         """テーマCSSを取得"""

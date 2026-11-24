@@ -8,6 +8,7 @@ existing configuration file (targets, scan, data_types, ...) untouched.
 
 import copy
 import os
+import stat
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -95,7 +96,19 @@ def save(path: str, updates: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]
     file.parent.mkdir(parents=True, exist_ok=True)
     # Write to a temporary file first: a failure never leaves a truncated file
     tmp = file.with_name(file.name + ".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
+    # The file holds notification webhook URLs, which work like passwords:
+    # readable by the owner only, unless the existing file says otherwise
+    # (its permissions are kept instead of being reset on every save)
+    try:
+        mode = stat.S_IMODE(file.stat().st_mode)
+    except OSError:
+        mode = 0o600
+    descriptor = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+    try:
+        os.chmod(tmp, mode)  # a leftover .tmp keeps its old mode with O_CREAT
+    except OSError:
+        pass
+    with open(descriptor, "w", encoding="utf-8") as f:
         if file.suffix.lower() == ".json":
             import json
 

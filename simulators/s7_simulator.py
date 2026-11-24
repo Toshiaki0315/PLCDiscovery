@@ -190,6 +190,14 @@ class COTPProtocol(asyncio.Protocol):
                 self.buffer = b""
                 continue
 
+            if length < 4:
+                # The length includes the 4-byte header: a smaller one would
+                # consume nothing and loop forever, blocking every simulator
+                # sharing this event loop
+                logger.warning(f"Invalid TPKT length: {length}")
+                self.buffer = b""
+                break
+
             if len(self.buffer) < length:
                 break
 
@@ -300,14 +308,18 @@ class COTPProtocol(asyncio.Protocol):
         """Handle Setup Communication request"""
         logger.info("S7 Setup Communication")
 
+        # PDU size: what the client asked for, at most 960 (a real CPU never
+        # grants more than requested; an S7-300 grants 240)
+        requested = struct.unpack(">H", params[6:8])[0] if len(params) >= 8 else 960
+        pdu_size = max(240, min(requested, 960))
+
         # Response parameters
         resp_params = bytes([
             S7_FUNC_SETUP_COMM,
             0x00,  # Reserved
             0x00, 0x03,  # Max calling
             0x00, 0x03,  # Max called
-            0x03, 0xC0,  # PDU size (960)
-        ])
+        ]) + struct.pack(">H", pdu_size)
 
         return self._make_s7_response(pdu_ref, resp_params, b"")
 
@@ -371,7 +383,9 @@ class COTPProtocol(asyncio.Protocol):
                 if len(data) % 2 == 1:
                     resp_data += b"\x00"
             else:
-                resp_data += bytes([ret_code])
+                # A failed item is 4 bytes too: return code, transport size 0
+                # (null), length 0 - or the items after it are misaligned
+                resp_data += bytes([ret_code, 0x00, 0x00, 0x00])
 
         return self._make_s7_response(pdu_ref, resp_params, resp_data)
 

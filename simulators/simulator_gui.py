@@ -479,6 +479,16 @@ class SimulatorApp:
     # -- log and housekeeping --
 
     def _poll(self) -> None:
+        try:
+            self._refresh()
+        except Exception:
+            # e.g. a controller call timing out: keep polling, or the window
+            # would stop updating for good
+            logging.getLogger(__name__).exception("Simulator window update failed")
+        finally:
+            self.root.after(500, self._poll)
+
+    def _refresh(self) -> None:
         lines = []
         while True:
             try:
@@ -498,7 +508,6 @@ class SimulatorApp:
         for key, row in self.rows.items():
             if self.controller.is_running(key):
                 row.var_clients.set(clients_text(self.controller.clients(key)))
-        self.root.after(500, self._poll)
 
     def close(self) -> None:
         try:

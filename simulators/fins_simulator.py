@@ -57,6 +57,16 @@ FINS_TCP_SERVER_NODE = 1                 # simulated PLC node address
 FINS_AREA_DM = 0x82
 FINS_AREA_HR = 0xB2
 FINS_AREA_W = 0xB1
+FINS_AREA_CIO = 0xB0
+
+# Words per memory area (CS/CJ series) and per Memory Area Read
+FINS_AREA_SIZES = {
+    FINS_AREA_DM: 32768,
+    FINS_AREA_HR: 512,
+    FINS_AREA_W: 512,
+    FINS_AREA_CIO: 6144,
+}
+FINS_MAX_READ_WORDS = 999
 
 # Simulated inaccessible ranges
 INACCESSIBLE_RANGES = [
@@ -178,6 +188,18 @@ class FINSSimulator:
             f"Read request: area=0x{area_code:02X}, "
             f"addr={start_address}, count={count}"
         )
+
+        # Answer as a CPU does, not with zeros: these are the end codes the
+        # scanner's error handling and request-size limit depend on
+        size = FINS_AREA_SIZES.get(area_code)
+        if size is None:
+            return self._build_error_response(request, 0x1101)  # area classification missing
+        if count == 0:
+            return self._build_error_response(request, 0x110C)  # parameter error
+        if count > FINS_MAX_READ_WORDS:
+            return self._build_error_response(request, 0x110B)  # response too long
+        if start_address + count > size:
+            return self._build_error_response(request, 0x1104)  # address range exceeded
 
         # Check accessibility
         for addr in range(start_address, start_address + count):

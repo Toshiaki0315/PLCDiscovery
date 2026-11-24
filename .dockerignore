@@ -1,0 +1,31 @@
+# Keep the build context (and the development image's "COPY . .") free of
+# local state: virtual environments, results, and settings that may hold
+# notification webhook URLs
+
+.git
+.github
+.venv
+venv
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.mypy_cache
+.cache
+.coverage
+.coverage.*
+htmlcov
+build
+dist
+*.egg-info
+.DS_Store
+
+# Scan output and databases
+plc_scan_results
+plc_data.db
+*.db
+*.db-journal
+*.db-wal
+
+# Local settings (webhook URLs); the *.example.* files stay in the image
+plc_config.yaml
+type_mapping.json

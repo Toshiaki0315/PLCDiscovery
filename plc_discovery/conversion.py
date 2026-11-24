@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from .cli_args import BYTE_ORDER_MAP, DATA_TYPE_MAP
-from .config import DataPoint, StatusCode
+from .config import DataPoint, DeviceType, StatusCode
 from .config_loader import ConfigLoader
 from .data_types import (
     BIT_DEVICES,
@@ -56,10 +56,16 @@ def load_type_mapping(path: str, overrides: Optional[Dict[str, str]] = None) -> 
         raise
 
 
+# Device names of numeric addresses ("D100"). Anything else - e.g. the
+# EtherNet/IP tags "Count1" and "Count2" - is a name, not an address: its
+# value has its own type and must never be combined with a neighbour's.
+_DEVICE_PREFIXES = frozenset(device.value for device in DeviceType)
+
+
 def _split_address(address: str) -> Optional[tuple]:
-    """Split an address like "D100" into ("D", 100); None if not parseable"""
-    match = re.fullmatch(r"([A-Za-z]*)(\d+)", address or "")
-    if not match:
+    """Split a device address like "D100" into ("D", 100); None for tag names"""
+    match = re.fullmatch(r"([A-Za-z]+)(\d+)", address or "")
+    if not match or match.group(1).upper() not in _DEVICE_PREFIXES:
         return None
     return match.group(1), int(match.group(2))
 
@@ -174,6 +180,10 @@ def apply_data_type_conversion(
         group = [dp]
         for j in range(1, word_count):
             if i + j >= len(data_points):
+                break
+            if mapping and number + j > mapping.end_address:
+                # Never take words from beyond the mapping (the next
+                # address may belong to another mapping with its own type)
                 break
             nxt = data_points[i + j]
             if nxt.value is None or nxt.status != StatusCode.OK or parsed[i + j] != (prefix, number + j):

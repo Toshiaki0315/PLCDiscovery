@@ -216,7 +216,12 @@ async def main(host: str):
             task.cancel()
 
     for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, signal_handler)
+        try:
+            loop.add_signal_handler(sig, signal_handler)
+        except NotImplementedError:
+            # Windows event loops have no signal handlers: Ctrl+C arrives
+            # as KeyboardInterrupt instead (handled where main() is run)
+            break
 
     try:
         await manager.start_all()

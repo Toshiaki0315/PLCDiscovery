@@ -440,8 +440,10 @@ class EtherNetIPProtocol(asyncio.Protocol):
             body = data[2 + 2 * data[1]:]
             return bytes([CIP_FORWARD_CLOSE | 0x80, 0x00, 0x00, 0x00]) + body[2:10] + b"\x00\x00"
         else:
-            # Generic success response
-            return bytes([service | 0x80, 0x00, 0x00])
+            # Unknown service: "service not supported" (0x08), as a real
+            # device answers. A generic success let scanner code that
+            # depends on the error status pass here and fail on hardware.
+            return bytes([service | 0x80, 0x00, 0x08, 0x00])
 
     def _handle_get_attribute_all(self, path_data: bytes) -> bytes:
         """Handle Get Attribute All service"""

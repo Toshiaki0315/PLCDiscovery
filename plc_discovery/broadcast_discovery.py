@@ -10,7 +10,7 @@ import ipaddress
 import logging
 import socket
 import struct
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from .config import NetworkConfig, PLCInfo, Protocol
 from .probes import parse_eip_identity
@@ -134,18 +134,26 @@ class BroadcastDiscovery:
         logger.info(f"EtherNet/IP broadcast: found {len(plcs)} devices")
         return plcs
 
-    async def discover_all_broadcast(self) -> List[PLCInfo]:
+    async def discover_all_broadcast(self, protocols: Optional[Sequence[Protocol]] = None) -> List[PLCInfo]:
         """
         Discover all PLCs using multiple broadcast protocols.
 
-        Runs all broadcast discovery methods in parallel.
+        Runs the broadcast discovery methods in parallel. With ``protocols``
+        only those protocols' broadcasts are sent (nothing is sent for a
+        protocol nobody asked for).
         """
         self._report_progress("Starting UDP broadcast discovery for all protocols...")
 
+        methods = []
+        if protocols is None or Protocol.SLMP in protocols:
+            methods.append(self.discover_slmp_broadcast())
+        if protocols is None or Protocol.ETHERNET_IP in protocols:
+            methods.append(self.discover_eip_broadcast())
+        if not methods:
+            return []
+
         # Run discoveries in parallel
-        results = await asyncio.gather(
-            self.discover_slmp_broadcast(), self.discover_eip_broadcast(), return_exceptions=True
-        )
+        results = await asyncio.gather(*methods, return_exceptions=True)
 
         # Collect all results
         all_plcs = []

@@ -519,12 +519,12 @@ docker run --rm -v $(pwd)/plc_scan_results:/app/output plc-scanner \
 Docker Composeを使用した環境構築:
 
 ```bash
-# シミュレータとスキャナーを起動
-docker-compose up -d
+# シミュレータを起動（スキャナーはコマンドなので up では起動しません）
+docker-compose up -d simulators
 
 # スキャナーを実行（シミュレータは一部が標準と異なるポート: Modbus 1502, S7 1102）
-docker-compose run scanner --mode full --target simulators
-docker-compose run scanner --mode range --target simulators --protocol modbus --port 1502 --device HR --range 0-99
+docker-compose run --rm scanner --mode full --target simulators
+docker-compose run --rm scanner --mode range --target simulators --protocol modbus --port 1502 --device HR --range 0-99
 
 # 実際の工場 LAN を探索する場合はブロードキャスト/ARP が必要なため、
 # docker-compose.yml の scanner に network_mode: host を設定（Linux のみ）

@@ -552,8 +552,9 @@ class SessionCache:
     """
     Cache for inaccessible addresses within a session.
 
-    Stores the status that made each address inaccessible
-    (NG_ILLEGAL_ADDR or NG_UNSUPPORTED) so it can be reported accurately.
+    Stores the status that made each address inaccessible (NG_ILLEGAL_ADDR,
+    NG_UNSUPPORTED, or NG_TIMEOUT / NG_COMM_ERROR for an address the PLC was
+    confirmed not to answer) so it can be reported accurately.
     """
 
     def __init__(self):
