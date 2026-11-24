@@ -324,8 +324,10 @@ class PLCDiscovery:
 
         if total > LARGE_SCAN_WARNING_HOSTS:
             # Rough worst case: every host is silent; its protocols are probed
-            # in parallel, a TCP check plus a probe each (~2 timeouts per host)
-            worst_s = total / batch_size * 2 * self.config.discovery_timeout_ms / 1000
+            # in parallel, a TCP check plus a probe each (~2 timeouts per
+            # host), plus the packet interval kept between batches
+            batches = total / batch_size
+            worst_s = batches * (2 * self.config.discovery_timeout_ms + self.config.packet_interval_ms) / 1000
             logger.warning(
                 f"Scanning {total} hosts may take up to ~{worst_s / 60:.0f} minutes; " f"consider a narrower --ip-range"
             )

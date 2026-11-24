@@ -169,7 +169,12 @@ class AuditLogger:
                     logger.error(f"Failed to write audit log: {e}")
 
             if self.console_output:
-                print(f"[AUDIT] {line.strip()}")
+                try:
+                    print(f"[AUDIT] {line.strip()}")
+                except Exception as e:
+                    # e.g. a tag name the console encoding cannot show: the
+                    # read being recorded must not fail for it
+                    logger.debug(f"Audit console output failed: {e}")
 
     def _create_event(self, event_type: AuditEventType, **kwargs: Any) -> AuditEvent:
         """Create audit event with common fields"""

@@ -569,6 +569,12 @@ class SettingsTabsMixin:
             log_settings = settings_file.section(config, "logging", default={}) or {}
             audit_file = log_settings.get("audit_log") if isinstance(log_settings, dict) else None
             if audit_file and get_audit_logger().log_file != str(audit_file):
+                worker = getattr(self, "worker", None)
+                if worker is not None and worker.busy:
+                    # The running job writes to the current log from its
+                    # own thread: do not close it underneath
+                    logging.info("監査ログの切り替えは、実行中の処理が終わってから設定を読み込み直すと反映されます")
+                    return
                 init_audit_logger(str(audit_file), enabled=True)
                 get_audit_logger().log_session_start({"source": "gui"})
                 logging.info(f"監査ログを記録します: {audit_file}")

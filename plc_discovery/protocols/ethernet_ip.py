@@ -436,8 +436,9 @@ class EtherNetIPHandler(BaseProtocolHandler):
                 results += [_tag_point(split_element_count(t)[0], StatusCode.NG_COMM_ERROR) for t in batch]
                 continue
             self._audit_tag_read(batch, StatusCode.OK, started)
+            definitions = getattr(self._client, "data_types", None)
             for name, reply in zip(batch, replies):
-                results += _tag_points(name, reply)
+                results += _tag_points(name, reply, definitions if isinstance(definitions, dict) else None)
         return results
 
     async def _read_tags_generic(self, tags: List[str]) -> List[DataPoint]:
@@ -547,10 +548,10 @@ MAX_TAG_ARRAY_ELEMENTS = 1000
 # Hex digits of the integer CIP types (two per byte); other integers are
 # sized by their value
 _CIP_HEX_DIGITS = {
-    "BOOL": 4,
-    "SINT": 4,
-    "USINT": 4,
-    "BYTE": 4,
+    "BOOL": 2,
+    "SINT": 2,
+    "USINT": 2,
+    "BYTE": 2,
     "INT": 4,
     "UINT": 4,
     "WORD": 4,
@@ -601,16 +602,34 @@ def _tag_point(name: str, status: StatusCode, value: Any = None, type_name: Opti
     return point
 
 
-def _tag_points(name: str, reply: Any) -> List[DataPoint]:
-    """Data points for one LogixDriver reply (Tag(tag, value, type, error))"""
+def _tag_points(name: str, reply: Any, data_types: Optional[Dict[str, Any]] = None) -> List[DataPoint]:
+    """
+    Data points for one LogixDriver reply (Tag(tag, value, type, error)).
+    ``data_types``: the controller's structure definitions (LogixDriver's
+    data_types), giving the type of each structure member.
+    """
     if reply is None or getattr(reply, "error", None):
         logger.debug(f"Tag {name}: {getattr(reply, 'error', 'no reply')}")
         return [_tag_point(name.split("{")[0], StatusCode.NG_ILLEGAL_ADDR)]
     reply_type = getattr(reply, "type", None)
-    return _value_points(name, reply.value, reply_type if isinstance(reply_type, str) else None)
+    return _value_points(name, reply.value, reply_type if isinstance(reply_type, str) else None, data_types)
 
 
-def _value_points(name: str, value: Any, type_name: Optional[str] = None) -> List[DataPoint]:
+def _member_type(data_types: Optional[Dict[str, Any]], struct_name: Optional[str], member: str) -> Optional[str]:
+    """Type name of a structure member from the structure definitions (None when unknown)"""
+    if not data_types or not struct_name:
+        return None
+    try:
+        definition = data_types[struct_name.split("[")[0].strip()]
+        member_type = definition["internal_tags"][member]["data_type_name"]
+    except (KeyError, TypeError, AttributeError):
+        return None
+    return member_type if isinstance(member_type, str) else None
+
+
+def _value_points(
+    name: str, value: Any, type_name: Optional[str] = None, data_types: Optional[Dict[str, Any]] = None
+) -> List[DataPoint]:
     """
     Data points for a tag value: one per array element ("Tag[i]") and per
     structure member ("Tag.Member", nested: "Tag.Sub.Member", "Tag[1].Member").
@@ -625,22 +644,26 @@ def _value_points(name: str, value: Any, type_name: Optional[str] = None) -> Lis
             prefix, start = base, 0
         points = []
         for i, element in enumerate(value):
-            points += _flatten(f"{prefix}[{start + i}]", element, type_name)
+            points += _flatten(f"{prefix}[{start + i}]", element, type_name, data_types)
         return points
-    return _flatten(name.split("{")[0], value, type_name)
+    return _flatten(name.split("{")[0], value, type_name, data_types)
 
 
-def _flatten(name: str, value: Any, type_name: Optional[str] = None) -> List[DataPoint]:
-    # Members of a structure have their own types, which the reply does not
-    # carry: only the value itself is formatted with type_name
+def _flatten(
+    name: str, value: Any, type_name: Optional[str] = None, data_types: Optional[Dict[str, Any]] = None
+) -> List[DataPoint]:
+    # A structure's members have their own types: taken from the structure
+    # definitions when the controller provided them (Logix), else unknown
+    # (the hex width then follows the value)
     if isinstance(value, dict):
         points = []
         for member, member_value in value.items():
-            points += _flatten(f"{name}.{member}", member_value)
+            member_type = _member_type(data_types, type_name, member)
+            points += _flatten(f"{name}.{member}", member_value, member_type, data_types)
         return points
     if isinstance(value, list):
         points = []
         for i, element in enumerate(value):
-            points += _flatten(f"{name}[{i}]", element, type_name)
+            points += _flatten(f"{name}[{i}]", element, type_name, data_types)
         return points
     return [_tag_point(name, StatusCode.OK, value, type_name)]

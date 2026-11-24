@@ -95,7 +95,15 @@ BYTE_ORDER_LABELS = {
 class AsyncWorker:
     """専用スレッドで asyncio ループを回し、GUI スレッドからジョブを投入する"""
 
-    def __init__(self) -> None:
+    def __init__(self, acknowledge: bool = False) -> None:
+        """
+        Args:
+            acknowledge: stay busy after a job has ended until the caller
+                confirms with acknowledge() that it has handled the result.
+                The GUI learns about the end through a queue it polls: a
+                job submitted in between would be running while the old
+                result re-enables Start and disables Stop.
+        """
         self.loop = asyncio.new_event_loop()
         self._thread = threading.Thread(target=self._run, daemon=True, name="plc-worker")
         self._thread.start()
@@ -103,6 +111,9 @@ class AsyncWorker:
         # True from submit() until the job - including its cleanup after a
         # cancel (final notification, PLC disconnect) - has really ended
         self._running = False
+        self._acknowledge = acknowledge
+        # The job has ended and its result is not handled yet
+        self._unacknowledged = False
 
     def _run(self) -> None:
         asyncio.set_event_loop(self.loop)
@@ -110,7 +121,11 @@ class AsyncWorker:
 
     @property
     def busy(self) -> bool:
-        return self._running
+        return self._running or self._unacknowledged
+
+    def acknowledge(self) -> None:
+        """The result of the job that ended has been handled: a new job may start"""
+        self._unacknowledged = False
 
     def submit(self, coro: Coroutine[Any, Any, Any], on_done: Callable[[Optional[BaseException]], None]) -> None:
         """コルーチンを投入する。完了時に on_done(例外 or None) をワーカースレッドで呼ぶ"""
@@ -121,6 +136,7 @@ class AsyncWorker:
             # blocks. (A concurrent Future's cancel() reported "done" at
             # once: Start was enabled again while the stopped job was still
             # disconnecting, and a second job could reach the same PLC.)
+            self._unacknowledged = self._acknowledge
             self._running = False
             on_done(asyncio.CancelledError() if task.cancelled() else task.exception())
 
@@ -192,7 +208,7 @@ class PLCScannerApp(SettingsTabsMixin):
         self.root.minsize(900, 620)
 
         self.ui_queue: "queue.Queue" = queue.Queue()
-        self.worker = AsyncWorker()
+        self.worker = AsyncWorker(acknowledge=True)
         self.discovered: List[PLCInfo] = []
         self.last_output_dir: Optional[Path] = None
 
@@ -767,6 +783,8 @@ class PLCScannerApp(SettingsTabsMixin):
     ) -> None:
         """ブロードキャスト探索とポートスキャンでPLCを探し、結果をCSVに保存する"""
         outputs = outputs or JobOutputs(None, None)
+        audit = get_audit_logger()
+        audit.log_discovery_start([ip_range] if ip_range else [])
         plcs: List[PLCInfo] = []
         if use_broadcast and ip_range:
             # Broadcasts go out on every network of this PC and would list
@@ -785,6 +803,7 @@ class PLCScannerApp(SettingsTabsMixin):
         # TCPスキャンの結果（プロトコル確認済み・機器情報あり）を優先し、
         # ブロードキャストでのみ見つかった機器を追加する
         plcs = merge_discovery_results(tcp_plcs, plcs)
+        audit.log_discovery_result(len(plcs), [p.to_dict() for p in plcs])
 
         path = None
         if plcs:
@@ -1060,6 +1079,8 @@ class PLCScannerApp(SettingsTabsMixin):
         job_started = loop.time()
         iteration = 0
         points: List[DataPoint] = []
+        audit = get_audit_logger()
+        audit.log_scan_start(ip, mode, ["ALL"] if items is None else [str(item) for item in items])
         try:
             while True:
                 iteration += 1
@@ -1094,6 +1115,9 @@ class PLCScannerApp(SettingsTabsMixin):
             )
             raise
         finally:
+            # The last cycle, as the CLI records it
+            ok = sum(1 for point in points if point.status == StatusCode.OK)
+            audit.log_scan_complete(ip, len(points), ok, len(points) - ok, (loop.time() - job_started) * 1000)
             await collector.disconnect()
             outputs.close()
         await PLCScannerApp._notify_collect_done(outputs, ip, points, iteration, loop.time() - job_started)
@@ -1227,6 +1251,9 @@ class PLCScannerApp(SettingsTabsMixin):
         elif kind == "db_status":
             self.var_db_status.set(item[1])
         elif kind == "done":
+            # From here on a new job may be started: its buttons are set by
+            # this very handler
+            self.worker.acknowledge()
             self._on_job_done(item[1])
 
     def _on_job_done(self, exc: Optional[BaseException]) -> None:

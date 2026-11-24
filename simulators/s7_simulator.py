@@ -327,7 +327,7 @@ class COTPProtocol(asyncio.Protocol):
         # PDU size: what the client asked for, at most 960 (a real CPU never
         # grants more than requested; an S7-300 grants 240)
         requested = struct.unpack(">H", params[6:8])[0] if len(params) >= 8 else 960
-        pdu_size = max(240, min(requested, 960))
+        pdu_size = min(requested, 960) if requested else 960
 
         # Response parameters
         resp_params = bytes([
