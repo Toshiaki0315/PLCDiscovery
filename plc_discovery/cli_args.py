@@ -20,7 +20,7 @@ from .config import (
     expand_tag_members,
     range_size_error,
 )
-from .config_loader import NETWORK_MINIMUMS, ConfigLoader, integer_error
+from .config_loader import MAX_CONCURRENT, NETWORK_MINIMUMS, ConfigLoader, integer_error
 from .data_types import DataType
 from .names import BYTE_ORDER_NAMES, parse_device_type, parse_protocol
 from .output import DEFAULT_OUTPUT_DIR
@@ -363,6 +363,9 @@ def network_option_errors(args: argparse.Namespace) -> List[str]:
             error = integer_error(value, NETWORK_MINIMUMS[key])
             if error:
                 errors.append(f"{option} {error}")
+            elif key == "max_concurrent" and value > MAX_CONCURRENT:
+                # Same limit as network.max_concurrent in the config file
+                errors.append(f"{option} must be at most {MAX_CONCURRENT}, got {value}")
     return errors
 
 

@@ -29,31 +29,32 @@ from plc_discovery.scan_runner import CycleRunner
 
 
 def test_slow_notification_finishes_in_the_background(monkeypatch):
-    monkeypatch.setattr(scan_runner, "NOTIFY_WAIT_SECONDS", 0.05)
-    sent = []
-
-    async def notify(send):
-        await asyncio.sleep(0.3)  # a webhook that takes its time
-        sent.append("unreachable")
-        return True
+    monkeypatch.setattr(scan_runner, "NOTIFY_WAIT_SECONDS", 0.01)
+    sends = []
 
     async def run():
+        gate = asyncio.Event()  # the webhook answers when this is set (no wall-clock assumptions)
+
+        async def notify(send):
+            sends.append("started")
+            await gate.wait()
+            sends.append("delivered")
+            return True
+
         runner = CycleRunner(None, notify=notify)
-        loop = asyncio.get_running_loop()
-        started = loop.time()
-        await runner.track_outage("PLC1", False, "10.0.0.1")
-        waited = loop.time() - started
+        # Returns although the send is not finished: the read cycle goes on
+        await asyncio.wait_for(runner.track_outage("PLC1", False, "10.0.0.1"), timeout=5)
+        assert sends == ["started"] and runner._reported_down == set()
         # Next cycles while it is still being sent: not sent a second time
         await runner.track_outage("PLC1", False, "10.0.0.1")
         await runner.track_outage("PLC1", False, "10.0.0.1")
-        in_flight = len(sent) == 0
+        assert sends == ["started"]
+        gate.set()
         await runner.drain()
-        return waited, in_flight, set(runner._reported_down)
+        return set(runner._reported_down)
 
-    waited, in_flight, reported = asyncio.run(run())
-    assert waited < 0.25  # the cycle went on after NOTIFY_WAIT_SECONDS
-    assert in_flight
-    assert sent == ["unreachable"] and reported == {"PLC1"}
+    assert asyncio.run(run()) == {"PLC1"}
+    assert sends == ["started", "delivered"]
 
 
 def test_slow_notification_that_fails_is_offered_again(monkeypatch):

@@ -68,7 +68,10 @@ targets:
   #   name: "Legacy Omron PLC"
   #   # Optional protocol-specific settings (protocol must be given):
   #   #   fins / fins_tcp: dest_node (default: last IP octet), source_node
-  #   #   s7: rack, slot, db_number    ethernet_ip: slot    modbus: unit_id
+  #   #   s7: rack, slot, db_number    ethernet_ip: slot
+  #   #   modbus: unit_id, contiguous (1 = the registers form one block
+  #   #     without gaps: invalid ranges are found with far fewer requests;
+  #   #     leave it out for devices whose register map has gaps)
   #   options:
   #     dest_node: 40
 

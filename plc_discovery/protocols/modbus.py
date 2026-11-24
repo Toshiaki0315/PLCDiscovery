@@ -88,10 +88,23 @@ class ModbusHandler(BaseProtocolHandler):
     # every address of a failed range is confirmed on its own
     EDGE_PROBE_SHORTCUT = False
 
-    def __init__(self, ip_address: str, port: Optional[int] = None, unit_id: int = 1, **kwargs: Any):
+    def __init__(
+        self, ip_address: str, port: Optional[int] = None, unit_id: int = 1, contiguous: int = 0, **kwargs: Any
+    ):
+        """
+        Args:
+            unit_id: Modbus unit / slave id
+            contiguous: 1 when the device's registers form one block without
+                gaps (targets[].options.contiguous). A failed range whose
+                first and last register are both invalid is then reported
+                invalid as a whole - about 3 requests per chunk instead of
+                2 per register. Leave 0 for sparse register maps: readable
+                registers between two invalid ones would be reported NG.
+        """
         super().__init__(ip_address, port or PROTOCOL_PORTS.get(Protocol.MODBUS_TCP, MODBUS_PORT), **kwargs)
         self._client: Any = None
         self._unit_id = unit_id
+        self.EDGE_PROBE_SHORTCUT = bool(contiguous)
 
     async def connect(self) -> bool:
         """Establish Modbus/TCP connection"""

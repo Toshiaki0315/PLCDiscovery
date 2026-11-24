@@ -134,7 +134,7 @@ python plc_scanner.py --mode range --target 127.0.0.1 --protocol modbus --port 1
 | Modbus | 5000-5100, 8000-8050 |
 | EtherNet/IP | 100-150 |
 | S7 | バイト位置 500-550（本ツールのアドレスはワード単位のため DB250-DB275） |
-| FINS | DM5000-5100, HR1000-1050 |
+| FINS | DM5000-5100, HR300-350 |
 
 二分探索エラー回避アルゴリズムのテスト：
 

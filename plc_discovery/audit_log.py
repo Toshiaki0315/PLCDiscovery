@@ -61,7 +61,9 @@ class AuditEvent:
 
     def to_json(self) -> str:
         """Convert to JSON string"""
-        return json.dumps(self.to_dict(), ensure_ascii=False)
+        # default=str: a value that is not JSON (a set, bytes, a path) is
+        # written as text - an audit record must not be dropped for it
+        return json.dumps(self.to_dict(), ensure_ascii=False, default=str)
 
 
 class AuditLogger:

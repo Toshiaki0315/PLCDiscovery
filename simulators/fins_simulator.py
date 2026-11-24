@@ -71,7 +71,7 @@ FINS_MAX_READ_WORDS = 999
 # Simulated inaccessible ranges
 INACCESSIBLE_RANGES = [
     (FINS_AREA_DM, 5000, 5100),  # DM5000-5100
-    (FINS_AREA_HR, 1000, 1050),   # HR1000-1050
+    (FINS_AREA_HR, 300, 350),   # HR300-350 (inside the 512-word HR area)
 ]
 
 
@@ -417,7 +417,7 @@ async def run_fins_simulator(host: str, port: int, transport: str = "both"):
     logger.info("  DM Area (0x82): 0-999 (accessible)")
     logger.info("  DM Area (0x82): 5000-5100 (INACCESSIBLE)")
     logger.info("  HR Area (0xB2): 0-499 (accessible)")
-    logger.info("  HR Area (0xB2): 1000-1050 (INACCESSIBLE)")
+    logger.info("  HR Area (0xB2): 300-350 (INACCESSIBLE)")
     logger.info("  W Area (0xB1): 0-199 (accessible)")
 
     try:

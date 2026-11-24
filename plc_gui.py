@@ -768,7 +768,11 @@ class PLCScannerApp(SettingsTabsMixin):
         """ブロードキャスト探索とポートスキャンでPLCを探し、結果をCSVに保存する"""
         outputs = outputs or JobOutputs(None, None)
         plcs: List[PLCInfo] = []
-        if use_broadcast:
+        if use_broadcast and ip_range:
+            # Broadcasts go out on every network of this PC and would list
+            # devices outside the range: the range is covered by the scan
+            logging.info("IP範囲を指定しているため、UDPブロードキャスト探索は行いません（範囲内はスキャンで探します）")
+        elif use_broadcast:
             self._post("status", "UDPブロードキャストで探索中...")
             try:
                 plcs.extend(await BroadcastDiscovery(config).discover_all_broadcast())
@@ -987,11 +991,12 @@ class PLCScannerApp(SettingsTabsMixin):
         # プロトコル決定（自動検出または手動指定）
         if protocol is None:
             self._post("status", f"{ip} のプロトコルを自動検出中...")
-            detected = await PLCDiscovery(config)._probe_host(ip)
+            # With a port, the protocols are tried on that port (as the CLI
+            # does): detecting on the standard ports and then overwriting
+            # the port paired the protocol with a port it was not seen on
+            detected = await PLCDiscovery(config, port=port)._probe_host(ip)
             if detected and detected.protocol:
                 plc = detected
-                if port:
-                    plc.port = port
                 logging.info(f"プロトコルを検出しました: {detected.protocol.name}")
             else:
                 await outputs.notify(lambda n: n.notify_error(f"{ip}: no PLC protocol answered", plc_ip=ip))
@@ -1079,7 +1084,10 @@ class PLCScannerApp(SettingsTabsMixin):
                 self._post("status", f"周期実行 {iteration} 回目完了。{wait:.1f} 秒後に次回実行（停止ボタンで終了）")
                 await asyncio.sleep(wait)
         except asyncio.CancelledError:
-            # Stopped by the user: report what was collected, then stop
+            # Stopped by the user: release the PLC first - a webhook that is
+            # slow to answer must not keep the session open - then report
+            # what was collected
+            await collector.disconnect()
             await runner.drain()  # notifications a slow webhook is still receiving
             await PLCScannerApp._notify_collect_done(
                 outputs, ip, points, iteration, loop.time() - job_started, interrupted=True
