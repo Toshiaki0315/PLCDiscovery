@@ -257,6 +257,8 @@ def _ip_range_hosts(ip_range: str) -> Tuple[Iterable[str], int]:
             network = ipaddress.IPv4Network(ip_range, strict=False)
         except ValueError as e:
             raise ValueError(f"Invalid CIDR notation: {ip_range} - {e}") from None
+        if network.is_multicast or network.network_address.is_unspecified:
+            raise ValueError(f"Invalid CIDR notation: {ip_range} - not a network of devices (multicast or 0.0.0.0)")
         size = network.num_addresses - 2 if network.prefixlen < 31 else network.num_addresses
         return (str(host) for host in network.hosts()), size
 
@@ -273,14 +275,18 @@ def _ip_range_hosts(ip_range: str) -> Tuple[Iterable[str], int]:
                 end = ipaddress.IPv4Address(int(start) & 0xFFFFFF00 | octet)
             if int(end) < int(start):
                 raise ValueError("end address is lower than start address")
+            if start.is_multicast or end.is_multicast or start.is_unspecified or int(end) == 0xFFFFFFFF:
+                raise ValueError("not a range of device addresses (multicast, 0.0.0.0 or broadcast)")
         except ValueError as e:
             raise ValueError(f"Invalid hyphen notation: {ip_range} - {e}") from None
         return (str(ipaddress.IPv4Address(i)) for i in range(int(start), int(end) + 1)), int(end) - int(start) + 1
 
     try:
-        ipaddress.IPv4Address(ip_range)
+        single = ipaddress.IPv4Address(ip_range)
     except ValueError as e:
         raise ValueError(f"Invalid IP address: {ip_range} - {e}") from None
+    if single.is_multicast or single.is_unspecified or int(single) == 0xFFFFFFFF:
+        raise ValueError(f"Invalid IP address: {ip_range} - not a device address (multicast, 0.0.0.0 or broadcast)")
     return iter([ip_range]), 1
 
 
@@ -337,10 +343,14 @@ def target_address_error(address: str) -> Optional[str]:
     if not text:
         return "empty target address"
     try:
-        ipaddress.IPv4Address(text)
-        return None
+        ip = ipaddress.IPv4Address(text)
     except ValueError:
         pass
+    else:
+        # Not addresses of a single device: connecting can only fail
+        if ip.is_multicast or ip.is_unspecified or int(ip) == 0xFFFFFFFF:
+            return f"{text} is not a device address (multicast, 0.0.0.0 or broadcast)"
+        return None
     labels = text.rstrip(".").split(".")
     looks_numeric = all(label.isdigit() for label in labels)
     if not looks_numeric and len(text) <= 253 and all(_HOST_LABEL.fullmatch(label) for label in labels):

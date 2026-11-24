@@ -113,10 +113,25 @@ hours of waiting); the edge check needs ~3 per chunk. Accepted trade-off: a
 readable island strictly inside a range whose both ends are invalid is
 reported as NG_ILLEGAL_ADDR.
 
+The edge check is a per-handler flag (`EDGE_PROBE_SHORTCUT`) and is off for
+Modbus/TCP: register maps are sparse there, so every address of a failed
+range is confirmed on its own (about 2N requests for a wholly invalid range).
+
+Unanswered ranges: a chunk that times out although the PLC answered the
+request before it is halved as well (`_search_unanswered`), because some
+devices drop a request touching an invalid address instead of answering an
+error. A half that stays unanswered is searched further only after the PLC
+answered a read of the last address it was known to answer; otherwise the
+link is taken to be down and nothing more is sent. A single address that
+stays unanswered when checked twice is learned for the session as
+NG_TIMEOUT.
+
 **Constraints:**
 - Maximum split depth: 12 levels (log2(4096))
 - Estimated time per level: 100-500ms
-- Maximum wait on full-range error: ~6 seconds
+- A lost link is detected after 3 consecutive transport failures; the rest
+  of the range is then reported without further requests. Every request
+  that is not answered still costs one request timeout (default 5 s).
 
 ### Data Output Files
 

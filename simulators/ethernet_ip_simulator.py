@@ -303,6 +303,13 @@ class EtherNetIPProtocol(asyncio.Protocol):
             return self._handle_unregister_session(session, context)
         elif command == EIP_CMD_LIST_IDENTITY:
             return self._handle_list_identity(context)
+        elif command in (EIP_CMD_SEND_RR_DATA, EIP_CMD_SEND_UNIT_DATA) and (
+            not self.session_handle or session != self.session_handle
+        ):
+            # No RegisterSession on this connection (or another handle): a
+            # real device answers "invalid session handle" (0x0064)
+            logger.warning(f"Request with invalid session handle {session:08X}")
+            return self._make_response(command, session, context, b"", status=0x0064)
         elif command == EIP_CMD_SEND_RR_DATA:
             return self._handle_send_rr_data(session, context, data)
         elif command == EIP_CMD_LIST_SERVICES:
@@ -328,6 +335,7 @@ class EtherNetIPProtocol(asyncio.Protocol):
     def _handle_unregister_session(self, session: int, context: bytes) -> bytes:
         """Handle Unregister Session request"""
         logger.info(f"Session unregistered: {session:08X}")
+        self.session_handle = 0
         return self._make_response(EIP_CMD_UNREGISTER_SESSION, 0, context, b"")
 
     def _handle_list_identity(self, context: bytes) -> bytes:

@@ -878,23 +878,27 @@ class DatabaseExporter:
             return 0
         deleted = 0
         while self.used_bytes() > limit:
-            removed = 0
-            for sql in (
-                # Oldest change history and denied-address log entries first
-                """DELETE FROM data_history WHERE id IN (
-                       SELECT id FROM data_history ORDER BY id LIMIT
-                       (SELECT MAX(100, COUNT(*) / 10) FROM data_history))""",
-                """DELETE FROM denied_addresses WHERE id IN (
-                       SELECT id FROM denied_addresses ORDER BY id LIMIT
-                       (SELECT MAX(100, COUNT(*) / 10) FROM denied_addresses))""",
-                """DELETE FROM data_points WHERE id IN (
+            # Data points first: they are what fills the file. Deleting the
+            # change history and the denied-address log on every pass as
+            # well emptied those small tables long before the size was
+            # reached. They are trimmed only when no data point is left to
+            # delete (each address keeps its latest value).
+            removed = self._db.execute("""DELETE FROM data_points WHERE id IN (
                        SELECT id FROM data_points
                        WHERE id NOT IN (SELECT MAX(id) FROM data_points
                                         GROUP BY plc_ip, protocol, port, address)
                        ORDER BY id LIMIT
-                       (SELECT MAX(1000, COUNT(*) / 10) FROM data_points))""",
-            ):
-                removed += self._db.execute(sql).rowcount
+                       (SELECT MAX(1000, COUNT(*) / 10) FROM data_points))""").rowcount
+            if not removed:
+                for sql in (
+                    """DELETE FROM data_history WHERE id IN (
+                           SELECT id FROM data_history ORDER BY id LIMIT
+                           (SELECT MAX(100, COUNT(*) / 10) FROM data_history))""",
+                    """DELETE FROM denied_addresses WHERE id IN (
+                           SELECT id FROM denied_addresses ORDER BY id LIMIT
+                           (SELECT MAX(100, COUNT(*) / 10) FROM denied_addresses))""",
+                ):
+                    removed += self._db.execute(sql).rowcount
             self._db.commit()
             if not removed:
                 logger.warning(

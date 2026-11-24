@@ -244,8 +244,11 @@ class RichProgressDisplay:
                 console=self.console,
             ) as progress:
                 self._progress = progress
-                yield progress
-                self._progress = None
+                try:
+                    yield progress
+                finally:
+                    # Also after an exception: never keep a stopped Progress
+                    self._progress = None
         else:
             simple = SimpleProgress()
             yield simple
@@ -295,7 +298,7 @@ def create_progress_callback(display: RichProgressDisplay, task_id: int) -> Call
     """Create a progress callback function for use with other modules"""
 
     def callback(message: str, current: int, total: int) -> None:
-        if display._progress and task_id:
+        if display._progress and task_id is not None:  # rich's first task id is 0
             display._progress.update(task_id, completed=current, total=total, description=message)
 
     return callback

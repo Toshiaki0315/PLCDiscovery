@@ -190,7 +190,8 @@ class BroadcastDiscovery:
             # Directed broadcast address of every connected network (a PC may
             # have several, and 255.255.255.255 alone leaves only one interface)
             broadcasts = []
-            for ip, netmask in get_local_networks():
+            # May start a subprocess (no netifaces): off the event loop
+            for ip, netmask in await asyncio.get_running_loop().run_in_executor(None, get_local_networks):
                 address = str(ipaddress.IPv4Network(f"{ip}/{netmask}", strict=False).broadcast_address)
                 if address not in broadcasts:
                     broadcasts.append(address)
@@ -273,6 +274,10 @@ class BroadcastDiscovery:
                 protocol=Protocol.SLMP,
                 port=SLMP_DISCOVERY_PORT,
                 manufacturer="三菱電機/SLMP互換",
+                # Answered on UDP only: the TCP port a scan would connect to
+                # was not checked (it is set per PLC; 5001 is this tool's
+                # default). A TCP scan result for the same PLC replaces this.
+                model="SLMP対応PLC（UDP応答のみ・TCPポート未確認）",
             )
 
         except Exception as e:

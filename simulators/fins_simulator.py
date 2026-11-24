@@ -431,7 +431,12 @@ async def run_fins_simulator(host: str, port: int, transport: str = "both"):
             udp_transport.close()
         if tcp_server:
             tcp_server.close()
-            await tcp_server.wait_closed()
+            # wait_closed() waits for connected clients (Python 3.12+): with
+            # a scanner still connected, Ctrl+C would never end the simulator
+            try:
+                await asyncio.wait_for(tcp_server.wait_closed(), timeout=2)
+            except asyncio.TimeoutError:
+                logger.info("FINS Simulator stopped with clients still connected")
 
 
 def main():

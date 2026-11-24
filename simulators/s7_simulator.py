@@ -46,6 +46,11 @@ S7_AREA_TM = 0x1D    # Timers
 # Return codes
 S7_RET_OK = 0xFF
 S7_RET_ITEM_NOT_AVAILABLE = 0x0A
+S7_RET_ADDRESS_OUT_OF_RANGE = 0x05
+
+# Smallest length of a simulated data block in bytes (values written
+# beyond the sample data, e.g. by the simulator GUI, extend it)
+DB_MIN_LENGTH = 2000
 
 # USER_DATA: read SZL (system status list), as used by snap7's get_cpu_info
 S7_USERDATA_GROUP_SZL = 0x04
@@ -138,11 +143,22 @@ class S7Device:
                 return None, S7_RET_ITEM_NOT_AVAILABLE
 
         db = self.data_blocks[db_number]
+        # A data block has a length: a read past its end is refused by the
+        # CPU (address out of range), not answered with zeros
+        if start < 0 or start + size > self.db_length(db_number):
+            logger.debug(f"Read past the end of DB{db_number}: {start}+{size}")
+            return None, S7_RET_ADDRESS_OUT_OF_RANGE
+
         data = bytearray()
         for offset in range(start, start + size):
             data.append(db.get(offset, 0))
 
         return bytes(data), S7_RET_OK
+
+    def db_length(self, db_number: int) -> int:
+        """Length of a data block in bytes (its highest initialised byte + 1, at least DB_MIN_LENGTH)"""
+        db = self.data_blocks.get(db_number) or {}
+        return max(DB_MIN_LENGTH, max(db, default=-1) + 1)
 
     def read_merkers(self, start: int, size: int) -> Tuple[Optional[bytes], int]:
         """Read from merker memory"""

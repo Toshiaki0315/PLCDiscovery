@@ -416,13 +416,25 @@ class SettingsTabsMixin:
         return v
 
     def _database_config(self, force_enabled: bool = False) -> DatabaseConfig:
+        enabled = force_enabled or self.var_db_enabled.get()
+        defaults = DatabaseConfig()
+        try:
+            days = self._int_field(self.var_db_days, "保存する期間")
+            size = self._float_field(self.var_db_size, "サイズの上限")
+            interval = self._float_field(self.var_db_interval, "整理の間隔", exclusive=True)
+        except ValueError:
+            if enabled:
+                raise
+            # Database output is off: leftover text in its fields must not
+            # stop a scan that will not use them
+            days, size, interval = defaults.max_history_days, defaults.max_size_mb, defaults.cleanup_interval_hours
         return DatabaseConfig(
-            enabled=force_enabled or self.var_db_enabled.get(),
+            enabled=enabled,
             path=self.var_db_path.get().strip() or "plc_data.db",
             track_history=self.var_db_history.get(),
-            max_history_days=self._int_field(self.var_db_days, "保存する期間"),
-            max_size_mb=self._float_field(self.var_db_size, "サイズの上限"),
-            cleanup_interval_hours=self._float_field(self.var_db_interval, "整理の間隔", exclusive=True),
+            max_history_days=days,
+            max_size_mb=size,
+            cleanup_interval_hours=interval,
         )
 
     def _notification_settings(self) -> Dict:

@@ -367,7 +367,12 @@ class EtherNetIPHandler(BaseProtocolHandler):
             if info.get("tag_type") not in ("atomic", "struct"):
                 continue
             dims = [d for d in (info.get("dimensions") or []) if d]
-            if dims:
+            if len(dims) > 1:
+                # Multi-dimensional array: every index must be given. Only
+                # its first element is read ("Name[0]{n}" is not a valid
+                # request and was reported as an invalid tag).
+                names.append(f"{name}[{','.join('0' for _ in dims)}]")
+            elif dims:
                 names.append(f"{name}[0]{{{min(dims[0], MAX_TAG_ARRAY_ELEMENTS)}}}")
             else:
                 names.append(name)

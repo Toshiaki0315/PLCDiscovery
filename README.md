@@ -131,6 +131,11 @@ python plc_scanner.py --mode discover
 python plc_scanner.py --mode discover --ip-range "192.168.1.0/24"
 ```
 
+- `--ip-range`（または設定ファイルの `discovery.ip_ranges`）を指定した場合、探索するのはその範囲だけです。
+  UDPブロードキャストは送りません（ブロードキャストはPCの全ネットワークに届くため）
+- `--discover-protocols` で絞った場合、ブロードキャストもそのプロトコルの分だけ送ります
+- 応答した機器への接続の間と、10台ごとのまとまりの間には、`--packet-interval` の待ち時間が入ります
+
 ### フルスキャンモード (Full Scan)
 
 工場停止時用。PLCの主要デバイス範囲を一括取得:
@@ -296,7 +301,7 @@ python plc_scanner.py --mode full --target 192.168.1.10 --no-database
 | `--generate-config [PATH]` | 設定ファイルテンプレートを生成（既存ファイルは上書きしません） | plc_config.yaml |
 | `--mode`, `-m` | 動作モード (discover/full/range)。省略時は設定ファイルの `scan.mode`（明示されている場合のみ） | discover |
 | `--target`, `-t` | 対象PLC IPアドレス（カンマ区切りで複数指定可。ホスト名も可）。不正な値は接続前にエラー | - |
-| `--ip-range`, `-r` | スキャン対象IPレンジ | - |
+| `--ip-range`, `-r` | スキャン対象IPレンジ（指定時はUDPブロードキャスト探索を行いません） | - |
 | `--discover-protocols` | 探索で確認するプロトコル（カンマ区切り、例: `slmp,modbus`）。省略時は設定ファイルの `discovery.protocols`、なければ全プロトコル | 全プロトコル |
 | `--protocol`, `-p` | プロトコル指定 (slmp/eip/modbus/s7/fins/fins-tcp)。fins は FINS/UDP、fins-tcp は FINS/TCP | 自動検出 |
 | `--port` | ポート番号 | プロトコルデフォルト |
@@ -358,9 +363,18 @@ output:
   encoding: utf-8-sig
 
 logging:
-  level: INFO
+  level: INFO               # DEBUG / INFO / WARNING / ERROR（--verbose / --quiet が優先）
+  file: "./plc_scan.log"    # ログをファイルにも書く（省略可）
   audit_log: "./audit.log"
 ```
+
+設定ファイルの検証:
+
+- `network` に知らないキーがあるとエラーになります（`packet_interval` のような書き間違いで、通信負荷の設定が
+  既定値のままになるのを防ぐため）。ほかのセクションの知らないキーは警告を出して無視します
+- `--protocol` / `--port` は、設定ファイルの `targets` にも適用されます（コマンドラインが優先）
+- `--port` だけを指定した場合、そのポートで各プロトコルを順に試して自動検出します
+- `--device` を `--range` なしで指定すると、そのデバイスの 0-999 を読みます（設定ファイルの `scan.device_ranges` より優先）
 
 ## 出力ファイル
 
@@ -763,6 +777,13 @@ STRING / RAW は `length`（1つの値のワード数）ごとに1つの値に�
 （`--data-type STRING` の場合は読み取り範囲全体）。例: `start: 1000, end: 1099, type: STRING, length: 10` で20文字の文字列が10個。
 途中のワードが読めなかった場合も、後続の組はずれません。値を構成する2ワード目以降の行も、元の値と16進表記のまま出力されます。
 
+次の型マッピングは設定エラーになります（以前は黙って誤った変換になっていました）:
+
+- 範囲のワード数が値のワード数の倍数でない（例: FLOAT に `start: 100, end: 102`）
+- 同じデバイスで範囲が重なっている
+
+EtherNet/IP のタグは、名前が `Count1` のように数字で終わっていても、型変換の対象になりません（タグ自身の型で読みます）。
+
 ### プログラムからの使用
 
 ```python
@@ -793,6 +814,16 @@ print(values)  # [100, 200, 300, 400]
 範囲の先頭と末尾を1点ずつ読み、両方とも `NG_ILLEGAL_ADDR` なら範囲全体を `NG_ILLEGAL_ADDR` とします。
 1点単位まで分割すると約2N回の要求（R0-32767 で約65,000回・数時間）になるためです。
 両端が読めない範囲の内側に、読めるアドレスが孤立して存在する場合は、それも NG と記録されます。
+
+Modbus/TCP ではこの近道を使いません。レジスタが飛び飛びに定義された機器が多く、読めるレジスタを NG と
+記録してしまうためです。そのかわり、無効な範囲では1点ずつの確認になり、要求数が増えます
+（全域が無効な機器のフルスキャンでは数万回）。
+
+不正なアドレスを含む要求にエラーを返さず、無応答になる機器（Modbus ゲートウェイなど）にも対応しています。
+直前まで応答していたPLCが範囲の読み出しに応答しない場合、範囲を半分ずつ読んで絞り込みます。
+掘り進める前に、最後に読めたアドレスを読み直して回線が生きていることを確かめるので、回線断のときは
+数回の要求で打ち切ります。2回確かめても応答しない1点は、そのセッションの間 `NG_TIMEOUT` として記録し、
+以降の周期では読みません。
 
 これにより、一部のアドレスがアクセス不可でも全体のスキャンが中断することなく継続されます。
 
@@ -852,7 +883,9 @@ python scripts/setup_database.py --status ./plc_data.db # ステータス表示
 
 ## 監査ログ形式
 
-監査ログはJSON Lines形式で記録されます：
+監査ログはJSON Lines形式で記録されます。PLCへ送った読み取り要求は、結果（`READ_SUCCESS` / `READ_ERROR`）と
+所要時間つきで1件ずつ記録されます（EtherNet/IP のタグ読み出しは `device: "TAG"`）。
+GUI も、設定ファイルの `logging.audit_log` があれば同じ形式で記録します。
 
 ```json
 {"timestamp": "2024-01-01T00:00:00", "event_type": "SESSION_START", "session_id": "xxx"}

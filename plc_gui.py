@@ -892,8 +892,12 @@ class PLCScannerApp(SettingsTabsMixin):
                     "タグを読めるのは EtherNet/IP（Logix・オムロン NJ/NX）だけです。\n"
                     "プロトコルを「ETHERNET_IP」か「自動検出」にするか、タグ欄を空にしてください。"
                 )
-            start = self._int_field(self.var_start, "開始アドレス")
-            end = self._int_field(self.var_end, "終了アドレス")
+            # The address fields are used by a range scan of a device only:
+            # leftover text in them must not stop a full scan or a tag read
+            start = end = 0
+            if mode == "range" and not tags:
+                start = self._int_field(self.var_start, "開始アドレス")
+                end = self._int_field(self.var_end, "終了アドレス")
             if mode == "range" and not tags and end < start:
                 raise ValueError("終了アドレスは開始アドレス以上にしてください。")
             if mode == "range" and not tags and end - start + 1 > MAX_RANGE_POINTS:

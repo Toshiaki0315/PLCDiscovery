@@ -62,6 +62,11 @@ def setup_database(db_path: str, force: bool = False) -> bool:
         
         print("Removing existing database...")
         db_path.unlink()
+        # Leftover journal / WAL files belong to the removed database
+        for suffix in ("-journal", "-wal", "-shm"):
+            leftover = db_path.with_name(db_path.name + suffix)
+            if leftover.exists():
+                leftover.unlink()
     
     print(f"Creating database: {db_path}")
     
@@ -92,7 +97,7 @@ def setup_database(db_path: str, force: bool = False) -> bool:
         conn.close()
         
         print()
-        print("✓ Database created successfully!")
+        print("OK: Database created successfully!")
         print()
         print("Database Information:")
         print(f"  Path: {db_path}")

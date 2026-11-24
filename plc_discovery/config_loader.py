@@ -9,7 +9,7 @@ import json
 import logging
 import math
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +131,31 @@ NETWORK_MINIMUMS: Dict[str, int] = {
     "request_timeout_ms": 1,
     "max_concurrent": 1,
 }
+
+
+# Upper limit of parallel PLC connections
+MAX_CONCURRENT = 32
+
+# CSV encodings (as --encoding)
+OUTPUT_ENCODINGS = ("utf-8-sig", "utf-8", "shift-jis")
+
+# Settings read from each section; anything else is reported as unknown
+KNOWN_SECTION_KEYS: Dict[str, Tuple[str, ...]] = {
+    "discovery": ("enabled", "ip_ranges", "scan_same_segment", "protocols"),
+    "scan": ("mode", "device_ranges", "interval_seconds", "tags", "tag_members"),
+    "output": ("directory", "encoding", "format", "include_timestamp", "database", "hex_addresses", "periodic_csv"),
+    "logging": ("level", "file", "audit_log", "format"),
+    "data_types": ("default_type", "default_byte_order", "mappings"),
+    "notification_settings": ("report_interval_minutes", "min_interval_minutes"),
+}
+KNOWN_TOP_LEVEL_KEYS = (
+    "version",
+    "network",
+    "targets",
+    "notifications",
+    "thresholds",
+    *KNOWN_SECTION_KEYS,
+)
 
 
 def integer_error(value: Any, minimum: int) -> Optional[str]:
@@ -502,6 +527,28 @@ class ConfigLoader:
                 f"(allowed: {', '.join(DEFAULT_CONFIG['network'])})"
             )
 
+        max_concurrent = net.get("max_concurrent", 1)
+        if isinstance(max_concurrent, int) and not isinstance(max_concurrent, bool) and max_concurrent > MAX_CONCURRENT:
+            # Each connection is a worker thread and a session on a PLC
+            errors.append(f"network.max_concurrent must be at most {MAX_CONCURRENT}, got {max_concurrent}")
+
+        # Keys nobody reads are most likely misspelt: say so (not an error,
+        # older files may carry keys of earlier versions)
+        for section, known in KNOWN_SECTION_KEYS.items():
+            for key in sorted(str(k) for k in (self.config.get(section) or {}) if k not in known):
+                logger.warning(f"Config: {section}.{key} is not a known setting and is ignored")
+        for key in sorted(str(k) for k in self.config if k not in KNOWN_TOP_LEVEL_KEYS):
+            logger.warning(f"Config: {key} is not a known section and is ignored")
+
+        # Validate output settings (the command line limits these by itself)
+        out = self.config.get("output") or {}
+        if out.get("encoding") is not None and str(out["encoding"]).lower() not in OUTPUT_ENCODINGS:
+            errors.append(
+                f"output.encoding: unknown encoding {out['encoding']!r} (allowed: {', '.join(OUTPUT_ENCODINGS)})"
+            )
+        if out.get("directory") is not None and not isinstance(out["directory"], str):
+            errors.append(f"output.directory must be a path, got {out['directory']!r}")
+
         # Validate the log level (a typo would silently leave INFO in effect)
         log_level = (self.config.get("logging") or {}).get("level")
         if log_level is not None and str(log_level).upper() not in ("DEBUG", "INFO", "WARNING", "ERROR"):
@@ -547,6 +594,12 @@ class ConfigLoader:
             error = ip_range_error(str(ip_range))
             if error:
                 errors.append(f"discovery.ip_ranges[{i}]: {error}")
+
+        # An empty filter would be read as "no filter" and probe everything
+        protocols_filter = (self.config.get("discovery") or {}).get("protocols")
+        if self.is_set("discovery", "protocols") and (not isinstance(protocols_filter, list) or not protocols_filter):
+            errors.append("discovery.protocols must list at least one protocol (remove the key to probe all)")
+            protocols_filter = []
 
         # Validate discovery protocol filter
         for name in self.config.get("discovery", {}).get("protocols", []) or []:

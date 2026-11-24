@@ -25,6 +25,9 @@ from .config_loader import ConfigLoader
 # Default settings file: the one the CLI documents (python plc_scanner.py -c plc_config.yaml)
 DEFAULT_SETTINGS_FILE = "plc_config.yaml"
 
+# File name endings the CLI's config loader accepts
+SETTINGS_SUFFIXES = (".yaml", ".yml", ".json")
+
 # Sections (and keys) owned by the GUI settings tabs
 GUI_SECTIONS = ("network", "output", "notifications", "notification_settings")
 
@@ -88,11 +91,15 @@ def save(path: str, updates: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]
     Returns:
         (written configuration, validation errors)
     """
+    file = Path(path)
+    if file.suffix.lower() not in SETTINGS_SUFFIXES:
+        # plc_scanner.py -c only reads these: a file saved under another
+        # name could be written but never used
+        return {}, [f"the settings file name must end in {', '.join(SETTINGS_SUFFIXES)} (got {file.name})"]
     config = merge(read_file(path), updates)
     errors = validate(config)
     if errors:
         return config, errors
-    file = Path(path)
     file.parent.mkdir(parents=True, exist_ok=True)
     # Write to a temporary file first: a failure never leaves a truncated file
     tmp = file.with_name(file.name + ".tmp")

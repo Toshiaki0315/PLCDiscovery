@@ -222,6 +222,9 @@ class ThresholdMonitor:
         self._notified: Set[Key] = set()
         # Notified excursions that ended but whose clear is not sent yet
         self._unsent_clear: Dict[Key, ThresholdEvent] = {}
+        # Last value read per threshold (for a notification sent in a cycle
+        # in which the address could not be read)
+        self._last_value: Dict[Key, float] = {}
 
     def __bool__(self) -> bool:
         return bool(self.thresholds)
@@ -253,10 +256,20 @@ class ThresholdMonitor:
         for threshold in self.for_target(target, plc_ip):
             point = by_address.get(threshold.address.casefold())
             value = numeric_value(point) if point is not None else None
-            if value is None:
-                continue  # not read this cycle: keep the previous state
             key = (target, threshold)
-            if key in self._exceeded:
+            if value is None:
+                # Not read this cycle: the state stays as it is, but a
+                # notification still waiting to go out (throttled or failed
+                # earlier) is offered with the last value read
+                last = self._last_value.get(key)
+                if last is None:
+                    continue
+                value, read = last, False
+            else:
+                self._last_value[key], read = value, True
+            if not read:
+                pass
+            elif key in self._exceeded:
                 if threshold.back_inside(value):
                     event = ThresholdEvent(threshold, value, now - self._exceeded.pop(key))
                     result.returned.append(event)

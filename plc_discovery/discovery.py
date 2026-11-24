@@ -222,7 +222,8 @@ class PLCDiscovery:
         control LAN), and isolated networks without a default gateway work.
         Uses ARP for MAC discovery and protocol probes for detection.
         """
-        networks = get_local_networks()
+        # May start a subprocess (no netifaces): off the event loop
+        networks = await asyncio.get_running_loop().run_in_executor(None, get_local_networks)
         if not networks:
             logger.warning(
                 "No IPv4 network found on this PC (only loopback / link-local). "
@@ -296,7 +297,14 @@ class PLCDiscovery:
             mac = cache.get(plc.ip_address)
             if mac:
                 plc.mac_address = mac
-                plc.manufacturer = plc.manufacturer or get_manufacturer_from_mac(mac)
+                # The maker registered for the MAC is more specific than the
+                # name the protocol implies ("三菱電機/キーエンス" for SLMP),
+                # which was filled in before the MAC was known - as it is
+                # when the ARP scan (administrator rights) supplies the MAC
+                maker = get_manufacturer_from_mac(mac)
+                implied = PROTOCOL_IDENTITY_DEFAULTS.get(plc.protocol, (None, None))[0]
+                if maker and (not plc.manufacturer or plc.manufacturer == implied):
+                    plc.manufacturer = maker
                 filled += 1
         if filled:
             logger.info(f"MAC addresses of {filled} PLC(s) taken from the OS ARP cache")
@@ -338,10 +346,14 @@ class PLCDiscovery:
                     *(self._probe_host_all(h, mac_table.get(h)) for h in batch), return_exceptions=True
                 )
 
-                for result in results:
+                for host, result in zip(batch, results):
                     if isinstance(result, list):
                         for plc in result:
                             self.discovered_plcs[plc_key(plc)] = plc
+                    elif isinstance(result, BaseException):
+                        # Not the same as "no PLC there": say that the host
+                        # could not be checked
+                        logger.warning(f"Probing {host} failed: {result!r}")
 
                 self._report_progress("Scanning hosts", min(i + batch_size, total), total)
                 # Packet interval between batches, as between data reads
@@ -624,9 +636,18 @@ class PLCDiscovery:
                 client = snap7.client.Client()
                 # S7-1200/1500 use slot 0, S7-300/400 slot 2 (as S7Handler)
                 try:
-                    client.connect(plc_info.ip_address, 0, 0, plc_info.port or 102)
+                    try:
+                        client.connect(plc_info.ip_address, 0, 0, plc_info.port or 102)
+                    except Exception:
+                        client.connect(plc_info.ip_address, 0, 2, plc_info.port or 102)
                 except Exception:
-                    client.connect(plc_info.ip_address, 0, 2, plc_info.port or 102)
+                    # Neither slot: release the client (socket / native
+                    # handle) instead of leaving it to the garbage collector
+                    try:
+                        client.disconnect()
+                    except Exception as e:
+                        logger.debug(f"S7 disconnect after failed connect: {e}")
+                    raise
 
                 # Fields are returned, not set here: after a timeout this
                 # thread may still finish and must not change the result
