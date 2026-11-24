@@ -167,6 +167,16 @@ class EtherNetIPHandler(BaseProtocolHandler):
             logger.error("pycomm3 library not installed")
             return False
         except Exception as e:
+            if self._plc_type == "logix":
+                # It answered as a Logix controller before: a reconnect that
+                # fails (CPU busy, link still down) must not turn it into a
+                # "generic CIP" device for the rest of the session - its tag
+                # list would be gone and tags would be read over a path
+                # without the slot. The next reconnect tries Logix again.
+                logger.warning(f"EtherNet/IP (Logix) reconnect to {self.ip_address}:{self.port} failed: {e}")
+                self._client = None
+                self._connected = False
+                return False
             # Expected for non-Logix controllers: not worth a warning
             logger.info(f"Not a Logix controller ({e}); trying SLC driver")
             if await self._connect_slc():
@@ -389,7 +399,7 @@ class EtherNetIPHandler(BaseProtocolHandler):
         Array reads ("Tag[0]{10}") give one data point per element and
         structures one per member ("Tag.Member").
         """
-        if self._plc_type == "generic" and self._client is not None:
+        if self._plc_type == "generic":
             return self._learn_denied_tags(await self._read_tags_generic(tags))
         return self._learn_denied_tags(await self._read_tags_logix(tags))
 
@@ -410,10 +420,19 @@ class EtherNetIPHandler(BaseProtocolHandler):
         results: List[DataPoint] = []
         for start in range(0, len(tags), TAG_BATCH_SIZE):
             batch = tags[start : start + TAG_BATCH_SIZE]
-            if not self.supports_tags:
+            if self._plc_type == "slc":
+                # Data-file controllers have no tags
                 results += [_tag_point(split_element_count(t)[0], StatusCode.NG_UNSUPPORTED) for t in batch]
                 continue
-            if not await self._ensure_fresh_connection() or not self._connected:
+            if (
+                not await self._ensure_fresh_connection()
+                or not self._connected
+                or self._client is None
+                or self._plc_type != "logix"
+            ):
+                # The link is down (the client is gone after a reconnect that
+                # failed): a communication error, not "unsupported" - that
+                # would be learned as denied and taken for an answer
                 results += [_tag_point(split_element_count(t)[0], StatusCode.NG_COMM_ERROR) for t in batch]
                 continue
             await self._rate_limiter.wait()

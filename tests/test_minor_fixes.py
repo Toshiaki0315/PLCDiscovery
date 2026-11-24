@@ -40,7 +40,7 @@ class TestCLIOptions:
         assert plc_scanner.get_device_type_from_string(args.device) == expected
 
     def test_db_track_history_can_be_disabled(self, monkeypatch):
-        assert parse(monkeypatch).db_track_history is True
+        assert parse(monkeypatch).db_track_history is None  # the config file's setting, else on
         assert parse(monkeypatch, "--no-db-track-history").db_track_history is False
 
 

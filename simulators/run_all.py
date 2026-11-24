@@ -204,7 +204,13 @@ class SimulatorManager:
 
     async def run_forever(self):
         """Run until interrupted"""
-        await asyncio.gather(*[server.serve_forever() for server in self.servers])
+        if not self.servers:
+            return  # nothing could be started
+        # The servers are already listening. Not serve_forever(): since
+        # Python 3.12 its cancellation waits for every connected client, so
+        # Ctrl+C had to be pressed twice while a scanner was connected.
+        # stop_all() closes them with a bounded wait.
+        await asyncio.Event().wait()
 
 
 async def main(host: str):

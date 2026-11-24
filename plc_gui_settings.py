@@ -69,6 +69,10 @@ class JobOutputs:
 class SettingsTabsMixin:
     """④ 通知 / ⑤ データベース タブと設定ファイルの保存・読み込み"""
 
+    # Path of a settings file whose values could not be put on screen:
+    # saving it asks first (what is not shown would be overwritten)
+    _settings_not_applied: Optional[str] = None
+
     if TYPE_CHECKING:  # provided by plc_gui.PLCScannerApp
         root: tk.Tk
         tab_notify: ttk.Frame
@@ -474,7 +478,21 @@ class SettingsTabsMixin:
     def _apply_settings(self, config: Dict) -> None:
         """読み込んだ設定（既定値と合成済み）を③〜⑤タブに反映する"""
         get = settings_file.section
-        net = get(config, "network", default={}) or {}
+
+        def mapping(value: Any) -> Dict:
+            return value if isinstance(value, dict) else {}
+
+        def number(value: Any, default: float) -> str:
+            # A value of the wrong type (max_size_mb: "x", or left empty) is
+            # shown as the default. It must not stop the rest from being
+            # applied: the notification destinations further down were left
+            # empty, and the next "save" wrote that over the file.
+            try:
+                return f"{float(value):g}"
+            except (TypeError, ValueError):
+                return f"{default:g}"
+
+        net = mapping(get(config, "network", default={}))
         for var, key in (
             (self.var_packet_interval, "packet_interval_ms"),
             (self.var_retry_interval, "retry_interval_ms"),
@@ -482,7 +500,7 @@ class SettingsTabsMixin:
         ):
             if key in net:
                 var.set(str(net[key]))
-        out = get(config, "output", default={}) or {}
+        out = mapping(get(config, "output", default={}))
         if out.get("directory"):
             self.var_output_dir.set(str(Path(out["directory"]).expanduser()))
         self.var_hex_addresses.set(bool(out.get("hex_addresses", False)))
@@ -490,19 +508,22 @@ class SettingsTabsMixin:
             self.var_periodic_csv.set(out["periodic_csv"])
         if out.get("encoding") in ("utf-8-sig", "utf-8", "shift-jis"):
             self.var_encoding.set(out["encoding"])
-        db = out.get("database") or {}
+        db = mapping(out.get("database"))
         defaults = DatabaseConfig()
         self.var_db_enabled.set(bool(db.get("enabled", False)))
-        self.var_db_path.set(str(db.get("path", defaults.path)))
+        self.var_db_path.set(str(db.get("path") or defaults.path))
         self.var_db_history.set(bool(db.get("track_history", True)))
-        self.var_db_days.set(str(db.get("max_history_days", defaults.max_history_days)))
-        self.var_db_size.set(f"{db.get('max_size_mb', defaults.max_size_mb):g}")
-        self.var_db_interval.set(f"{db.get('cleanup_interval_hours', defaults.cleanup_interval_hours):g}")
-        timing = get(config, "notification_settings", default={}) or {}
-        self.var_report_interval.set(f"{timing.get('report_interval_minutes', 0):g}")
-        self.var_min_interval.set(f"{timing.get('min_interval_minutes', 0):g}")
+        self.var_db_days.set(number(db.get("max_history_days", defaults.max_history_days), defaults.max_history_days))
+        self.var_db_size.set(number(db.get("max_size_mb", defaults.max_size_mb), defaults.max_size_mb))
+        self.var_db_interval.set(
+            number(db.get("cleanup_interval_hours", defaults.cleanup_interval_hours), defaults.cleanup_interval_hours)
+        )
+        timing = mapping(get(config, "notification_settings", default={}))
+        self.var_report_interval.set(number(timing.get("report_interval_minutes", 0), 0))
+        self.var_min_interval.set(number(timing.get("min_interval_minutes", 0), 0))
+        destinations = get(config, "notifications", default=[])
         self.notify_destinations = [
-            dict(d) for d in (get(config, "notifications", default=[]) or []) if isinstance(d, dict)
+            dict(d) for d in (destinations if isinstance(destinations, list) else []) if isinstance(d, dict)
         ]
         self._refresh_notify_tree()
 
@@ -518,6 +539,13 @@ class SettingsTabsMixin:
 
     def _save_settings(self) -> None:
         path = self.var_settings_path.get().strip()
+        if self._settings_not_applied == path and not messagebox.askokcancel(
+            "設定の保存",
+            "この設定ファイルは画面に読み込めていません。\n"
+            "保存すると、画面に表示されていない設定（通知先など）がファイルから消えます。\n\n保存しますか？",
+            icon="warning",
+        ):
+            return
         try:
             updates = self._settings_dict()
         except ValueError as e:
@@ -531,6 +559,7 @@ class SettingsTabsMixin:
         if errors:
             messagebox.showwarning("設定の誤り", "保存しませんでした:\n" + "\n".join(errors[:10]))
             return
+        self._settings_not_applied = None
         logging.info(f"設定を保存しました: {path}")
         self.var_status.set(f"設定を保存しました → {path}")
 
@@ -545,11 +574,14 @@ class SettingsTabsMixin:
         except Exception as e:
             messagebox.showerror("読み込みエラー", f"設定ファイルを読み込めませんでした:\n{e}")
             return
+        self._settings_not_applied = None
         try:
             self._apply_settings(config)
         except Exception as e:
-            # A value of the wrong type (max_size_mb: "100"): the window must
-            # still open - under pythonw a crash here showed nothing at all
+            # The window must still open - under pythonw a crash here showed
+            # nothing at all. What is on screen is not the file's content:
+            # saving asks first (it would overwrite what was not applied).
+            self._settings_not_applied = path
             logging.error(f"設定ファイルの値を画面に反映できませんでした（{path}）: {e}")
             if not quiet:
                 messagebox.showerror("読み込みエラー", f"設定ファイルの値に誤りがあります:\n{e}")
