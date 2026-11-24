@@ -160,7 +160,7 @@ class SimulatorManager:
             )
             self.servers.append(fins_tcp_server)
             logger.info(f"✓ FINS Simulator started on {self.host}:9600 (UDP + TCP)")
-            logger.info("  Denied ranges: DM5000-5100, HR1000-1050")
+            logger.info("  Denied ranges: DM5000-5100, HR300-350")
         except Exception as e:
             logger.error(f"✗ Failed to start FINS Simulator: {e}")
 

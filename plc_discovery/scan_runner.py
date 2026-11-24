@@ -165,8 +165,15 @@ async def collect_items(collector: PLCDataCollector, items: Optional[Sequence[Sc
     if items is None:
         return await collector.collect_full_scan()
     points: List[DataPoint] = []
-    for item in items:
-        points.extend(await collect_item(collector, item))
+    collector.skip_reconnect = False
+    try:
+        for item in items:
+            points.extend(await collect_item(collector, item))
+            # PLC off: the remaining ranges are reported NG_COMM_ERROR
+            # without another reconnect attempt each (the next scan tries)
+            collector.skip_reconnect = not collector.is_connected
+    finally:
+        collector.skip_reconnect = False
     return points
 
 

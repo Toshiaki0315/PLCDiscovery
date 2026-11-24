@@ -115,7 +115,11 @@ TARGET_OPTION_RANGES: Dict[Optional[Protocol], Dict[str, tuple]] = {
     Protocol.FINS_TCP: {"dest_node": _FINS_NODE, "source_node": _FINS_NODE},
     Protocol.S7: {"rack": (0, 7), "slot": (0, 31), "db_number": (1, 65535)},
     Protocol.ETHERNET_IP: {"slot": (0, 255)},
-    Protocol.MODBUS_TCP: {"unit_id": (0, 255)},
+    # contiguous: 1 = the registers form one block without gaps, so a failed
+    # range whose two ends are invalid is reported as invalid without
+    # reading every register in between (far fewer requests on a device
+    # with few registers); 0 (default) = sparse map, each one is confirmed
+    Protocol.MODBUS_TCP: {"unit_id": (0, 255), "contiguous": (0, 1)},
 }
 TARGET_OPTIONS: Dict[Optional[Protocol], set] = {
     protocol: set(ranges) for protocol, ranges in TARGET_OPTION_RANGES.items()
@@ -524,6 +528,18 @@ class ConfigLoader:
                 for i, target in enumerate(targets)
                 if not isinstance(target, dict)
             )
+        # ... and the lists / mappings inside them (ip_ranges: "192.168.1.0/24"
+        # without the list dash was checked character by character)
+        for section, key, kind, what in (
+            ("discovery", "ip_ranges", list, 'a list (lines starting with "- ")'),
+            ("discovery", "protocols", list, 'a list (lines starting with "- ")'),
+            ("scan", "device_ranges", list, 'a list (lines starting with "- ")'),
+            ("output", "database", dict, "a mapping (key: value lines)"),
+        ):
+            parent = self.config.get(section)
+            value = parent.get(key) if isinstance(parent, dict) else None
+            if value is not None and not isinstance(value, kind):
+                errors.append(f"{section}.{key} must be {what}, got {value!r}")
         if errors:
             return errors
 

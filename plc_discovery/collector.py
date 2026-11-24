@@ -63,6 +63,9 @@ class PLCDataCollector:
         self._denied_addresses: set = set()
         self._denied_statuses: Dict[str, StatusCode] = {}
         self._progress_callback: Optional[Callable[[str, int, int], None]] = None
+        # Set by collect_items() for the rest of a scan once a range found
+        # the PLC unreachable: one reconnect attempt per scan, not per range
+        self.skip_reconnect = False
 
     def set_progress_callback(self, callback: Callable[[str, int, int], None]) -> None:
         """Set callback for progress updates"""
@@ -135,6 +138,11 @@ class PLCDataCollector:
             return False
         if handler.is_connected:
             return True
+        if self.skip_reconnect:
+            # The reconnect has just failed for an earlier range of this
+            # scan: the other ranges do not each wait for another
+            # connection timeout (and delay the other PLCs)
+            return False
         logger.info(f"Connection to {self.plc_info.ip_address} lost; reconnecting")
         if not await handler.reconnect():
             return False
@@ -301,12 +309,18 @@ class PLCDataCollector:
             logger.error("Not connected to PLC")
             return []
         if not await self._ensure_link():
-            points = [DataPoint(address=t, status=StatusCode.NG_COMM_ERROR, timestamp=get_timestamp()) for t in tags]
+            points = [
+                DataPoint(address=t, status=StatusCode.NG_COMM_ERROR, timestamp=get_timestamp(), is_tag=True)
+                for t in tags
+            ]
         elif hasattr(self._handler, "read_tags"):
             tag_handler: Any = self._handler
             points = await tag_handler.read_tags(tags)
         else:
-            points = [DataPoint(address=t, status=StatusCode.NG_UNSUPPORTED, timestamp=get_timestamp()) for t in tags]
+            points = [
+                DataPoint(address=t, status=StatusCode.NG_UNSUPPORTED, timestamp=get_timestamp(), is_tag=True)
+                for t in tags
+            ]
         self._collected_data.extend(points)
         return points
 
@@ -470,7 +484,9 @@ def comm_error_points(item: Union[DeviceRange, TagRange]) -> List[DataPoint]:
     timestamp = get_timestamp()
     if isinstance(item, TagRange):
         return [
-            DataPoint(address=split_element_count(tag)[0], status=StatusCode.NG_COMM_ERROR, timestamp=timestamp)
+            DataPoint(
+                address=split_element_count(tag)[0], status=StatusCode.NG_COMM_ERROR, timestamp=timestamp, is_tag=True
+            )
             for tag in item.tags
         ]
     prefix = item.device_type.value

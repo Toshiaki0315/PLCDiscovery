@@ -390,7 +390,23 @@ class EtherNetIPHandler(BaseProtocolHandler):
         structures one per member ("Tag.Member").
         """
         if self._plc_type == "generic" and self._client is not None:
-            return await self._read_tags_generic(tags)
+            return self._learn_denied_tags(await self._read_tags_generic(tags))
+        return self._learn_denied_tags(await self._read_tags_logix(tags))
+
+    def _learn_denied_tags(self, points: List[DataPoint]) -> List[DataPoint]:
+        """
+        Record tags the controller itself rejected (not found, not
+        published, unsupported type) as denied, so they are listed in
+        access_denied_log like device addresses. Timeouts and communication
+        errors are not recorded.
+        """
+        for point in points:
+            if point.status in self._PERMANENT_FAILURES:
+                self._session_cache.add_denied(point.address, point.status)
+        return points
+
+    async def _read_tags_logix(self, tags: List[str]) -> List[DataPoint]:
+        """Read tags through LogixDriver, TAG_BATCH_SIZE per request"""
         results: List[DataPoint] = []
         for start in range(0, len(tags), TAG_BATCH_SIZE):
             batch = tags[start : start + TAG_BATCH_SIZE]
@@ -567,7 +583,7 @@ def _tag_hex(value: int, type_name: Optional[str] = None) -> str:
 
 def _tag_point(name: str, status: StatusCode, value: Any = None, type_name: Optional[str] = None) -> DataPoint:
     """Data point for one tag value (``type_name``: its CIP type when known)"""
-    point = DataPoint(address=name, status=status, timestamp=get_timestamp())
+    point = DataPoint(address=name, status=status, timestamp=get_timestamp(), is_tag=True)
     if status != StatusCode.OK:
         return point
     if isinstance(value, bool):

@@ -105,7 +105,9 @@ def apply_data_type_conversion(
         return data_points
 
     # Parse addresses and find the start/end of each contiguous run
-    parsed: List[Optional[tuple]] = [_split_address(dp.address) for dp in data_points]
+    # Tags are names, even when one looks like a device address ("D1"):
+    # they keep their own value and type
+    parsed: List[Optional[tuple]] = [None if dp.is_tag else _split_address(dp.address) for dp in data_points]
 
     def continues(prev: Optional[tuple], addr: Optional[tuple]) -> bool:
         return bool(addr and prev and prev[0] == addr[0] and prev[1] + 1 == addr[1])
@@ -184,6 +186,10 @@ def apply_data_type_conversion(
             if mapping and number + j > mapping.end_address:
                 # Never take words from beyond the mapping (the next
                 # address may belong to another mapping with its own type)
+                break
+            if not mapping and type_manager and type_manager.get_mapping_for_address(number + j, prefix):
+                # Nor, for an unmapped value, a word that belongs to a
+                # mapping: it has its own type and would lose it
                 break
             nxt = data_points[i + j]
             if nxt.value is None or nxt.status != StatusCode.OK or parsed[i + j] != (prefix, number + j):

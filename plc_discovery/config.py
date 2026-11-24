@@ -460,6 +460,9 @@ class DataPoint:
     converted_value: Optional[Any] = None
     display_value: Optional[str] = None
     raw_words: Optional[List[int]] = None
+    # A symbolic tag / variable (EtherNet/IP), not a numeric device address:
+    # its name is never parsed as "device + number" (a tag may be called D1)
+    is_tag: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         """

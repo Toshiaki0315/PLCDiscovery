@@ -15,6 +15,7 @@ import asyncio
 import json
 import sqlite3
 import sys
+import threading
 import time
 from collections import Counter
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -242,13 +243,15 @@ def test_no_broadcast_when_the_search_is_limited_to_ip_ranges():
 def test_given_port_is_probed_for_every_protocol_one_at_a_time():
     probed = []
     active = [0]
+    overlaps = []  # checked after the probe: an assert in here would be swallowed by the prober
 
     def port_open(ip, port, timeout):
         return True
 
     def verify(ip, port, protocol, timeout):
         active[0] += 1
-        assert active[0] == 1, "protocols must not share the port at the same time"
+        if active[0] != 1:
+            overlaps.append(protocol)
         time.sleep(0.01)
         probed.append((protocol, port))
         active[0] -= 1
@@ -263,7 +266,9 @@ def test_given_port_is_probed_for_every_protocol_one_at_a_time():
             return await PLCDiscovery(FAST, port=5007)._probe_host("192.168.1.10")
 
     detected = asyncio.run(run())
+    assert overlaps == [], "protocols must not share the port at the same time"
     assert detected is not None and (detected.protocol, detected.port) == (Protocol.MODBUS_TCP, 5007)
+    assert len(probed) > 1  # another protocol was tried on the port before Modbus answered
     assert {port for _, port in probed} == {5007}
     assert probed[-1][0] == Protocol.MODBUS_TCP  # stops at the first protocol that answers
 
@@ -388,7 +393,8 @@ def _wait(condition, seconds=2.0):
 
 def test_gui_worker_is_busy_until_a_stopped_job_has_cleaned_up(monkeypatch):
     worker = _import_async_worker(monkeypatch)()
-    state = {"started": False, "cleaned": False}
+    state = {"started": False, "cleaning": False, "cleaned": False}
+    release = threading.Event()  # lets the cleanup finish (no wall-clock assumptions)
     done = []
 
     async def job():
@@ -396,19 +402,23 @@ def test_gui_worker_is_busy_until_a_stopped_job_has_cleaned_up(monkeypatch):
         try:
             await asyncio.sleep(60)
         finally:
-            await asyncio.sleep(0.2)  # final notification, PLC disconnect
+            state["cleaning"] = True  # final notification, PLC disconnect
+            while not release.is_set():
+                await asyncio.sleep(0.005)
             state["cleaned"] = True
 
     try:
         worker.submit(job(), done.append)
         assert _wait(lambda: state["started"])
         worker.cancel()
-        time.sleep(0.05)
+        assert _wait(lambda: state["cleaning"])
         # Still disconnecting: a second job must not be allowed to start
         assert worker.busy and not state["cleaned"] and not done
+        release.set()
         assert _wait(lambda: not worker.busy)
         assert state["cleaned"] and isinstance(done[0], asyncio.CancelledError)
     finally:
+        release.set()
         worker.shutdown(timeout=2)
 
 
@@ -462,12 +472,18 @@ def test_every_read_request_is_in_the_audit_log(tmp_path):
     assert any(e["event_type"] == "READ_ERROR" and e["error_message"] == "NG_ILLEGAL_ADDR" for e in reads)
 
 
-def test_audit_event_that_is_not_json_does_not_raise(tmp_path):
-    init_audit_logger(str(tmp_path / "audit.jsonl"))
+def test_audit_event_that_is_not_json_is_still_recorded(tmp_path):
+    log = tmp_path / "audit.jsonl"
+    init_audit_logger(str(log))
     try:
-        get_audit_logger().log_error("x", {"values": {1, 2}})  # a set is not JSON
+        get_audit_logger().log_error("scan failed", {"values": {7}, "path": tmp_path})  # a set, a Path: not JSON
     finally:
         close_audit_logger()
+    events = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    errors = [e for e in events if e["event_type"] == "ERROR"]
+    # Written as text, not dropped: an audit log must not lose a record
+    assert len(errors) == 1 and errors[0]["error_message"] == "scan failed"
+    assert errors[0]["metadata"] == {"values": "{7}", "path": str(tmp_path)}
 
 
 # ----------------------------------------------------------------------

@@ -60,7 +60,7 @@ from plc_discovery.cli_args import (  # noqa: F401  (re-exported for existing im
     resolve_output_settings,
     resolve_thresholds,
 )
-from plc_discovery.collector import PLCDataCollector, unreached_points
+from plc_discovery.collector import FULL_SCAN_ADDRESS, PLCDataCollector, unreached_points
 from plc_discovery.config import (
     PROTOCOL_PORTS,
     DataPoint,
@@ -101,7 +101,7 @@ from plc_discovery.scan_runner import (  # noqa: F401  (status_report_message re
     status_report_message,
 )
 from plc_discovery.thresholds import Threshold, ThresholdMonitor
-from plc_discovery.utils import ip_range_error, sorted_addresses
+from plc_discovery.utils import get_timestamp, ip_range_error, sorted_addresses
 
 logger = logging.getLogger(__name__)
 
@@ -413,7 +413,9 @@ async def run_single_scan(
                 ip,
                 stats["total_points"],
                 stats["success_count"],
-                stats["error_count"],
+                # Every point that was not read (as in the database and the
+                # scan summary), not only the communication errors
+                stats["total_points"] - stats["success_count"],
                 (loop.time() - scan_started) * 1000,
             )
     except Exception as e:
@@ -569,7 +571,13 @@ async def run_periodic_scan(
             display.print_warning("Scan interrupted by user")
             interrupted = True
             _uncancel_current_task()
-        # Notifications a slow webhook is still receiving
+        # Release the PLCs before waiting for notifications a slow webhook
+        # is still receiving (the collectors keep their data and statistics)
+        for key, collector in collectors.items():
+            try:
+                await collector.disconnect()
+            except Exception as e:
+                logger.debug(f"{key}: disconnect failed: {e}")
         await runner.drain()
 
         for key, collector in collectors.items():
@@ -582,7 +590,7 @@ async def run_periodic_scan(
                 ips[key],
                 stats["total_points"],
                 stats["success_count"],
-                stats["error_count"],
+                stats["total_points"] - stats["success_count"],
                 (loop.time() - started_at) * 1000,
             )
             display.print_info(f"Last cycle statistics for {key}:")
@@ -927,7 +935,16 @@ async def _run_scans(
 
     plc_infos, undetected = await _resolve_targets(args, config_loader, config, display)
     for ip in undetected:
-        results.add_failure(ip, UNDETECTED_PROTOCOL)
+        # No protocol answered (PLC off): still write what was asked for as
+        # NG_COMM_ERROR, like a target whose protocol was given. A full
+        # scan has no ranges without a protocol: one row for the whole scan.
+        unread = unreached_points(None, list(device_ranges) if device_ranges is not None else None) or [
+            DataPoint(address=FULL_SCAN_ADDRESS, status=StatusCode.NG_COMM_ERROR, timestamp=get_timestamp())
+        ]
+        filepath = ResultWriter(PLCInfo(ip_address=ip), exporter, display, db_exporter).export_points(unread)
+        if filepath:
+            display.print_info(f"Unreachable addresses saved to: {filepath}")
+        results.add(ip, False, UNDETECTED_PROTOCOL, unread, set())
 
     if mode == ScanMode.FULL and interval > 0:
         display.print_warning("--interval is ignored in full scan mode")
