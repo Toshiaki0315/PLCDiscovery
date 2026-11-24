@@ -5,9 +5,11 @@ Base Protocol Handler - Abstract interface for PLC communication
 import asyncio
 import dataclasses
 import logging
+import time
 from abc import ABC, abstractmethod
 from typing import Callable, Dict, List, Optional, Tuple, TypeVar
 
+from ..audit_log import get_audit_logger
 from ..config import SAFE_READ_WORDS, DataPoint, DeviceRange, DeviceType, NetworkConfig, Protocol, StatusCode
 from ..retry import (
     PLC_RETRY_CONFIG,
@@ -44,6 +46,14 @@ class BaseProtocolHandler(ABC):
     # _binary_search_read); smaller ranges are simply split
     EDGE_PROBE_MIN_COUNT = 4
 
+    # Whether a failed range whose two end addresses are invalid may be
+    # reported as wholly invalid without reading the addresses in between.
+    # Only safe where a device's addresses are one contiguous block (PLC
+    # device memory). Handlers of protocols with sparse address maps
+    # (Modbus register maps) turn it off: valid registers between two
+    # invalid ones would be reported - and learned - as inaccessible.
+    EDGE_PROBE_SHORTCUT = True
+
     # Highest address the protocol can encode (None = no local limit).
     # Requests beyond it are answered NG_ILLEGAL_ADDR without being sent:
     # libraries either wrap the address silently (wrong data) or raise
@@ -75,6 +85,10 @@ class BaseProtocolHandler(ABC):
         self._rate_limiter = RateLimiter(self.config.packet_interval_ms)
         self._session_cache = SessionCache()
         self._comm_failure_streak = 0
+        # An address the PLC last answered a read of (successfully): read
+        # again to tell "the link is down" from "the PLC does not answer
+        # requests for this range" (see _search_unanswered)
+        self._last_ok: Optional[Tuple[DeviceType, int]] = None
 
         # Set when a blocking request timed out while its worker thread may
         # still be using the client; the connection is re-established before
@@ -183,11 +197,20 @@ class BaseProtocolHandler(ABC):
             await self._rate_limiter.wait()
 
             # Try to read chunk
+            link_was_up = self._comm_failure_streak == 0
             data, status = await self._read_with_retry(device_type, start, chunk_size)
 
             if status == StatusCode.OK and data:
                 # Success - add all data points
                 results.extend(self._ok_points(device_type, start, data))
+            elif (
+                status in self._TRANSIENT_FAILURES and link_was_up and self._comm_failure_streak > 0 and chunk_size > 1
+            ):
+                # No answer although the PLC answered the request before
+                # this chunk: either the link just went down, or the device
+                # drops requests for some address in the chunk without
+                # answering (common on Modbus gateways). Find out which.
+                results.extend(await self._search_unanswered(device_type, start, start + chunk_size - 1, status))
             else:
                 # Error - use binary search to find bad addresses.
                 # The full chunk has just failed, so skip re-reading it.
@@ -226,16 +249,24 @@ class BaseProtocolHandler(ABC):
         ]
 
     def _failed_points(
-        self, device_type: DeviceType, start: int, end: int, status: StatusCode, learn: bool = True
+        self,
+        device_type: DeviceType,
+        start: int,
+        end: int,
+        status: StatusCode,
+        learn: bool = True,
+        learn_unanswered: bool = False,
     ) -> List[DataPoint]:
         """
         Build failed data points for a range.
 
         Only addresses the PLC itself reported as invalid/unsupported are
         added to the session cache. Timeouts and communication errors are
-        transient and must not be learned as "inaccessible".
+        transient and must not be learned as "inaccessible" - except
+        (``learn_unanswered``) a single address confirmed to be the one the
+        PLC does not answer, see _search_unanswered.
         """
-        learn = learn and status in self._PERMANENT_FAILURES
+        learn = (learn and status in self._PERMANENT_FAILURES) or learn_unanswered
         results = []
         for addr in range(start, end + 1):
             address_key = f"{device_type.value}{addr}"
@@ -259,11 +290,13 @@ class BaseProtocolHandler(ABC):
             )
             return None, StatusCode.NG_ILLEGAL_ADDR
 
+        started = time.monotonic()
         try:
             data, status = await self.read_device_raw(device_type, start_address, count)
         except Exception as e:
             logger.debug(f"read_device_raw raised: {e}")
             data, status = None, StatusCode.NG_COMM_ERROR
+        self._audit_read(device_type.value, start_address, count, status, started)
 
         plc_answered = status not in self._TRANSIENT_FAILURES
 
@@ -277,6 +310,7 @@ class BaseProtocolHandler(ABC):
                 data, status = None, StatusCode.NG_COMM_ERROR
             else:
                 data = list(data[:count])
+                self._last_ok = (device_type, start_address)
 
         if plc_answered:
             # The PLC answered (successfully, with an address error or with
@@ -286,6 +320,34 @@ class BaseProtocolHandler(ABC):
             self._comm_failure_streak += 1
 
         return data, status
+
+    def _audit_read(self, device: str, start_address: int, count: int, status: StatusCode, started: float) -> None:
+        """Record one read request and its outcome in the audit log (when one is open)"""
+        audit = get_audit_logger()
+        if not audit.active:
+            return
+        audit.log_read(
+            self.ip_address,
+            self.protocol.name if self.protocol else "UNKNOWN",
+            device,
+            start_address,
+            count,
+            status.value,
+            round((time.monotonic() - started) * 1000, 1),
+        )
+
+    def _audit_tag_read(self, tags: List[str], status: StatusCode, started: float) -> None:
+        """Record one tag read request and its outcome in the audit log"""
+        audit = get_audit_logger()
+        if not audit.active:
+            return
+        audit.log_tag_read(
+            self.ip_address,
+            self.protocol.name if self.protocol else "UNKNOWN",
+            tags,
+            status.value,
+            round((time.monotonic() - started) * 1000, 1),
+        )
 
     @property
     def _link_down(self) -> bool:
@@ -390,7 +452,7 @@ class BaseProtocolHandler(ABC):
         # which cost about 2N requests (R0-R32767: ~65,000 requests, hours of
         # waiting on a production PLC). A readable island strictly inside a
         # range whose both ends are invalid is the accepted trade-off.
-        if status == StatusCode.NG_ILLEGAL_ADDR and count >= self.EDGE_PROBE_MIN_COUNT:
+        if self.EDGE_PROBE_SHORTCUT and status == StatusCode.NG_ILLEGAL_ADDR and count >= self.EDGE_PROBE_MIN_COUNT:
             if await self._edges_illegal(device_type, start, end):
                 logger.debug(
                     f"{device_type.value}{start}-{device_type.value}{end}: both ends invalid; "
@@ -406,6 +468,82 @@ class BaseProtocolHandler(ABC):
 
         results = await self._binary_search_read(device_type, start, mid, depth + 1)
         results.extend(await self._binary_search_read(device_type, mid + 1, end, depth + 1))
+        return results
+
+    async def _link_alive(self) -> bool:
+        """
+        True if the PLC answers a read of the address it last answered.
+
+        One request. False when nothing has been read successfully yet
+        (the link cannot be told apart from the range then).
+        """
+        if self._last_ok is None:
+            return False
+        device_type, address = self._last_ok
+        await self._rate_limiter.wait()
+        _, status = await self._tracked_read(device_type, address, 1)
+        return status not in self._TRANSIENT_FAILURES
+
+    async def _search_unanswered(
+        self, device_type: DeviceType, start: int, end: int, status: StatusCode
+    ) -> List[DataPoint]:
+        """
+        Narrow down a range the PLC did not answer (timeout / communication
+        error) while the link itself seemed fine.
+
+        Some devices drop a request touching an invalid address instead of
+        answering with an error. Reporting the whole chunk as NG_TIMEOUT
+        would then hide every readable address in it. The range is halved;
+        a half that is not answered either is searched further only after
+        the PLC proved to be alive (it answered a read of a known-good
+        address), so a link that really went down costs a few requests,
+        not 2N timeouts.
+
+        A single address that stays unanswered - checked twice, with the
+        PLC alive before and after - is learned for the session with its
+        status, like an address error, so periodic scans do not wait for
+        its timeout in every cycle.
+        """
+        count = end - start + 1
+
+        if count == 1:
+            if not await self._link_alive():
+                return self._failed_points(device_type, start, end, status, learn=False)
+            await self._rate_limiter.wait()
+            data, retry_status = await self._tracked_read(device_type, start, 1)
+            if retry_status == StatusCode.OK and data is not None:
+                return self._ok_points(device_type, start, data)
+            if retry_status in self._PERMANENT_FAILURES:
+                return self._failed_points(device_type, start, end, retry_status)
+            confirmed = await self._link_alive()
+            return self._failed_points(device_type, start, end, retry_status, learn=False, learn_unanswered=confirmed)
+
+        mid = (start + end) // 2
+        halves = [(start, mid), (mid + 1, end)]
+        await asyncio.sleep(self.config.retry_interval_ms / 1000)
+
+        # Read both halves before judging the link: the first chunk of a scan
+        # has no known-good address until one of its halves is answered
+        outcomes = []
+        for half_start, half_end in halves:
+            await self._rate_limiter.wait()
+            data, half_status = await self._tracked_read(device_type, half_start, half_end - half_start + 1)
+            # Answered with an error or a malformed response: the PLC is there
+            outcomes.append((data, half_status, self._comm_failure_streak == 0))
+
+        results: List[DataPoint] = []
+        for (half_start, half_end), (data, half_status, answered) in zip(halves, outcomes):
+            if half_status == StatusCode.OK and data is not None:
+                results.extend(self._ok_points(device_type, half_start, data))
+            elif answered:
+                results.extend(
+                    await self._binary_search_read(device_type, half_start, half_end, known_failure=half_status)
+                )
+            elif await self._link_alive():
+                results.extend(await self._search_unanswered(device_type, half_start, half_end, half_status))
+            else:
+                # The link is down (or nothing was ever read): not learned
+                results.extend(self._failed_points(device_type, half_start, half_end, half_status, learn=False))
         return results
 
     async def _edges_illegal(self, device_type: DeviceType, start: int, end: int) -> bool:

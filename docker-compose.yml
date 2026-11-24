@@ -2,9 +2,11 @@
 # 
 # Usage:
 #   docker-compose up -d simulators    # Start simulators only
-#   docker-compose up scanner          # Run scanner (one-time)
-#   docker-compose up -d               # Start all services
-#   docker-compose run scanner --mode discover  # Run with custom args
+#   docker-compose up -d               # Start the simulators and the test services
+#   docker-compose run --rm scanner --mode discover  # Run the scanner with arguments
+#
+# The scanner is a command-line tool, not a service: it is in the "cli"
+# profile, so "up" does not start it (it would only print its help text).
 
 services:
   # =========================================
@@ -15,12 +17,16 @@ services:
       context: .
       target: production
     container_name: plc-scanner
+    profiles: ["cli"]
     volumes:
       # Output directory
       - ./plc_scan_results:/app/output
-      # Configuration files
-      - ./plc_config.yaml:/app/config.yaml:ro
-      - ./type_mapping.json:/app/type_mapping.json:ro
+      # Configuration files: uncomment once the files exist on the host
+      # (Docker creates an empty, root-owned directory in place of a missing
+      # file), then pass them:  --config /app/config.yaml
+      #                         --type-mapping /app/type_mapping.json
+      # - ./plc_config.yaml:/app/config.yaml:ro
+      # - ./type_mapping.json:/app/type_mapping.json:ro
     environment:
       - TZ=Asia/Tokyo
     networks:
@@ -35,9 +41,6 @@ services:
     # bridge network. Use the host network instead (Linux only) and remove
     # "networks"/"depends_on" above:
     #   network_mode: host
-    #
-    # Note: the config/type-mapping files below must exist on the host,
-    # otherwise Docker creates empty directories in their place.
 
   # =========================================
   # PLC Simulators Service
@@ -107,8 +110,6 @@ services:
       - .:/app
     environment:
       - TZ=Asia/Tokyo
-      - SLMP_HOST=simulators
-      - MODBUS_HOST=simulators
     networks:
       - plc-network
     depends_on:
@@ -122,10 +123,3 @@ networks:
     ipam:
       config:
         - subnet: 172.28.0.0/16
-
-# Named volumes for persistent data
-volumes:
-  scan-results:
-    driver: local
-
-

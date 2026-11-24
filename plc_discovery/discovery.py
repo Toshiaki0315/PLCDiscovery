@@ -178,15 +178,25 @@ class PLCDiscovery:
     Scans network for PLCs using multiple protocols and methods.
     """
 
-    def __init__(self, config: Optional[NetworkConfig] = None, protocols: Optional[List[Protocol]] = None):
+    def __init__(
+        self,
+        config: Optional[NetworkConfig] = None,
+        protocols: Optional[List[Protocol]] = None,
+        port: Optional[int] = None,
+    ):
         """
         Args:
             config: Network configuration
             protocols: Protocols to probe (default: all). Restricting this
                 shortens discovery, e.g. skipping the per-host FINS/UDP probe.
+            port: Probe every protocol on this port instead of its standard
+                port (auto-detection of a target given with a port only).
+                The protocols are then tried one after another: a PLC port
+                often accepts a single connection at a time.
         """
         self.config = config or NetworkConfig()
         self.protocols = list(protocols) if protocols else list(PROTOCOL_PORTS)
+        self.port = port
         # Keyed by plc_key(): (ip, protocol, port) - one entry per protocol
         self.discovered_plcs: Dict[tuple, PLCInfo] = {}
         # Thread pool for blocking probes during a batch scan (see _probe_hosts)
@@ -212,7 +222,8 @@ class PLCDiscovery:
         control LAN), and isolated networks without a default gateway work.
         Uses ARP for MAC discovery and protocol probes for detection.
         """
-        networks = get_local_networks()
+        # May start a subprocess (no netifaces): off the event loop
+        networks = await asyncio.get_running_loop().run_in_executor(None, get_local_networks)
         if not networks:
             logger.warning(
                 "No IPv4 network found on this PC (only loopback / link-local). "
@@ -286,7 +297,14 @@ class PLCDiscovery:
             mac = cache.get(plc.ip_address)
             if mac:
                 plc.mac_address = mac
-                plc.manufacturer = plc.manufacturer or get_manufacturer_from_mac(mac)
+                # The maker registered for the MAC is more specific than the
+                # name the protocol implies ("三菱電機/キーエンス" for SLMP),
+                # which was filled in before the MAC was known - as it is
+                # when the ARP scan (administrator rights) supplies the MAC
+                maker = get_manufacturer_from_mac(mac)
+                implied = PROTOCOL_IDENTITY_DEFAULTS.get(plc.protocol, (None, None))[0]
+                if maker and (not plc.manufacturer or plc.manufacturer == implied):
+                    plc.manufacturer = maker
                 filled += 1
         if filled:
             logger.info(f"MAC addresses of {filled} PLC(s) taken from the OS ARP cache")
@@ -328,12 +346,18 @@ class PLCDiscovery:
                     *(self._probe_host_all(h, mac_table.get(h)) for h in batch), return_exceptions=True
                 )
 
-                for result in results:
+                for host, result in zip(batch, results):
                     if isinstance(result, list):
                         for plc in result:
                             self.discovered_plcs[plc_key(plc)] = plc
+                    elif isinstance(result, BaseException):
+                        # Not the same as "no PLC there": say that the host
+                        # could not be checked
+                        logger.warning(f"Probing {host} failed: {result!r}")
 
                 self._report_progress("Scanning hosts", min(i + batch_size, total), total)
+                # Packet interval between batches, as between data reads
+                await asyncio.sleep(self.config.packet_interval_ms / 1000)
         finally:
             self._probe_executor.shutdown(wait=False)
             self._probe_executor = None
@@ -383,6 +407,8 @@ class PLCDiscovery:
     def _candidate_ports(self, ip: str, protocol: Protocol) -> List[int]:
         """Ports to try for a protocol: the standard port, plus the simulator
         ports (non-privileged) when scanning this PC's loopback address"""
+        if self.port:
+            return [self.port]
         ports = [PROTOCOL_PORTS[protocol]]
         if _is_loopback(ip):
             ports += [p for p in SIMULATOR_PORTS.get(protocol, []) if p not in ports]
@@ -424,6 +450,9 @@ class PLCDiscovery:
                 if protocol not in UDP_PROTOCOLS:
                     if not await loop.run_in_executor(executor, is_port_open, ip, port, timeout):
                         return False
+                    # The port answered: this is a device. Keep the packet
+                    # interval between the connections made to it.
+                    await asyncio.sleep(self.config.packet_interval_ms / 1000)
                 # An open port is not proof of a PLC (e.g. NAS on 5001):
                 # require a valid protocol reply
                 if await loop.run_in_executor(executor, verify_protocol, ip, port, protocol, timeout):
@@ -437,8 +466,20 @@ class PLCDiscovery:
         # All protocols of a host are probed concurrently: a silent host costs
         # about one timeout instead of one per protocol (6 s -> ~1 s by default).
         # That is at most one connection per protocol port, i.e. light load.
-        answers = await asyncio.gather(*(check(protocol, port) for protocol, port in candidates))
-        detected = [candidate for candidate, ok in zip(candidates, answers) if ok]
+        if self.port:
+            # One port for every protocol: one connection at a time, with the
+            # packet interval in between, until a protocol answers
+            detected: List[Tuple[Protocol, int]] = []
+            for candidate in candidates:
+                if detected and first_only:
+                    break
+                if candidate is not candidates[0]:
+                    await asyncio.sleep(self.config.packet_interval_ms / 1000)
+                if await check(*candidate):
+                    detected.append(candidate)
+        else:
+            answers = await asyncio.gather(*(check(protocol, port) for protocol, port in candidates))
+            detected = [candidate for candidate, ok in zip(candidates, answers) if ok]
         if first_only:
             detected = detected[:1]
 
@@ -452,6 +493,8 @@ class PLCDiscovery:
                 manufacturer=get_manufacturer_from_mac(mac) if mac else None,
             )
             # Try to get detailed info using protocol-specific queries
+            # (another connection to the device: after the packet interval)
+            await asyncio.sleep(self.config.packet_interval_ms / 1000)
             results.append(await self._get_detailed_info(plc_info))
         return results
 
@@ -593,9 +636,18 @@ class PLCDiscovery:
                 client = snap7.client.Client()
                 # S7-1200/1500 use slot 0, S7-300/400 slot 2 (as S7Handler)
                 try:
-                    client.connect(plc_info.ip_address, 0, 0, plc_info.port or 102)
+                    try:
+                        client.connect(plc_info.ip_address, 0, 0, plc_info.port or 102)
+                    except Exception:
+                        client.connect(plc_info.ip_address, 0, 2, plc_info.port or 102)
                 except Exception:
-                    client.connect(plc_info.ip_address, 0, 2, plc_info.port or 102)
+                    # Neither slot: release the client (socket / native
+                    # handle) instead of leaving it to the garbage collector
+                    try:
+                        client.disconnect()
+                    except Exception as e:
+                        logger.debug(f"S7 disconnect after failed connect: {e}")
+                    raise
 
                 # Fields are returned, not set here: after a timeout this
                 # thread may still finish and must not change the result

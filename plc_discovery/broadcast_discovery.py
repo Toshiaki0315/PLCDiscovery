@@ -10,7 +10,7 @@ import ipaddress
 import logging
 import socket
 import struct
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from .config import NetworkConfig, PLCInfo, Protocol
 from .probes import parse_eip_identity
@@ -134,18 +134,26 @@ class BroadcastDiscovery:
         logger.info(f"EtherNet/IP broadcast: found {len(plcs)} devices")
         return plcs
 
-    async def discover_all_broadcast(self) -> List[PLCInfo]:
+    async def discover_all_broadcast(self, protocols: Optional[Sequence[Protocol]] = None) -> List[PLCInfo]:
         """
         Discover all PLCs using multiple broadcast protocols.
 
-        Runs all broadcast discovery methods in parallel.
+        Runs the broadcast discovery methods in parallel. With ``protocols``
+        only those protocols' broadcasts are sent (nothing is sent for a
+        protocol nobody asked for).
         """
         self._report_progress("Starting UDP broadcast discovery for all protocols...")
 
+        methods = []
+        if protocols is None or Protocol.SLMP in protocols:
+            methods.append(self.discover_slmp_broadcast())
+        if protocols is None or Protocol.ETHERNET_IP in protocols:
+            methods.append(self.discover_eip_broadcast())
+        if not methods:
+            return []
+
         # Run discoveries in parallel
-        results = await asyncio.gather(
-            self.discover_slmp_broadcast(), self.discover_eip_broadcast(), return_exceptions=True
-        )
+        results = await asyncio.gather(*methods, return_exceptions=True)
 
         # Collect all results
         all_plcs = []
@@ -182,7 +190,8 @@ class BroadcastDiscovery:
             # Directed broadcast address of every connected network (a PC may
             # have several, and 255.255.255.255 alone leaves only one interface)
             broadcasts = []
-            for ip, netmask in get_local_networks():
+            # May start a subprocess (no netifaces): off the event loop
+            for ip, netmask in await asyncio.get_running_loop().run_in_executor(None, get_local_networks):
                 address = str(ipaddress.IPv4Network(f"{ip}/{netmask}", strict=False).broadcast_address)
                 if address not in broadcasts:
                     broadcasts.append(address)
@@ -265,6 +274,10 @@ class BroadcastDiscovery:
                 protocol=Protocol.SLMP,
                 port=SLMP_DISCOVERY_PORT,
                 manufacturer="三菱電機/SLMP互換",
+                # Answered on UDP only: the TCP port a scan would connect to
+                # was not checked (it is set per PLC; 5001 is this tool's
+                # default). A TCP scan result for the same PLC replaces this.
+                model="SLMP対応PLC（UDP応答のみ・TCPポート未確認）",
             )
 
         except Exception as e:

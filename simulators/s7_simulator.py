@@ -46,6 +46,11 @@ S7_AREA_TM = 0x1D    # Timers
 # Return codes
 S7_RET_OK = 0xFF
 S7_RET_ITEM_NOT_AVAILABLE = 0x0A
+S7_RET_ADDRESS_OUT_OF_RANGE = 0x05
+
+# Smallest length of a simulated data block in bytes (values written
+# beyond the sample data, e.g. by the simulator GUI, extend it)
+DB_MIN_LENGTH = 2000
 
 # USER_DATA: read SZL (system status list), as used by snap7's get_cpu_info
 S7_USERDATA_GROUP_SZL = 0x04
@@ -138,11 +143,22 @@ class S7Device:
                 return None, S7_RET_ITEM_NOT_AVAILABLE
 
         db = self.data_blocks[db_number]
+        # A data block has a length: a read past its end is refused by the
+        # CPU (address out of range), not answered with zeros
+        if start < 0 or start + size > self.db_length(db_number):
+            logger.debug(f"Read past the end of DB{db_number}: {start}+{size}")
+            return None, S7_RET_ADDRESS_OUT_OF_RANGE
+
         data = bytearray()
         for offset in range(start, start + size):
             data.append(db.get(offset, 0))
 
         return bytes(data), S7_RET_OK
+
+    def db_length(self, db_number: int) -> int:
+        """Length of a data block in bytes (its highest initialised byte + 1, at least DB_MIN_LENGTH)"""
+        db = self.data_blocks.get(db_number) or {}
+        return max(DB_MIN_LENGTH, max(db, default=-1) + 1)
 
     def read_merkers(self, start: int, size: int) -> Tuple[Optional[bytes], int]:
         """Read from merker memory"""
@@ -189,6 +205,14 @@ class COTPProtocol(asyncio.Protocol):
                 logger.warning(f"Invalid TPKT version: {version}")
                 self.buffer = b""
                 continue
+
+            if length < 4:
+                # The length includes the 4-byte header: a smaller one would
+                # consume nothing and loop forever, blocking every simulator
+                # sharing this event loop
+                logger.warning(f"Invalid TPKT length: {length}")
+                self.buffer = b""
+                break
 
             if len(self.buffer) < length:
                 break
@@ -300,14 +324,18 @@ class COTPProtocol(asyncio.Protocol):
         """Handle Setup Communication request"""
         logger.info("S7 Setup Communication")
 
+        # PDU size: what the client asked for, at most 960 (a real CPU never
+        # grants more than requested; an S7-300 grants 240)
+        requested = struct.unpack(">H", params[6:8])[0] if len(params) >= 8 else 960
+        pdu_size = max(240, min(requested, 960))
+
         # Response parameters
         resp_params = bytes([
             S7_FUNC_SETUP_COMM,
             0x00,  # Reserved
             0x00, 0x03,  # Max calling
             0x00, 0x03,  # Max called
-            0x03, 0xC0,  # PDU size (960)
-        ])
+        ]) + struct.pack(">H", pdu_size)
 
         return self._make_s7_response(pdu_ref, resp_params, b"")
 
@@ -371,7 +399,9 @@ class COTPProtocol(asyncio.Protocol):
                 if len(data) % 2 == 1:
                     resp_data += b"\x00"
             else:
-                resp_data += bytes([ret_code])
+                # A failed item is 4 bytes too: return code, transport size 0
+                # (null), length 0 - or the items after it are misaligned
+                resp_data += bytes([ret_code, 0x00, 0x00, 0x00])
 
         return self._make_s7_response(pdu_ref, resp_params, resp_data)
 

@@ -193,7 +193,11 @@ class SimulatorManager:
         logger.info("Stopping all simulators...")
         for server in self.servers:
             server.close()
-            await server.wait_closed()
+            # wait_closed() waits for connected clients (Python 3.12+)
+            try:
+                await asyncio.wait_for(server.wait_closed(), timeout=2)
+            except asyncio.TimeoutError:
+                logger.info("A simulator stopped with clients still connected")
         for transport in self.udp_transports:
             transport.close()
         logger.info("All simulators stopped.")
@@ -216,7 +220,12 @@ async def main(host: str):
             task.cancel()
 
     for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, signal_handler)
+        try:
+            loop.add_signal_handler(sig, signal_handler)
+        except NotImplementedError:
+            # Windows event loops have no signal handlers: Ctrl+C arrives
+            # as KeyboardInterrupt instead (handled where main() is run)
+            break
 
     try:
         await manager.start_all()

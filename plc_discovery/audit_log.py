@@ -88,6 +88,46 @@ class AuditLogger:
         if log_file and enabled:
             self._open_log_file()
 
+    @property
+    def active(self) -> bool:
+        """True when events are written somewhere (callers on hot paths check this first)"""
+        return self.enabled and (self._file_handle is not None or self.console_output)
+
+    def log_read(
+        self,
+        plc_ip: str,
+        protocol: str,
+        device: str,
+        address_start: int,
+        count: int,
+        status: str,
+        duration_ms: float,
+    ) -> None:
+        """
+        Log one read request sent to a PLC and its outcome: READ_SUCCESS, or
+        READ_ERROR with the status (NG_ILLEGAL_ADDR, NG_TIMEOUT, ...).
+        """
+        address_end = address_start + count - 1
+        if status == "OK":
+            self.log_read_success(plc_ip, protocol, device, address_start, address_end, count, duration_ms)
+        else:
+            self.log_read_error(plc_ip, protocol, device, address_start, address_end, status, duration_ms)
+
+    def log_tag_read(self, plc_ip: str, protocol: str, tags: List[str], status: str, duration_ms: float) -> None:
+        """Log one request reading symbolic tags (EtherNet/IP) and its outcome"""
+        event = self._create_event(
+            AuditEventType.READ_SUCCESS if status == "OK" else AuditEventType.READ_ERROR,
+            plc_ip=plc_ip,
+            protocol=protocol,
+            device="TAG",
+            count=len(tags),
+            duration_ms=duration_ms,
+            status="SUCCESS" if status == "OK" else "ERROR",
+            error_message=None if status == "OK" else status,
+            metadata={"tags": list(tags)},
+        )
+        self._write_event(event)
+
     def _generate_session_id(self) -> str:
         """Generate unique session ID"""
         return datetime.now().strftime("%Y%m%d_%H%M%S_") + os.urandom(4).hex()
@@ -111,7 +151,13 @@ class AuditLogger:
             return
 
         with self._write_lock:
-            line = event.to_json() + "\n"
+            try:
+                line = event.to_json() + "\n"
+            except Exception as e:
+                # Metadata that is not JSON (a set, bytes): never let the
+                # audit log stop the scan it is recording
+                logger.error(f"Failed to format audit event {event.event_type}: {e}")
+                return
 
             if self._file_handle:
                 try:

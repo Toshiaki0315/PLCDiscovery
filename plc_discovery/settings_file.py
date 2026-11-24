@@ -8,6 +8,7 @@ existing configuration file (targets, scan, data_types, ...) untouched.
 
 import copy
 import os
+import stat
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -23,6 +24,9 @@ from .config_loader import ConfigLoader
 
 # Default settings file: the one the CLI documents (python plc_scanner.py -c plc_config.yaml)
 DEFAULT_SETTINGS_FILE = "plc_config.yaml"
+
+# File name endings the CLI's config loader accepts
+SETTINGS_SUFFIXES = (".yaml", ".yml", ".json")
 
 # Sections (and keys) owned by the GUI settings tabs
 GUI_SECTIONS = ("network", "output", "notifications", "notification_settings")
@@ -87,15 +91,31 @@ def save(path: str, updates: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]
     Returns:
         (written configuration, validation errors)
     """
+    file = Path(path)
+    if file.suffix.lower() not in SETTINGS_SUFFIXES:
+        # plc_scanner.py -c only reads these: a file saved under another
+        # name could be written but never used
+        return {}, [f"the settings file name must end in {', '.join(SETTINGS_SUFFIXES)} (got {file.name})"]
     config = merge(read_file(path), updates)
     errors = validate(config)
     if errors:
         return config, errors
-    file = Path(path)
     file.parent.mkdir(parents=True, exist_ok=True)
     # Write to a temporary file first: a failure never leaves a truncated file
     tmp = file.with_name(file.name + ".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
+    # The file holds notification webhook URLs, which work like passwords:
+    # readable by the owner only, unless the existing file says otherwise
+    # (its permissions are kept instead of being reset on every save)
+    try:
+        mode = stat.S_IMODE(file.stat().st_mode)
+    except OSError:
+        mode = 0o600
+    descriptor = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+    try:
+        os.chmod(tmp, mode)  # a leftover .tmp keeps its old mode with O_CREAT
+    except OSError:
+        pass
+    with open(descriptor, "w", encoding="utf-8") as f:
         if file.suffix.lower() == ".json":
             import json
 

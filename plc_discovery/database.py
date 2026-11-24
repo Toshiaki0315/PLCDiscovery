@@ -223,6 +223,14 @@ class DatabaseExporter:
         config = DatabaseConfig(enabled=True, path=path, track_history=track_history)
         return cls(config)
 
+    def _rollback_quietly(self) -> None:
+        """Drop the rows of an export that failed half-way (never raises)"""
+        try:
+            if self._connection is not None:
+                self._connection.rollback()
+        except Exception as e:
+            logger.debug(f"Rollback failed: {e}")
+
     @property
     def is_enabled(self) -> bool:
         """Check if database output is enabled"""
@@ -461,6 +469,12 @@ class DatabaseExporter:
                     ),
                 )
                 count += 1
+            except sqlite3.OperationalError:
+                # Database locked / disk full / file gone: every further row
+                # would wait for the busy timeout and fail the same way.
+                # Give up at once and let the caller report the failure.
+                self._rollback_quietly()
+                raise
             except Exception as e:
                 logger.warning(f"Failed to export PLC {plc.ip_address}: {e}")
 
@@ -528,7 +542,7 @@ class DatabaseExporter:
                         dp.data_type,
                         # NaN / Infinity stored as JSON null (valid JSON for any reader)
                         (
-                            json.dumps(json_safe(dp.converted_value), allow_nan=False)
+                            json.dumps(json_safe(dp.converted_value), allow_nan=False, default=str)
                             if dp.converted_value is not None
                             else None
                         ),
@@ -545,6 +559,20 @@ class DatabaseExporter:
                     if old_value is not None and old_value != dp.value:
                         self._record_change(plc_ip, dp.address, old_value, dp.value, protocol, port)
                     previous_values[dp.address] = dp.value
+
+            except sqlite3.OperationalError:
+
+                # Database locked / disk full / file gone: every further row
+
+                # would wait for the busy timeout and fail the same way.
+
+                # Give up at once and let the caller report the failure.
+
+                self._rollback_quietly()
+                # The rolled-back rows must not count as the latest values
+                self._latest_values.pop(target, None)
+
+                raise
 
             except Exception as e:
                 logger.warning(f"Failed to export data point {dp.address}: {e}")
@@ -605,6 +633,12 @@ class DatabaseExporter:
                     ),
                 )
                 count += 1
+            except sqlite3.OperationalError:
+                # Database locked / disk full / file gone: every further row
+                # would wait for the busy timeout and fail the same way.
+                # Give up at once and let the caller report the failure.
+                self._rollback_quietly()
+                raise
             except Exception as e:
                 logger.warning(f"Failed to export denied address {address}: {e}")
 
@@ -844,23 +878,27 @@ class DatabaseExporter:
             return 0
         deleted = 0
         while self.used_bytes() > limit:
-            removed = 0
-            for sql in (
-                # Oldest change history and denied-address log entries first
-                """DELETE FROM data_history WHERE id IN (
-                       SELECT id FROM data_history ORDER BY id LIMIT
-                       (SELECT MAX(100, COUNT(*) / 10) FROM data_history))""",
-                """DELETE FROM denied_addresses WHERE id IN (
-                       SELECT id FROM denied_addresses ORDER BY id LIMIT
-                       (SELECT MAX(100, COUNT(*) / 10) FROM denied_addresses))""",
-                """DELETE FROM data_points WHERE id IN (
+            # Data points first: they are what fills the file. Deleting the
+            # change history and the denied-address log on every pass as
+            # well emptied those small tables long before the size was
+            # reached. They are trimmed only when no data point is left to
+            # delete (each address keeps its latest value).
+            removed = self._db.execute("""DELETE FROM data_points WHERE id IN (
                        SELECT id FROM data_points
                        WHERE id NOT IN (SELECT MAX(id) FROM data_points
                                         GROUP BY plc_ip, protocol, port, address)
                        ORDER BY id LIMIT
-                       (SELECT MAX(1000, COUNT(*) / 10) FROM data_points))""",
-            ):
-                removed += self._db.execute(sql).rowcount
+                       (SELECT MAX(1000, COUNT(*) / 10) FROM data_points))""").rowcount
+            if not removed:
+                for sql in (
+                    """DELETE FROM data_history WHERE id IN (
+                           SELECT id FROM data_history ORDER BY id LIMIT
+                           (SELECT MAX(100, COUNT(*) / 10) FROM data_history))""",
+                    """DELETE FROM denied_addresses WHERE id IN (
+                           SELECT id FROM denied_addresses ORDER BY id LIMIT
+                           (SELECT MAX(100, COUNT(*) / 10) FROM denied_addresses))""",
+                ):
+                    removed += self._db.execute(sql).rowcount
             self._db.commit()
             if not removed:
                 logger.warning(

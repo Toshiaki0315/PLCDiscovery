@@ -16,7 +16,6 @@ PLC Scanner GUI - PLC自動探索・データ収集ツールのグラフィカ�
 """
 
 import asyncio
-import concurrent.futures
 import logging
 import math
 import os
@@ -30,6 +29,7 @@ from tkinter import filedialog, messagebox, ttk
 from typing import Any, Callable, Coroutine, Dict, List, Optional, Sequence
 
 from plc_discovery import settings_file
+from plc_discovery.audit_log import get_audit_logger
 from plc_discovery.broadcast_discovery import BroadcastDiscovery
 from plc_discovery.cli_args import parse_tag_list
 from plc_discovery.collector import PLCDataCollector, unreached_points
@@ -99,7 +99,10 @@ class AsyncWorker:
         self.loop = asyncio.new_event_loop()
         self._thread = threading.Thread(target=self._run, daemon=True, name="plc-worker")
         self._thread.start()
-        self._future: Optional["concurrent.futures.Future[Any]"] = None
+        self._task: Optional["asyncio.Task[Any]"] = None
+        # True from submit() until the job - including its cleanup after a
+        # cancel (final notification, PLC disconnect) - has really ended
+        self._running = False
 
     def _run(self) -> None:
         asyncio.set_event_loop(self.loop)
@@ -107,23 +110,32 @@ class AsyncWorker:
 
     @property
     def busy(self) -> bool:
-        return self._future is not None and not self._future.done()
+        return self._running
 
     def submit(self, coro: Coroutine[Any, Any, Any], on_done: Callable[[Optional[BaseException]], None]) -> None:
         """コルーチンを投入する。完了時に on_done(例外 or None) をワーカースレッドで呼ぶ"""
-        future = self._future = asyncio.run_coroutine_threadsafe(coro, self.loop)
+        self._running = True
 
-        def _done(fut: "concurrent.futures.Future[Any]") -> None:
-            if fut.cancelled():
-                on_done(asyncio.CancelledError())
-            else:
-                on_done(fut.exception())
+        def _done(task: "asyncio.Task[Any]") -> None:
+            # Runs when the task is over, i.e. after its except/finally
+            # blocks. (A concurrent Future's cancel() reported "done" at
+            # once: Start was enabled again while the stopped job was still
+            # disconnecting, and a second job could reach the same PLC.)
+            self._running = False
+            on_done(asyncio.CancelledError() if task.cancelled() else task.exception())
 
-        future.add_done_callback(_done)
+        def _start() -> None:
+            self._task = self.loop.create_task(coro)
+            self._task.add_done_callback(_done)
+
+        self.loop.call_soon_threadsafe(_start)
 
     def cancel(self) -> None:
-        if self._future is not None and not self._future.done():
-            self._future.cancel()
+        def _cancel() -> None:
+            if self._task is not None and not self._task.done():
+                self._task.cancel()
+
+        self.loop.call_soon_threadsafe(_cancel)
 
     def shutdown(self, timeout: float = 3.0) -> None:
         """
@@ -880,8 +892,12 @@ class PLCScannerApp(SettingsTabsMixin):
                     "タグを読めるのは EtherNet/IP（Logix・オムロン NJ/NX）だけです。\n"
                     "プロトコルを「ETHERNET_IP」か「自動検出」にするか、タグ欄を空にしてください。"
                 )
-            start = self._int_field(self.var_start, "開始アドレス")
-            end = self._int_field(self.var_end, "終了アドレス")
+            # The address fields are used by a range scan of a device only:
+            # leftover text in them must not stop a full scan or a tag read
+            start = end = 0
+            if mode == "range" and not tags:
+                start = self._int_field(self.var_start, "開始アドレス")
+                end = self._int_field(self.var_end, "終了アドレス")
             if mode == "range" and not tags and end < start:
                 raise ValueError("終了アドレスは開始アドレス以上にしてください。")
             if mode == "range" and not tags and end - start + 1 > MAX_RANGE_POINTS:
@@ -993,7 +1009,9 @@ class PLCScannerApp(SettingsTabsMixin):
         protocol_name = plc.protocol.name if plc.protocol else "UNKNOWN"
         collector = PLCDataCollector(plc, config)
         collector.set_progress_callback(self._progress_cb)
-        if not await collector.connect():
+        connected = await collector.connect()
+        get_audit_logger().log_connect(plc.ip_address, protocol_name, plc.port or 0, connected, collector.connect_error)
+        if not connected:
             if not interval or collector.connect_error:
                 await collector.disconnect()
                 # Still save every requested address as NG_COMM_ERROR (CSV and
@@ -1061,6 +1079,7 @@ class PLCScannerApp(SettingsTabsMixin):
                 await asyncio.sleep(wait)
         except asyncio.CancelledError:
             # Stopped by the user: report what was collected, then stop
+            await runner.drain()  # notifications a slow webhook is still receiving
             await PLCScannerApp._notify_collect_done(
                 outputs, ip, points, iteration, loop.time() - job_started, interrupted=True
             )
@@ -1162,30 +1181,44 @@ class PLCScannerApp(SettingsTabsMixin):
         try:
             while True:
                 item = self.ui_queue.get_nowait()
-                kind = item[0]
-                if kind == "log":
-                    self._append_log(item[1], item[2])
-                elif kind == "status":
-                    self.var_status.set(item[1])
-                elif kind == "progress":
-                    _, msg, cur, total = item
-                    self.var_status.set(msg)
-                    if total:
-                        self.progress.stop()
-                        self.progress.configure(mode="determinate", maximum=total, value=cur)
-                elif kind == "discovered":
-                    self._show_discovered(item[1], item[2])
-                elif kind == "data":
-                    self._show_data(*item[1:])
-                elif kind == "tag_list":
-                    self._show_tag_list(item[1], item[2])
-                elif kind == "db_status":
-                    self.var_db_status.set(item[1])
-                elif kind == "done":
-                    self._on_job_done(item[1])
+                try:
+                    self._handle_ui_item(item)
+                except Exception:
+                    # One notification that cannot be shown must not end the
+                    # polling: the window would stay "running" for good, with
+                    # Start disabled and the log frozen
+                    logging.getLogger(__name__).exception(f"画面の更新に失敗しました（{item[0]}）")
+                    if item[0] == "done":
+                        self._set_busy(
+                            False, "処理は終了しましたが、結果の表示に失敗しました（ログを確認してください）"
+                        )
         except queue.Empty:
             pass
-        self.root.after(100, self._poll_queue)
+        finally:
+            self.root.after(100, self._poll_queue)
+
+    def _handle_ui_item(self, item: tuple) -> None:
+        kind = item[0]
+        if kind == "log":
+            self._append_log(item[1], item[2])
+        elif kind == "status":
+            self.var_status.set(item[1])
+        elif kind == "progress":
+            _, msg, cur, total = item
+            self.var_status.set(msg)
+            if total:
+                self.progress.stop()
+                self.progress.configure(mode="determinate", maximum=total, value=cur)
+        elif kind == "discovered":
+            self._show_discovered(item[1], item[2])
+        elif kind == "data":
+            self._show_data(*item[1:])
+        elif kind == "tag_list":
+            self._show_tag_list(item[1], item[2])
+        elif kind == "db_status":
+            self.var_db_status.set(item[1])
+        elif kind == "done":
+            self._on_job_done(item[1])
 
     def _on_job_done(self, exc: Optional[BaseException]) -> None:
         """処理の終了（正常・停止・エラー）を画面に反映する"""

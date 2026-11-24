@@ -35,7 +35,7 @@ def ok(address, value):
 
 
 def make_args(**overrides):
-    defaults = dict(mode=None, interval=None, range=None, device="D")
+    defaults = dict(mode=None, interval=None, range=None, device=None)
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
 

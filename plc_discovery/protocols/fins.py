@@ -34,7 +34,10 @@ FINS_AREA_CODES = {
     DeviceType.D: 0x82,  # Alias for DM
     DeviceType.HR: 0xB2,  # HR Area (word)
     DeviceType.W: 0xB1,  # W Area (word)
-    DeviceType.IR: 0xDC,  # IR Area (word) - Actually CIO
+    # IR is not offered: area 0xDC holds the index registers, whose values
+    # are 4 bytes each, so they were decoded as unrelated 16-bit words (and
+    # the CIO area that "IR" once named on older models is read as M).
+    # A request for IR is answered NG_UNSUPPORTED.
     DeviceType.M: 0xB0,  # CIO Area (word access; 0x30 is bit access = 1 byte/point)
 }
 
@@ -50,7 +53,6 @@ FINS_CMD_CONTROLLER_DATA_READ = (0x05, 0x01)  # Controller data read (CPU model 
 # Controller data reply: CPU unit model (20 bytes) and version (20 bytes) first
 FINS_CONTROLLER_MODEL_BYTES = 20
 FINS_CONTROLLER_VERSION_BYTES = 20
-FINS_CMD_MEMORY_WRITE = (0x01, 0x02)  # Memory area write
 
 # FINS end codes (Omron FINS Commands Reference Manual: MRES/SRES)
 FINS_ERROR_CODES = {

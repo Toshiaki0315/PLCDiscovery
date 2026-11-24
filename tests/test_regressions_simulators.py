@@ -135,7 +135,8 @@ async def test_denied_words_do_not_hide_readable_ones_simulator():
     try:
         assert await handler.connect()
         handler.connect = counting_connect
-        points = await handler.read_device_range(DeviceRange(DeviceType.DB, 0, 1000))
+        # DB1 of the simulator is 2000 bytes = words 0-999 (a read past its end is refused)
+        points = await handler.read_device_range(DeviceRange(DeviceType.DB, 0, 999))
         bad = [int(p.address[2:]) for p in points if p.status != StatusCode.OK]
         assert bad == list(range(250, 276))
         assert {p.status for p in points if p.status != StatusCode.OK} == {StatusCode.NG_ILLEGAL_ADDR}

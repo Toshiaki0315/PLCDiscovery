@@ -133,7 +133,7 @@ Examples:
         "--device",
         "-d",
         choices=["D", "M", "W", "R", "DM", "HR", "IR", "DB", "X", "Y", "B", "SM"],
-        default="D",
+        default=None,
         help="Device type to read (default: D)",
     )
 
@@ -433,7 +433,11 @@ def resolve_device_ranges(
     if tags and config_loader:
         tags = expand_tag_members(tags, config_loader.get_tag_members())
     if tags:
-        explicit = bool(args.range) or bool(config_loader and config_loader.get_device_ranges())
+        explicit = (
+            bool(args.range)
+            or bool(getattr(args, "device", None))
+            or bool(config_loader and config_loader.get_device_ranges())
+        )
         ranges: List[Union[DeviceRange, TagRange]] = [TagRange(tags)]
         return ranges + (resolve_device_ranges_only(args, config_loader) if explicit else [])
     return list(resolve_device_ranges_only(args, config_loader))
@@ -454,14 +458,20 @@ def parse_tag_list(text: str) -> List[str]:
 
 
 def resolve_device_ranges_only(args: argparse.Namespace, config_loader: Optional[ConfigLoader]) -> List[DeviceRange]:
-    """Device ranges for range mode: --range, then config scan.device_ranges, then 0-999"""
-    device = get_device_type_from_string(args.device)
+    """
+    Device ranges for range mode: --range / --device, then config
+    scan.device_ranges, then D0-999. --device without --range reads
+    0-999 of that device (it used to be ignored when the config file had
+    device ranges).
+    """
+    device_name = getattr(args, "device", None)
+    device = get_device_type_from_string(device_name or "D")
     if device is None:
-        raise ValueError(f"Unknown device type: {args.device}")
+        raise ValueError(f"Unknown device type: {device_name}")
     if args.range:
         start_addr, end_addr = parse_address_range(args.range)
         return [DeviceRange(device, start_addr, end_addr)]
-    if config_loader:
+    if config_loader and not device_name:
         ranges = config_loader.get_device_ranges()
         if ranges:
             return ranges

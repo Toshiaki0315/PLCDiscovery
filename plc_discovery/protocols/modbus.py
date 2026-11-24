@@ -84,6 +84,9 @@ class ModbusHandler(BaseProtocolHandler):
 
     protocol = Protocol.MODBUS_TCP
     MAX_ADDRESS = 0xFFFF  # 16-bit register/coil address
+    # Register maps are sparse (a meter may only have 40-60 and 200-210):
+    # every address of a failed range is confirmed on its own
+    EDGE_PROBE_SHORTCUT = False
 
     def __init__(self, ip_address: str, port: Optional[int] = None, unit_id: int = 1, **kwargs: Any):
         super().__init__(ip_address, port or PROTOCOL_PORTS.get(Protocol.MODBUS_TCP, MODBUS_PORT), **kwargs)

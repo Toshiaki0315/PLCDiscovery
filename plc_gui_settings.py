@@ -14,6 +14,7 @@ from tkinter import filedialog, messagebox, ttk
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Coroutine, Dict, List, Optional, Sequence
 
 from plc_discovery import settings_file
+from plc_discovery.audit_log import get_audit_logger, init_audit_logger
 from plc_discovery.config import NetworkConfig
 from plc_discovery.database import DatabaseConfig, DatabaseExporter
 from plc_discovery.notifications import (
@@ -46,14 +47,18 @@ class JobOutputs:
             except Exception as e:
                 logging.error(f"データベースを開けませんでした（CSVへの保存は続けます）: {e}")
 
-    async def notify(self, send: Callable[[NotificationManager], Awaitable[Any]]) -> None:
-        """Send a notification if destinations are set; never stops the job"""
+    async def notify(self, send: Callable[[NotificationManager], Awaitable[Any]]) -> bool:
+        """
+        Send a notification if destinations are set; never stops the job.
+        False when it could not be delivered to any destination.
+        """
         if self.notifier is None or not self.notifier.has_handlers:
-            return
+            return True
         try:
-            await send(self.notifier)
+            return NotificationManager.delivered(await send(self.notifier))
         except Exception as e:
             logging.warning(f"通知の送信に失敗しました: {e}")
+            return False
 
     def close(self) -> None:
         if self.db:
@@ -411,13 +416,25 @@ class SettingsTabsMixin:
         return v
 
     def _database_config(self, force_enabled: bool = False) -> DatabaseConfig:
+        enabled = force_enabled or self.var_db_enabled.get()
+        defaults = DatabaseConfig()
+        try:
+            days = self._int_field(self.var_db_days, "保存する期間")
+            size = self._float_field(self.var_db_size, "サイズの上限")
+            interval = self._float_field(self.var_db_interval, "整理の間隔", exclusive=True)
+        except ValueError:
+            if enabled:
+                raise
+            # Database output is off: leftover text in its fields must not
+            # stop a scan that will not use them
+            days, size, interval = defaults.max_history_days, defaults.max_size_mb, defaults.cleanup_interval_hours
         return DatabaseConfig(
-            enabled=force_enabled or self.var_db_enabled.get(),
+            enabled=enabled,
             path=self.var_db_path.get().strip() or "plc_data.db",
             track_history=self.var_db_history.get(),
-            max_history_days=self._int_field(self.var_db_days, "保存する期間"),
-            max_size_mb=self._float_field(self.var_db_size, "サイズの上限"),
-            cleanup_interval_hours=self._float_field(self.var_db_interval, "整理の間隔", exclusive=True),
+            max_history_days=days,
+            max_size_mb=size,
+            cleanup_interval_hours=interval,
         )
 
     def _notification_settings(self) -> Dict:
@@ -528,12 +545,35 @@ class SettingsTabsMixin:
         except Exception as e:
             messagebox.showerror("読み込みエラー", f"設定ファイルを読み込めませんでした:\n{e}")
             return
-        self._apply_settings(config)
+        try:
+            self._apply_settings(config)
+        except Exception as e:
+            # A value of the wrong type (max_size_mb: "100"): the window must
+            # still open - under pythonw a crash here showed nothing at all
+            logging.error(f"設定ファイルの値を画面に反映できませんでした（{path}）: {e}")
+            if not quiet:
+                messagebox.showerror("読み込みエラー", f"設定ファイルの値に誤りがあります:\n{e}")
+        self._start_audit_log(config)
         if errors:
             logging.warning("設定ファイルに誤りがあります: " + " / ".join(errors[:5]))
         logging.info(f"設定を読み込みました: {path}")
         if not quiet:
             self.var_status.set(f"設定を読み込みました ← {path}")
+
+    def _start_audit_log(self, config: Dict) -> None:
+        """
+        Open the audit log named by logging.audit_log, as the CLI does, so
+        scans started from the GUI are recorded too. Never stops the GUI.
+        """
+        try:
+            log_settings = settings_file.section(config, "logging", default={}) or {}
+            audit_file = log_settings.get("audit_log") if isinstance(log_settings, dict) else None
+            if audit_file and get_audit_logger().log_file != str(audit_file):
+                init_audit_logger(str(audit_file), enabled=True)
+                get_audit_logger().log_session_start({"source": "gui"})
+                logging.info(f"監査ログを記録します: {audit_file}")
+        except Exception as e:
+            logging.warning(f"監査ログを開始できませんでした: {e}")
 
     def _job_outputs(self) -> JobOutputs:
         """ジョブ開始時の④⑤タブの設定。不正な値は ValueError"""

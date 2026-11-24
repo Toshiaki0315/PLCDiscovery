@@ -216,6 +216,7 @@ class DataTypeConverter:
     @classmethod
     def _to_signed16(cls, value: int) -> int:
         """Convert unsigned 16-bit to signed"""
+        value &= 0xFFFF
         if value >= 0x8000:
             return value - 0x10000
         return value
@@ -567,6 +568,23 @@ class DataTypeManager:
                 device=str(device).upper() if device else None,
                 length=length,
             )
+            words = mapping.words_per_value()
+            size = end - start + 1
+            if words > 1 and size % words:
+                # The last value would be cut short (or, before this check,
+                # completed with the word after the mapping)
+                raise ValueError(
+                    f"{where}: {start}-{end} is {size} words, not a multiple of the "
+                    f"{words}-word {mapping.data_type.value} value"
+                )
+            for j, other in enumerate(manager.mappings):
+                same_device = mapping.device is None or other.device is None or mapping.device == other.device
+                if same_device and start <= other.end_address and other.start_address <= end:
+                    # Only one of two overlapping mappings would ever apply
+                    raise ValueError(
+                        f"{where}: {start}-{end} overlaps the mapping "
+                        f"{other.start_address}-{other.end_address} ({other.data_type.value})"
+                    )
             manager.add_mapping(mapping)
 
         return manager

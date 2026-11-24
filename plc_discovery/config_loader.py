@@ -9,7 +9,7 @@ import json
 import logging
 import math
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +34,7 @@ DEFAULT_CONFIG = {
     # Network settings
     "network": {
         "discovery_timeout_ms": 1000,
-        "discovery_retry_count": 3,
+        "discovery_retry_count": 3,  # accepted for older files; not used
         "packet_interval_ms": 50,
         "retry_interval_ms": 200,
         "request_timeout_ms": 5000,
@@ -42,9 +42,9 @@ DEFAULT_CONFIG = {
     },
     # Discovery settings
     "discovery": {
-        "enabled": True,
+        "enabled": True,  # accepted for older files; not used
         "ip_ranges": [],  # List of IP ranges to scan
-        "scan_same_segment": True,
+        "scan_same_segment": True,  # accepted for older files; not used
         # Protocols probed during discovery (applies only when set in the file)
         "protocols": ["slmp", "ethernet_ip", "modbus", "s7", "fins", "fins_tcp"],
     },
@@ -75,8 +75,8 @@ DEFAULT_CONFIG = {
         "directory": "./plc_scan_results",
         # "utf-8-sig" (UTF-8 with BOM, opens correctly in Excel), "utf-8" or "shift-jis"
         "encoding": "utf-8-sig",
-        "format": "csv",  # "csv" or "json"
-        "include_timestamp": True,
+        "format": "csv",  # accepted for older files; not used (output is CSV)
+        "include_timestamp": True,  # accepted for older files; not used
     },
     # Logging settings
     "logging": {
@@ -131,6 +131,31 @@ NETWORK_MINIMUMS: Dict[str, int] = {
     "request_timeout_ms": 1,
     "max_concurrent": 1,
 }
+
+
+# Upper limit of parallel PLC connections
+MAX_CONCURRENT = 32
+
+# CSV encodings (as --encoding)
+OUTPUT_ENCODINGS = ("utf-8-sig", "utf-8", "shift-jis")
+
+# Settings read from each section; anything else is reported as unknown
+KNOWN_SECTION_KEYS: Dict[str, Tuple[str, ...]] = {
+    "discovery": ("enabled", "ip_ranges", "scan_same_segment", "protocols"),
+    "scan": ("mode", "device_ranges", "interval_seconds", "tags", "tag_members"),
+    "output": ("directory", "encoding", "format", "include_timestamp", "database", "hex_addresses", "periodic_csv"),
+    "logging": ("level", "file", "audit_log", "format"),
+    "data_types": ("default_type", "default_byte_order", "mappings"),
+    "notification_settings": ("report_interval_minutes", "min_interval_minutes"),
+}
+KNOWN_TOP_LEVEL_KEYS = (
+    "version",
+    "network",
+    "targets",
+    "notifications",
+    "thresholds",
+    *KNOWN_SECTION_KEYS,
+)
 
 
 def integer_error(value: Any, minimum: int) -> Optional[str]:
@@ -464,21 +489,76 @@ class ConfigLoader:
         Returns:
             List of validation error messages (empty if valid)
         """
-        errors = []
+        errors: List[str] = []
+
+        # Shape first: the checks below index into these sections, and a
+        # section of the wrong type (scan: "range", targets: ["10.0.0.1"])
+        # used to end validate() with an AttributeError traceback
+        for section in ("network", "discovery", "scan", "output", "logging", "data_types"):
+            value = self.config.get(section)
+            if value is not None and not isinstance(value, dict):
+                errors.append(f"{section} must be a mapping (key: value lines), got {value!r}")
+        targets = self.config.get("targets")
+        if targets is not None and not isinstance(targets, list):
+            errors.append("targets must be a list")
+        elif targets:
+            errors.extend(
+                f"targets[{i}] must be a mapping with ip (and optionally protocol, port), got {target!r}"
+                for i, target in enumerate(targets)
+                if not isinstance(target, dict)
+            )
+        if errors:
+            return errors
 
         # Validate network settings (a non-numeric value used to crash
         # validate() itself with a TypeError)
-        net = self.config.get("network", {})
-        if not isinstance(net, dict):
-            errors.append("network must be a mapping")
-            net = {}
+        net = self.config.get("network") or {}
         for key, minimum in NETWORK_MINIMUMS.items():
             error = integer_error(net.get(key, minimum), minimum)
             if error:
                 errors.append(f"network.{key} {error}")
+        # These settings limit the load on the PLC: a misspelt key
+        # (packet_interval for packet_interval_ms) must not silently leave
+        # the default in effect
+        unknown_network = sorted(str(key) for key in net if key not in DEFAULT_CONFIG["network"])
+        if unknown_network:
+            errors.append(
+                f"network: unknown key(s) {', '.join(unknown_network)} "
+                f"(allowed: {', '.join(DEFAULT_CONFIG['network'])})"
+            )
+
+        max_concurrent = net.get("max_concurrent", 1)
+        if isinstance(max_concurrent, int) and not isinstance(max_concurrent, bool) and max_concurrent > MAX_CONCURRENT:
+            # Each connection is a worker thread and a session on a PLC
+            errors.append(f"network.max_concurrent must be at most {MAX_CONCURRENT}, got {max_concurrent}")
+
+        # Keys nobody reads are most likely misspelt: say so (not an error,
+        # older files may carry keys of earlier versions)
+        for section, known in KNOWN_SECTION_KEYS.items():
+            for key in sorted(str(k) for k in (self.config.get(section) or {}) if k not in known):
+                logger.warning(f"Config: {section}.{key} is not a known setting and is ignored")
+        for key in sorted(str(k) for k in self.config if k not in KNOWN_TOP_LEVEL_KEYS):
+            logger.warning(f"Config: {key} is not a known section and is ignored")
+
+        # Validate output settings (the command line limits these by itself)
+        out = self.config.get("output") or {}
+        if out.get("encoding") is not None and str(out["encoding"]).lower() not in OUTPUT_ENCODINGS:
+            errors.append(
+                f"output.encoding: unknown encoding {out['encoding']!r} (allowed: {', '.join(OUTPUT_ENCODINGS)})"
+            )
+        if out.get("directory") is not None and not isinstance(out["directory"], str):
+            errors.append(f"output.directory must be a path, got {out['directory']!r}")
+
+        # Validate the log level (a typo would silently leave INFO in effect)
+        log_level = (self.config.get("logging") or {}).get("level")
+        if log_level is not None and str(log_level).upper() not in ("DEBUG", "INFO", "WARNING", "ERROR"):
+            errors.append(f"logging.level: unknown level {log_level!r} (allowed: DEBUG, INFO, WARNING, ERROR)")
 
         # Validate targets
-        for i, target in enumerate(self.config.get("targets", [])):
+        for i, target in enumerate(self.config.get("targets") or []):
+            port = target.get("port")
+            if port is not None and (isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535):
+                errors.append(f"targets[{i}].port must be an integer 1-65535, got {port!r}")
             if not target.get("ip"):
                 errors.append(f"targets[{i}].ip is required")
             else:
@@ -514,6 +594,12 @@ class ConfigLoader:
             error = ip_range_error(str(ip_range))
             if error:
                 errors.append(f"discovery.ip_ranges[{i}]: {error}")
+
+        # An empty filter would be read as "no filter" and probe everything
+        protocols_filter = (self.config.get("discovery") or {}).get("protocols")
+        if self.is_set("discovery", "protocols") and (not isinstance(protocols_filter, list) or not protocols_filter):
+            errors.append("discovery.protocols must list at least one protocol (remove the key to probe all)")
+            protocols_filter = []
 
         # Validate discovery protocol filter
         for name in self.config.get("discovery", {}).get("protocols", []) or []:

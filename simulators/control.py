@@ -169,6 +169,23 @@ def _word(value: float) -> int:
     return number & 0xFFFF
 
 
+# Value ranges of the integer CIP types
+CIP_INTEGER_LIMITS = {
+    "SINT": (-(2**7), 2**7 - 1),
+    "INT": (-(2**15), 2**15 - 1),
+    "DINT": (-(2**31), 2**31 - 1),
+    "LINT": (-(2**63), 2**63 - 1),
+    "USINT": (0, 2**8 - 1),
+    "UINT": (0, 2**16 - 1),
+    "UDINT": (0, 2**32 - 1),
+    "ULINT": (0, 2**64 - 1),
+    "BYTE": (0, 2**8 - 1),
+    "WORD": (0, 2**16 - 1),
+    "DWORD": (0, 2**32 - 1),
+    "LWORD": (0, 2**64 - 1),
+}
+
+
 def _tag(device: Any, name: str) -> Tuple[str, Any]:
     if name not in device.logix_tags:
         raise ValueError(f"unknown tag {name!r} (tags: {', '.join(device.logix_tags)})")
@@ -205,6 +222,12 @@ def write_value(kind: str, device: Any, area: str, address: Address, value: floa
             new = 1 if value else 0
         else:
             new = int(round(value))
+            limits = CIP_INTEGER_LIMITS.get(data_type)
+            if limits and not limits[0] <= new <= limits[1]:
+                # The value would not fit the tag when a client reads it:
+                # the simulator would fail to encode its reply and the
+                # client would see a timeout
+                raise ValueError(f"{new} does not fit tag {name!r} ({data_type}: {limits[0]} to {limits[1]})")
         device.logix_tags[name] = (data_type, new)
         return
     index = int(address)

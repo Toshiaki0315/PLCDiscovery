@@ -10,11 +10,12 @@ Supports:
 
 import asyncio
 import logging
+import time
 from collections import deque
 from typing import Any, Deque, Dict, List, Optional, Tuple
 
 from ..config import PROTOCOL_PORTS, DataPoint, DeviceType, Protocol, StatusCode
-from ..utils import get_timestamp, value_to_hex
+from ..utils import get_timestamp
 from .base import BaseProtocolHandler
 from .cip_symbolic import (
     MAX_BATCH_REQUEST_BYTES,
@@ -84,6 +85,9 @@ class EtherNetIPHandler(BaseProtocolHandler):
         self._plc_type: Optional[str] = None  # 'logix', 'slc' or 'generic'
         # Cleared when a generic CIP controller rejects Multiple Service
         self._multiple_service_ok = True
+        # Logix tag list and data types read on the first connection, reused
+        # when reconnecting (see _connect_logix_first)
+        self._logix_definitions: Optional[Tuple[Dict[str, Any], Dict[str, Any]]] = None
 
     def _connection_path(self, include_slot: bool) -> str:
         """
@@ -124,8 +128,22 @@ class EtherNetIPHandler(BaseProtocolHandler):
         try:
             from pycomm3 import LogixDriver
 
+            definitions = self._logix_definitions
+
             def _connect():
-                client = LogixDriver(self._connection_path(include_slot=True))
+                path = self._connection_path(include_slot=True)
+                if definitions is not None:
+                    # Reconnect (e.g. after a timeout): pycomm3 would upload
+                    # the whole tag list and every UDT again - hundreds of
+                    # requests it sends without the packet interval. Reuse
+                    # what the first connection read.
+                    client = LogixDriver(path, init_tags=False)
+                    client.open()
+                    if hasattr(client, "_tags") and hasattr(client, "_data_types"):
+                        client._tags, client._data_types = dict(definitions[0]), dict(definitions[1])
+                        return client
+                    client.close()
+                client = LogixDriver(path)
                 client.open()
                 return client
 
@@ -133,6 +151,15 @@ class EtherNetIPHandler(BaseProtocolHandler):
             self._client = await loop.run_in_executor(None, _connect)
             self._connected = True
             self._plc_type = "logix"
+            if definitions is None:
+                tags = getattr(self._client, "_tags", None)
+                data_types = getattr(self._client, "_data_types", None)
+                if isinstance(tags, dict) and isinstance(data_types, dict):
+                    self._logix_definitions = (dict(tags), dict(data_types))
+                logger.info(
+                    f"EtherNet/IP (Logix): tag list of {len(tags) if isinstance(tags, dict) else 0} tags read "
+                    "from the controller (requests sent by pycomm3 without the packet interval; once per run)"
+                )
             logger.info(f"EtherNet/IP (Logix) connected to {self.ip_address}:{self.port}")
             return True
 
@@ -340,7 +367,12 @@ class EtherNetIPHandler(BaseProtocolHandler):
             if info.get("tag_type") not in ("atomic", "struct"):
                 continue
             dims = [d for d in (info.get("dimensions") or []) if d]
-            if dims:
+            if len(dims) > 1:
+                # Multi-dimensional array: every index must be given. Only
+                # its first element is read ("Name[0]{n}" is not a valid
+                # request and was reported as an invalid tag).
+                names.append(f"{name}[{','.join('0' for _ in dims)}]")
+            elif dims:
                 names.append(f"{name}[0]{{{min(dims[0], MAX_TAG_ARRAY_ELEMENTS)}}}")
             else:
                 names.append(name)
@@ -369,6 +401,7 @@ class EtherNetIPHandler(BaseProtocolHandler):
                 results += [_tag_point(split_element_count(t)[0], StatusCode.NG_COMM_ERROR) for t in batch]
                 continue
             await self._rate_limiter.wait()
+            started = time.monotonic()
             try:
 
                 def _read():
@@ -377,13 +410,16 @@ class EtherNetIPHandler(BaseProtocolHandler):
 
                 replies = await self._run_blocking(_read)
             except asyncio.TimeoutError:
+                self._audit_tag_read(batch, StatusCode.NG_TIMEOUT, started)
                 results += [_tag_point(split_element_count(t)[0], StatusCode.NG_TIMEOUT) for t in batch]
                 continue
             except Exception as e:
                 self._needs_reconnect = True
                 logger.debug(f"EtherNet/IP tag read error: {e}")
+                self._audit_tag_read(batch, StatusCode.NG_COMM_ERROR, started)
                 results += [_tag_point(split_element_count(t)[0], StatusCode.NG_COMM_ERROR) for t in batch]
                 continue
+            self._audit_tag_read(batch, StatusCode.OK, started)
             for name, reply in zip(batch, replies):
                 results += _tag_points(name, reply)
         return results
@@ -422,18 +458,22 @@ class EtherNetIPHandler(BaseProtocolHandler):
                     return [_capture(read_symbolic, client, names[0])], True
                 return read_symbolic_batch(client, names)
 
+            started = time.monotonic()
             try:
                 results, supported = await self._run_blocking(read)
             except asyncio.TimeoutError:
+                self._audit_tag_read(names, StatusCode.NG_TIMEOUT, started)
                 for index, tag in group:
                     outcomes[index] = [_tag_point(split_element_count(tag)[0], StatusCode.NG_TIMEOUT)]
                 continue
             except Exception as e:
                 self._needs_reconnect = True
                 logger.debug(f"EtherNet/IP tag read error: {e}")
+                self._audit_tag_read(names, StatusCode.NG_COMM_ERROR, started)
                 for index, tag in group:
                     outcomes[index] = [_tag_point(split_element_count(tag)[0], StatusCode.NG_COMM_ERROR)]
                 continue
+            self._audit_tag_read(names, StatusCode.OK, started)
             if not supported:
                 logger.info("Multiple Service not supported by the controller: reading one tag per request")
                 self._multiple_service_ok = False
@@ -445,7 +485,7 @@ class EtherNetIPHandler(BaseProtocolHandler):
                     logger.debug(f"Tag {tag}: {outcome}")
                     outcomes[index] = [_tag_point(split_element_count(tag)[0], outcome.status)]
                 else:
-                    outcomes[index] = _value_points(tag, outcome[0])
+                    outcomes[index] = _value_points(tag, outcome[0], outcome[1])
             # Tags whose batched reply did not fit: separate requests, each
             # after the packet interval (never a burst inside one call)
             queue.extendleft(reversed([[item] for item in retry]))
@@ -488,8 +528,45 @@ TAG_BATCH_SIZE = 20
 MAX_TAG_ARRAY_ELEMENTS = 1000
 
 
-def _tag_point(name: str, status: StatusCode, value: Any = None) -> DataPoint:
-    """Data point for one tag value"""
+# Hex digits of the integer CIP types (two per byte); other integers are
+# sized by their value
+_CIP_HEX_DIGITS = {
+    "BOOL": 4,
+    "SINT": 4,
+    "USINT": 4,
+    "BYTE": 4,
+    "INT": 4,
+    "UINT": 4,
+    "WORD": 4,
+    "DINT": 8,
+    "UDINT": 8,
+    "DWORD": 8,
+    "LINT": 16,
+    "ULINT": 16,
+    "LWORD": 16,
+}
+
+
+def _tag_hex(value: int, type_name: Optional[str] = None) -> str:
+    """
+    Hex of a tag's integer value in the width of its CIP type, so a DINT
+    of -1 reads 0xFFFFFFFF (not 0xFFFF) and 64-bit values keep all their
+    bits. Without a known type (structure members) the width is the
+    smallest of 16 / 32 / 64 bits holding the value.
+    """
+    digits = _CIP_HEX_DIGITS.get((type_name or "").split("[")[0].strip().upper())
+    if digits is None:
+        if -0x8000 <= value <= 0xFFFF:
+            digits = 4
+        elif -0x80000000 <= value <= 0xFFFFFFFF:
+            digits = 8
+        else:
+            digits = 16
+    return f"0x{value & ((1 << (4 * digits)) - 1):0{digits}X}"
+
+
+def _tag_point(name: str, status: StatusCode, value: Any = None, type_name: Optional[str] = None) -> DataPoint:
+    """Data point for one tag value (``type_name``: its CIP type when known)"""
     point = DataPoint(address=name, status=status, timestamp=get_timestamp())
     if status != StatusCode.OK:
         return point
@@ -497,7 +574,7 @@ def _tag_point(name: str, status: StatusCode, value: Any = None) -> DataPoint:
         value = int(value)
     if isinstance(value, int):
         point.value = value
-        point.raw_hex = value_to_hex(value, 2 if not -0x8000 <= value <= 0xFFFF else 1)
+        point.raw_hex = _tag_hex(value, type_name)
     elif isinstance(value, float):
         point.data_type = "REAL"
         point.converted_value = value
@@ -513,13 +590,15 @@ def _tag_points(name: str, reply: Any) -> List[DataPoint]:
     if reply is None or getattr(reply, "error", None):
         logger.debug(f"Tag {name}: {getattr(reply, 'error', 'no reply')}")
         return [_tag_point(name.split("{")[0], StatusCode.NG_ILLEGAL_ADDR)]
-    return _value_points(name, reply.value)
+    reply_type = getattr(reply, "type", None)
+    return _value_points(name, reply.value, reply_type if isinstance(reply_type, str) else None)
 
 
-def _value_points(name: str, value: Any) -> List[DataPoint]:
+def _value_points(name: str, value: Any, type_name: Optional[str] = None) -> List[DataPoint]:
     """
     Data points for a tag value: one per array element ("Tag[i]") and per
     structure member ("Tag.Member", nested: "Tag.Sub.Member", "Tag[1].Member").
+    ``type_name`` is the CIP type of the value (of each element for arrays).
     """
     if isinstance(value, list):
         base = name.split("{")[0]
@@ -530,12 +609,14 @@ def _value_points(name: str, value: Any) -> List[DataPoint]:
             prefix, start = base, 0
         points = []
         for i, element in enumerate(value):
-            points += _flatten(f"{prefix}[{start + i}]", element)
+            points += _flatten(f"{prefix}[{start + i}]", element, type_name)
         return points
-    return _flatten(name.split("{")[0], value)
+    return _flatten(name.split("{")[0], value, type_name)
 
 
-def _flatten(name: str, value: Any) -> List[DataPoint]:
+def _flatten(name: str, value: Any, type_name: Optional[str] = None) -> List[DataPoint]:
+    # Members of a structure have their own types, which the reply does not
+    # carry: only the value itself is formatted with type_name
     if isinstance(value, dict):
         points = []
         for member, member_value in value.items():
@@ -544,6 +625,6 @@ def _flatten(name: str, value: Any) -> List[DataPoint]:
     if isinstance(value, list):
         points = []
         for i, element in enumerate(value):
-            points += _flatten(f"{name}[{i}]", element)
+            points += _flatten(f"{name}[{i}]", element, type_name)
         return points
-    return [_tag_point(name, StatusCode.OK, value)]
+    return [_tag_point(name, StatusCode.OK, value, type_name)]

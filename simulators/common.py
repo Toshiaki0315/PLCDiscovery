@@ -48,3 +48,10 @@ def run_simulator(server: Coroutine, logger: logging.Logger) -> None:
         asyncio.run(server)
     except KeyboardInterrupt:
         logger.info("Simulator stopped")
+    except OSError as e:
+        # Port below 1024 without administrator rights (the standard
+        # Modbus 502 / S7 102), or a port already in use: say what to do
+        # instead of ending in a traceback
+        logger.error(f"Cannot start the simulator: {e}")
+        logger.error("Choose another port with --port (e.g. --port 1502), or stop the program using it")
+        raise SystemExit(1) from None

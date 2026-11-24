@@ -331,8 +331,9 @@ class CSVExporter:
 
         filepath = self.output_dir / filename
 
-        # Check if file exists for append mode
-        file_exists = filepath.exists()
+        # Append to an existing log; an empty file (e.g. created by a failed
+        # write) still needs its header
+        file_exists = filepath.exists() and filepath.stat().st_size > 0
 
         try:
             mode = "a" if file_exists else "w"

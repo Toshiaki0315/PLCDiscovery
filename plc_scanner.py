@@ -123,14 +123,20 @@ async def run_discovery(
 
     plcs = []
 
-    # Try broadcast discovery first
-    try:
-        display.print_info("Trying UDP broadcast discovery...")
-        broadcast = BroadcastDiscovery(config)
-        broadcast_plcs = await broadcast.discover_all_broadcast()
-        plcs.extend(broadcast_plcs)
-    except Exception as e:
-        display.print_warning(f"Broadcast discovery failed: {e}")
+    # Broadcast discovery first - on the local segments only, so not when
+    # the user limited the search to IP ranges: broadcasts go out on every
+    # interface (office LAN included) and answers from outside the ranges
+    # would be listed. The ranges are covered by the TCP scan below.
+    if ip_ranges:
+        display.print_info("UDP broadcast discovery skipped: the search is limited to the given IP range(s)")
+    else:
+        try:
+            display.print_info("Trying UDP broadcast discovery...")
+            broadcast = BroadcastDiscovery(config)
+            broadcast_plcs = await broadcast.discover_all_broadcast(protocols=protocols)
+            plcs.extend(broadcast_plcs)
+        except Exception as e:
+            display.print_warning(f"Broadcast discovery failed: {e}")
 
     # Then TCP port scanning
     tcp_plcs: List[PLCInfo] = []
@@ -528,6 +534,8 @@ async def run_periodic_scan(
             display.print_warning("Scan interrupted by user")
             interrupted = True
             _uncancel_current_task()
+        # Notifications a slow webhook is still receiving
+        await runner.drain()
 
         for key, collector in collectors.items():
             outcome = outcomes[key]
@@ -581,12 +589,13 @@ async def resolve_target(
         plc_info.port = port or PROTOCOL_PORTS.get(protocol)
         return plc_info
 
-    display.print_info(f"Detecting protocol for {ip}...")
-    detected = await PLCDiscovery(config)._probe_host(ip)
+    # With a port but no protocol, the protocols are tried on that port:
+    # probing the standard ports and then overwriting the port paired the
+    # detected protocol with a port it was never seen on
+    display.print_info(f"Detecting protocol for {ip}{f' on port {port}' if port else ''}...")
+    detected = await PLCDiscovery(config, port=port)._probe_host(ip)
     if detected and detected.protocol:
         display.print_success(f"Detected: {detected.protocol.name}")
-        if port:
-            detected.port = port
         if base:
             detected.manufacturer = base.manufacturer or detected.manufacturer
             detected.model = base.model or detected.model
@@ -599,14 +608,20 @@ async def resolve_target(
 
 async def _notify(
     notifier: Optional[NotificationManager], send: Callable[[NotificationManager], Awaitable[Any]]
-) -> None:
-    """Send a notification if configured; never let it break the scan"""
+) -> bool:
+    """
+    Send a notification if configured; never let it break the scan.
+
+    Returns False when it could not be delivered to any destination (the
+    caller may offer a state change again on a later cycle).
+    """
     if notifier is None:
-        return
+        return True
     try:
-        await send(notifier)
+        return NotificationManager.delivered(await send(notifier))
     except Exception as e:
         logger.warning(f"Notification failed: {e}")
+        return False
 
 
 def _exit_with_errors(prefix: str, errors: List[str]) -> None:
@@ -626,6 +641,38 @@ def _configure_logging(args: argparse.Namespace) -> None:
     quiet_third_party_loggers(args.verbose)
 
 
+LOG_LEVEL_NAMES = ("DEBUG", "INFO", "WARNING", "ERROR")
+
+
+def _apply_config_logging(args: argparse.Namespace, config_loader: Optional[ConfigLoader]) -> None:
+    """
+    Apply the config file's logging section: ``level`` (unless --verbose /
+    --quiet is given, which win) and ``file`` (log lines are also appended
+    to that file, in ``format``). A log file that cannot be opened is
+    reported and never stops the run.
+    """
+    if config_loader is None:
+        return
+    settings = config_loader.get_logging_settings()
+    root = logging.getLogger()
+    level = str(settings.get("level") or "").upper()
+    if config_loader.is_set("logging", "level") and level in LOG_LEVEL_NAMES and not (args.verbose or args.quiet):
+        root.setLevel(getattr(logging, level))
+        quiet_third_party_loggers(level == "DEBUG")
+    log_file = settings.get("file")
+    if log_file:
+        try:
+            path = Path(str(log_file)).expanduser()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            handler = logging.FileHandler(path, encoding="utf-8")
+            handler.setFormatter(
+                logging.Formatter(str(settings.get("format") or "%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
+            )
+            root.addHandler(handler)
+        except Exception as e:
+            logger.warning(f"Cannot write the log file {log_file}: {e}")
+
+
 def _load_config(args: argparse.Namespace) -> Optional[ConfigLoader]:
     """The validated config file (--config), or None; exits on errors"""
     if not args.config:
@@ -637,7 +684,12 @@ def _load_config(args: argparse.Namespace) -> Optional[ConfigLoader]:
         config_loader.load()
     except Exception as e:
         _exit_with_errors("Config error", [str(e)])
-    errors = config_loader.validate()
+    try:
+        errors = config_loader.validate()
+    except Exception as e:
+        # A value of an unexpected type somewhere: still a config error,
+        # never a traceback
+        errors = [f"invalid configuration: {e}"]
     if errors:
         _exit_with_errors("Config error", errors)
     return config_loader
@@ -786,8 +838,10 @@ async def _resolve_targets(args, config_loader, config, display):
     undetected: List[str] = []
     if config_loader and not targets:
         for target in config_loader.get_targets():
+            # --protocol / --port win over the file's targets, like every
+            # other command-line option
             resolved = await resolve_target(
-                target.ip_address, target.protocol, target.port, config, display, base=target
+                target.ip_address, protocol or target.protocol, args.port or target.port, config, display, base=target
             )
             if resolved:
                 plc_infos.append(resolved)
@@ -1043,6 +1097,7 @@ async def main():
 
     _configure_logging(args)
     config_loader = _load_config(args)
+    _apply_config_logging(args, config_loader)
     mode_name, interval, config = _resolve_run_settings(args, config_loader)
     audit_file = _init_audit(args, config_loader)
 

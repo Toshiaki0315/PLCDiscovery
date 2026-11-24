@@ -168,14 +168,23 @@ def parse_thresholds(texts: Iterable[str]) -> List[Threshold]:
 
 
 def numeric_value(point: DataPoint) -> Optional[float]:
-    """The number to compare: converted value if any, else the raw value"""
+    """
+    The number to compare: the converted value when the point went through
+    data type conversion, else the raw value.
+
+    A converted point never falls back to its raw word: an incomplete
+    multi-word value (one of its words failed), the later words of a value,
+    NaN / infinity and text have no comparable number, and the raw 16-bit
+    word of e.g. a FLOAT is unrelated to the value the limit was set for.
+    """
     if point.status != StatusCode.OK:
         return None
-    for value in (point.converted_value, point.value):
-        if isinstance(value, bool):
-            return float(value)
-        if isinstance(value, (int, float)) and math.isfinite(value):
-            return float(value)
+    converted = point.data_type is not None or point.converted_value is not None
+    value = point.converted_value if converted else point.value
+    if isinstance(value, bool):
+        return float(value)
+    if isinstance(value, (int, float)) and math.isfinite(value):
+        return float(value)
     return None
 
 
@@ -213,6 +222,9 @@ class ThresholdMonitor:
         self._notified: Set[Key] = set()
         # Notified excursions that ended but whose clear is not sent yet
         self._unsent_clear: Dict[Key, ThresholdEvent] = {}
+        # Last value read per threshold (for a notification sent in a cycle
+        # in which the address could not be read)
+        self._last_value: Dict[Key, float] = {}
 
     def __bool__(self) -> bool:
         return bool(self.thresholds)
@@ -244,10 +256,20 @@ class ThresholdMonitor:
         for threshold in self.for_target(target, plc_ip):
             point = by_address.get(threshold.address.casefold())
             value = numeric_value(point) if point is not None else None
-            if value is None:
-                continue  # not read this cycle: keep the previous state
             key = (target, threshold)
-            if key in self._exceeded:
+            if value is None:
+                # Not read this cycle: the state stays as it is, but a
+                # notification still waiting to go out (throttled or failed
+                # earlier) is offered with the last value read
+                last = self._last_value.get(key)
+                if last is None:
+                    continue
+                value, read = last, False
+            else:
+                self._last_value[key], read = value, True
+            if not read:
+                pass
+            elif key in self._exceeded:
                 if threshold.back_inside(value):
                     event = ThresholdEvent(threshold, value, now - self._exceeded.pop(key))
                     result.returned.append(event)
@@ -275,6 +297,19 @@ class ThresholdMonitor:
                 self._notified.discard(key)
                 result.cleared.append(self._unsent_clear.pop(key, ThresholdEvent(threshold, value)))
         return result
+
+    def delivery_failed(self, target: str, event: ThresholdEvent, kind: str) -> None:
+        """
+        A notification handed out by evaluate() could not be delivered
+        (``kind``: "exceeded" or "cleared"): put it back so it is offered
+        again on a later cycle instead of leaving the receiver out of date.
+        """
+        key = (target, event.threshold)
+        if kind == "cleared":
+            self._notified.add(key)
+            self._unsent_clear.setdefault(key, event)
+        else:
+            self._notified.discard(key)
 
     def check(
         self,

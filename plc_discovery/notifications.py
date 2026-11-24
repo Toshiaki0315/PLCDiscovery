@@ -394,7 +394,9 @@ class CustomHandler(NotificationHandler):
             result = self.config.handler(event)
             if asyncio.iscoroutine(result):
                 result = await result
-            return bool(result)
+            # A function without a return value has done its work: only an
+            # explicit False (or an exception) reports a failed delivery
+            return result is not False
         except Exception as e:
             logger.error(f"Custom handler error: {e}")
             return False
@@ -499,6 +501,17 @@ class NotificationManager:
         )
 
     @staticmethod
+    def delivered(results: Any) -> bool:
+        """
+        False when a notify() result says every handler failed to send.
+        True when at least one succeeded or no handler takes the event
+        (nothing to retry).
+        """
+        if not isinstance(results, dict) or not results:
+            return True
+        return any(results.values())
+
+    @staticmethod
     def threshold_key(target: str, condition: str) -> str:
         """The throttle key of notify_threshold"""
         return f"{target}: {condition}"
@@ -542,7 +555,6 @@ class NotificationManager:
             handler_names.append(name)
 
         if tasks:
-            self._last_sent[throttle] = now
             outcomes = await asyncio.gather(*tasks, return_exceptions=True)
 
             for name, outcome in zip(handler_names, outcomes):
@@ -551,6 +563,11 @@ class NotificationManager:
                     results[name] = False
                 else:
                     results[name] = outcome
+
+            # Throttle only what reached a receiver: a notification that
+            # every handler failed to send must not suppress its own retry
+            if any(results.values()):
+                self._last_sent[throttle] = now
 
         return results
 
