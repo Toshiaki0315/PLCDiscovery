@@ -217,6 +217,7 @@ class BaseProtocolHandler(ABC):
                         address=address_key,
                         status=self._session_cache.get_status(address_key) or StatusCode.NG_ILLEGAL_ADDR,
                         timestamp=get_timestamp(),
+                        cached=True,
                     )
                 )
                 start += 1

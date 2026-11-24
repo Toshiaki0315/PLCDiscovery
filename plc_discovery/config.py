@@ -463,6 +463,9 @@ class DataPoint:
     # A symbolic tag / variable (EtherNet/IP), not a numeric device address:
     # its name is never parsed as "device + number" (a tag may be called D1)
     is_tag: bool = False
+    # Reported from the session's learned addresses: no request was sent for
+    # it in this read, so it says nothing about whether the PLC answers now
+    cached: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         """
