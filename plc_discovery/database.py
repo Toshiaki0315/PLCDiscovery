@@ -417,7 +417,6 @@ class DatabaseExporter:
         cursor = self._db.execute(
             """
             SELECT
-                COUNT(DISTINCT plc_ip) as plc_count,
                 SUM(CASE WHEN status = 'OK' THEN 1 ELSE 0 END) as success_count,
                 SUM(CASE WHEN status != 'OK' THEN 1 ELSE 0 END) as error_count
             FROM data_points
@@ -426,6 +425,17 @@ class DatabaseExporter:
             (session_id,),
         )
         stats = cursor.fetchone()
+        # One per scan target (IP, protocol and port, as the rows are kept
+        # apart since schema v3), not per IP: two Modbus units behind one
+        # gateway, or one PLC read over two protocols, were counted as one
+        plc_count = self._db.execute(
+            """
+            SELECT COUNT(*) FROM (
+                SELECT DISTINCT plc_ip, protocol, port FROM data_points WHERE session_id = ?
+            )
+            """,
+            (session_id,),
+        ).fetchone()[0]
 
         self._db.execute(
             """
@@ -437,7 +447,7 @@ class DatabaseExporter:
             (
                 datetime.now().isoformat(),
                 status,
-                stats["plc_count"] or 0,
+                plc_count or 0,
                 stats["success_count"] or 0,
                 stats["error_count"] or 0,
                 session_id,

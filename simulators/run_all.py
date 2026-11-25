@@ -54,7 +54,7 @@ class SimulatorManager:
         self.modbus_denied = [(5000, 5100), (8000, 8050)]
         self.eip_denied = [(100, 150)]
         self.s7_denied = [(500, 550)]
-        self.fins_denied = [(5000, 5100), (1000, 1050)]
+        # FINS: fixed in the simulator itself (fins_simulator.INACCESSIBLE_RANGES)
 
         # UDP transports
         self.udp_transports = []
@@ -178,9 +178,14 @@ class SimulatorManager:
 
         # Print test commands (Modbus and S7 use non-privileged ports)
         target = "127.0.0.1" if self.host in ("0.0.0.0", "") else self.host
+        # Discovery probes the simulators' own ports (1502, 1102, 44819,
+        # 44820) on loopback addresses only; elsewhere the standard ports
+        found = (
+            "finds every simulator" if target.startswith("127.")
+            else "finds SLMP, EtherNet/IP (44818), FINS on their standard ports"
+        )
         commands = [
-            ("Discover (finds SLMP, EtherNet/IP, FINS on their standard ports)",
-             f"--mode discover --ip-range {target}"),
+            (f"Discover ({found})", f"--mode discover --ip-range {target}"),
             ("SLMP", f"--mode range --target {target} --protocol slmp --device D --range 0-99"),
             ("Modbus/TCP", f"--mode range --target {target} --protocol modbus --port 1502 --device HR --range 0-99"),
             ("S7", f"--mode range --target {target} --protocol s7 --port 1102 --device DB --range 0-99"),
