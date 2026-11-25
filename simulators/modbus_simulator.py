@@ -11,11 +11,11 @@ Usage:
 """
 
 import asyncio
-import struct
 import logging
+import struct
 from typing import Dict, List, Optional, Tuple
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("Modbus-Simulator")
 
 # Shared CLI helpers (support both direct execution and package import)
@@ -55,18 +55,18 @@ class ModbusDevice:
             denied_ranges: List of (start, end) tuples for addresses that should return errors
         """
         # Modbus memory areas
-        self.coils: Dict[int, bool] = {}           # 0x - Coils
+        self.coils: Dict[int, bool] = {}  # 0x - Coils
         self.discrete_inputs: Dict[int, bool] = {}  # 1x - Discrete Inputs
         self.holding_registers: Dict[int, int] = {}  # 4x - Holding Registers
-        self.input_registers: Dict[int, int] = {}   # 3x - Input Registers
+        self.input_registers: Dict[int, int] = {}  # 3x - Input Registers
 
         self.denied_ranges = denied_ranges or []
 
         # Device identification
         self.device_info = {
-            0x00: b"PLC Simulator",      # Vendor Name
-            0x01: b"ModbusSim v1.0",     # Product Code
-            0x02: b"1.0.0",              # Major Minor Revision
+            0x00: b"PLC Simulator",  # Vendor Name
+            0x01: b"ModbusSim v1.0",  # Product Code
+            0x02: b"1.0.0",  # Major Minor Revision
         }
 
         self._initialize_sample_data()
@@ -185,7 +185,7 @@ class ModbusProtocol(asyncio.Protocol):
     def connection_lost(self, exc):
         logger.info(f"Connection closed: {getattr(self, 'peer', '?')}")
 
-    def data_received(self, data: bytes):
+    def data_received(self, data: bytes) -> None:
         """Process received Modbus/TCP frame"""
         self.buffer += data
 
@@ -222,7 +222,8 @@ class ModbusProtocol(asyncio.Protocol):
             try:
                 response_pdu = self._process_pdu(pdu)
                 response = self._make_response(transaction_id, unit_id, response_pdu)
-                self.transport.write(response)
+                if self.transport is not None:
+                    self.transport.write(response)
             except Exception as e:
                 logger.error(f"Error processing PDU: {e}")
 
@@ -265,6 +266,7 @@ class ModbusProtocol(asyncio.Protocol):
 
         if error != 0:
             return self._make_exception(FC_READ_HOLDING_REGISTERS, error)
+        assert data is not None
 
         # Build response
         response = bytes([FC_READ_HOLDING_REGISTERS, count * 2])
@@ -290,6 +292,7 @@ class ModbusProtocol(asyncio.Protocol):
 
         if error != 0:
             return self._make_exception(FC_READ_INPUT_REGISTERS, error)
+        assert data is not None
 
         response = bytes([FC_READ_INPUT_REGISTERS, count * 2])
         for value in data:
@@ -314,6 +317,7 @@ class ModbusProtocol(asyncio.Protocol):
 
         if error != 0:
             return self._make_exception(FC_READ_COILS, error)
+        assert data is not None
 
         # Pack bits into bytes
         byte_count = (count + 7) // 8
@@ -322,7 +326,7 @@ class ModbusProtocol(asyncio.Protocol):
             byte_val = 0
             for j in range(8):
                 if i + j < count and data[i + j]:
-                    byte_val |= (1 << j)
+                    byte_val |= 1 << j
             packed.append(byte_val)
 
         response = bytes([FC_READ_COILS, byte_count]) + bytes(packed)
@@ -345,6 +349,7 @@ class ModbusProtocol(asyncio.Protocol):
 
         if error != 0:
             return self._make_exception(FC_READ_DISCRETE_INPUTS, error)
+        assert data is not None
 
         byte_count = (count + 7) // 8
         packed = []
@@ -352,7 +357,7 @@ class ModbusProtocol(asyncio.Protocol):
             byte_val = 0
             for j in range(8):
                 if i + j < count and data[i + j]:
-                    byte_val |= (1 << j)
+                    byte_val |= 1 << j
             packed.append(byte_val)
 
         response = bytes([FC_READ_DISCRETE_INPUTS, byte_count]) + bytes(packed)
@@ -390,22 +395,19 @@ class ModbusProtocol(asyncio.Protocol):
     def _make_response(self, transaction_id: int, unit_id: int, pdu: bytes) -> bytes:
         """Create Modbus/TCP response with MBAP header"""
         response = struct.pack(">H", transaction_id)  # Transaction ID
-        response += struct.pack(">H", 0)               # Protocol ID
-        response += struct.pack(">H", len(pdu) + 1)   # Length
-        response += bytes([unit_id])                   # Unit ID
-        response += pdu                                # PDU
+        response += struct.pack(">H", 0)  # Protocol ID
+        response += struct.pack(">H", len(pdu) + 1)  # Length
+        response += bytes([unit_id])  # Unit ID
+        response += pdu  # PDU
         return response
 
 
-async def run_server(host: str, port: int, denied_ranges: List[Tuple[int, int]]):
+async def run_server(host: str, port: int, denied_ranges: List[Tuple[int, int]]) -> None:
     """Run Modbus/TCP simulator server"""
     device = ModbusDevice(denied_ranges)
 
     loop = asyncio.get_event_loop()
-    server = await loop.create_server(
-        lambda: ModbusProtocol(device),
-        host, port
-    )
+    server = await loop.create_server(lambda: ModbusProtocol(device), host, port)
 
     addr = server.sockets[0].getsockname()
     logger.info(f"Modbus/TCP Simulator running on {addr[0]}:{addr[1]}")

@@ -17,29 +17,27 @@ This will start:
 
 import argparse
 import asyncio
+import logging
 import signal
 import sys
-import logging
+from typing import List
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("PLC-Simulator-Launcher")
 
 # Import simulators (support both direct execution and package import)
 try:
-    from .slmp_simulator import SLMPDevice, SLMPProtocol
-    from .modbus_simulator import ModbusDevice, ModbusProtocol
     from .ethernet_ip_simulator import EtherNetIPDevice, EtherNetIPProtocol
-    from .s7_simulator import S7Device, COTPProtocol
-    from .fins_simulator import FINSSimulator, FINSUDPServerProtocol, FINSTCPServerProtocol
+    from .fins_simulator import FINSSimulator, FINSTCPServerProtocol, FINSUDPServerProtocol
+    from .modbus_simulator import ModbusDevice, ModbusProtocol
+    from .s7_simulator import COTPProtocol, S7Device
+    from .slmp_simulator import SLMPDevice, SLMPProtocol
 except ImportError:
-    from slmp_simulator import SLMPDevice, SLMPProtocol
-    from modbus_simulator import ModbusDevice, ModbusProtocol
-    from ethernet_ip_simulator import EtherNetIPDevice, EtherNetIPProtocol
-    from s7_simulator import S7Device, COTPProtocol
-    from fins_simulator import FINSSimulator, FINSUDPServerProtocol, FINSTCPServerProtocol
+    from ethernet_ip_simulator import EtherNetIPDevice, EtherNetIPProtocol  # type: ignore[no-redef]
+    from fins_simulator import FINSSimulator, FINSTCPServerProtocol, FINSUDPServerProtocol  # type: ignore[no-redef]
+    from modbus_simulator import ModbusDevice, ModbusProtocol  # type: ignore[no-redef]
+    from s7_simulator import COTPProtocol, S7Device  # type: ignore[no-redef]
+    from slmp_simulator import SLMPDevice, SLMPProtocol  # type: ignore[no-redef]
 
 
 class SimulatorManager:
@@ -47,7 +45,7 @@ class SimulatorManager:
 
     def __init__(self, host: str = "127.0.0.1"):
         self.host = host
-        self.servers = []
+        self.servers: List[asyncio.AbstractServer] = []
 
         # Default denied ranges for each simulator
         self.slmp_denied = [(5000, 5100), (7000, 7050)]
@@ -57,7 +55,7 @@ class SimulatorManager:
         # FINS: fixed in the simulator itself (fins_simulator.INACCESSIBLE_RANGES)
 
         # UDP transports
-        self.udp_transports = []
+        self.udp_transports: List[asyncio.DatagramTransport] = []
 
     async def start_all(self):
         """Start all simulators"""
@@ -70,10 +68,7 @@ class SimulatorManager:
         # SLMP Simulator
         try:
             slmp_device = SLMPDevice(self.slmp_denied)
-            slmp_server = await loop.create_server(
-                lambda: SLMPProtocol(slmp_device),
-                self.host, 5001
-            )
+            slmp_server = await loop.create_server(lambda: SLMPProtocol(slmp_device), self.host, 5001)
             self.servers.append(slmp_server)
             logger.info(f"✓ SLMP Simulator started on {self.host}:5001")
             logger.info(f"  Denied ranges: {self.slmp_denied}")
@@ -84,8 +79,7 @@ class SimulatorManager:
         try:
             modbus_device = ModbusDevice(self.modbus_denied)
             modbus_server = await loop.create_server(
-                lambda: ModbusProtocol(modbus_device),
-                self.host, 1502  # Using 1502 instead of 502 (non-privileged)
+                lambda: ModbusProtocol(modbus_device), self.host, 1502  # Using 1502 instead of 502 (non-privileged)
             )
             self.servers.append(modbus_server)
             logger.info(f"✓ Modbus/TCP Simulator started on {self.host}:1502")
@@ -97,10 +91,7 @@ class SimulatorManager:
         # EtherNet/IP Simulator
         try:
             eip_device = EtherNetIPDevice(self.eip_denied)
-            eip_server = await loop.create_server(
-                lambda: EtherNetIPProtocol(eip_device),
-                self.host, 44818
-            )
+            eip_server = await loop.create_server(lambda: EtherNetIPProtocol(eip_device), self.host, 44818)
             self.servers.append(eip_server)
             logger.info(f"✓ EtherNet/IP Simulator started on {self.host}:44818")
             logger.info(f"  Denied ranges: {self.eip_denied}")
@@ -110,10 +101,7 @@ class SimulatorManager:
         # EtherNet/IP Logix Simulator (symbolic tags, pycomm3 LogixDriver)
         try:
             logix_device = EtherNetIPDevice(mode="logix")
-            logix_server = await loop.create_server(
-                lambda: EtherNetIPProtocol(logix_device),
-                self.host, 44819
-            )
+            logix_server = await loop.create_server(lambda: EtherNetIPProtocol(logix_device), self.host, 44819)
             self.servers.append(logix_server)
             logger.info(f"✓ EtherNet/IP Logix Simulator started on {self.host}:44819")
             logger.info(f"  Tags: {', '.join(logix_device.logix_tags)}")
@@ -123,10 +111,7 @@ class SimulatorManager:
         # EtherNet/IP Omron NJ/NX Simulator (variables read by name)
         try:
             omron_device = EtherNetIPDevice(mode="omron")
-            omron_server = await loop.create_server(
-                lambda: EtherNetIPProtocol(omron_device),
-                self.host, 44820
-            )
+            omron_server = await loop.create_server(lambda: EtherNetIPProtocol(omron_device), self.host, 44820)
             self.servers.append(omron_server)
             logger.info(f"✓ EtherNet/IP Omron NJ/NX Simulator started on {self.host}:44820")
             logger.info(f"  Variables: {', '.join(omron_device.logix_tags)}")
@@ -137,8 +122,7 @@ class SimulatorManager:
         try:
             s7_device = S7Device(self.s7_denied)
             s7_server = await loop.create_server(
-                lambda: COTPProtocol(s7_device),
-                self.host, 1102  # Using 1102 instead of 102 (non-privileged)
+                lambda: COTPProtocol(s7_device), self.host, 1102  # Using 1102 instead of 102 (non-privileged)
             )
             self.servers.append(s7_server)
             logger.info(f"✓ S7 Simulator started on {self.host}:1102")
@@ -151,13 +135,11 @@ class SimulatorManager:
         try:
             fins_simulator = FINSSimulator(self.host, 9600)
             transport, protocol = await loop.create_datagram_endpoint(
-                lambda: FINSUDPServerProtocol(fins_simulator),
-                local_addr=(self.host, 9600)
+                lambda: FINSUDPServerProtocol(fins_simulator), local_addr=(self.host, 9600)
             )
             try:
                 fins_tcp_server = await loop.create_server(
-                    lambda: FINSTCPServerProtocol(fins_simulator),
-                    self.host, 9600
+                    lambda: FINSTCPServerProtocol(fins_simulator), self.host, 9600
                 )
             except Exception:
                 transport.close()  # not half a simulator: "failed" means nothing is listening
@@ -181,7 +163,8 @@ class SimulatorManager:
         # Discovery probes the simulators' own ports (1502, 1102, 44819,
         # 44820) on loopback addresses only; elsewhere the standard ports
         found = (
-            "finds every simulator" if target.startswith("127.")
+            "finds every simulator"
+            if target.startswith("127.")
             else "finds SLMP, EtherNet/IP (44818), FINS on their standard ports"
         )
         commands = [
@@ -228,7 +211,7 @@ class SimulatorManager:
         await asyncio.Event().wait()
 
 
-async def main(host: str):
+async def main(host: str) -> bool:
     """Main entry point"""
     manager = SimulatorManager(host)
 
@@ -262,8 +245,9 @@ async def main(host: str):
 
 def run():
     parser = argparse.ArgumentParser(description="PLC Simulator Launcher")
-    parser.add_argument("--host", default="127.0.0.1",
-                        help="Host to bind to (default 127.0.0.1; 0.0.0.0 = all interfaces)")
+    parser.add_argument(
+        "--host", default="127.0.0.1", help="Host to bind to (default 127.0.0.1; 0.0.0.0 = all interfaces)"
+    )
     args = parser.parse_args()
 
     try:

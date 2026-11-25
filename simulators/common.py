@@ -29,16 +29,17 @@ def peer_text(transport: Any) -> str:
     return str(peer) if peer else "?"
 
 
-def simulator_parser(description: str, default_port: int, default_denied: Optional[str] = None
-                     ) -> argparse.ArgumentParser:
+def simulator_parser(
+    description: str, default_port: int, default_denied: Optional[str] = None
+) -> argparse.ArgumentParser:
     """Parser with --host and --port (and --denied when a default is given)"""
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument("--host", default="127.0.0.1", help=DEFAULT_HOST_HELP)
-    parser.add_argument("--port", type=int, default=default_port,
-                        help=f"Port to listen on (default: {default_port})")
+    parser.add_argument("--port", type=int, default=default_port, help=f"Port to listen on (default: {default_port})")
     if default_denied is not None:
-        parser.add_argument("--denied", default=default_denied,
-                            help=f"Denied address ranges (default: '{default_denied}')")
+        parser.add_argument(
+            "--denied", default=default_denied, help=f"Denied address ranges (default: '{default_denied}')"
+        )
     return parser
 
 

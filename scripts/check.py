@@ -36,12 +36,16 @@ LINT_STEPS = [
     (
         "flake8",
         "flake8",
-        ["plc_discovery", "tests", "simulators", *TOP_LEVEL]
+        ["plc_discovery", "tests", "simulators", "scripts", *TOP_LEVEL]
         + ["--max-line-length=120", "--ignore=E501,W503,E402,E203,E704"],
     ),
-    ("black", "black", ["--check", "--diff", "plc_discovery", "tests", *TOP_LEVEL]),
-    ("isort", "isort", ["--check-only", "--diff", "plc_discovery", "tests", *TOP_LEVEL]),
-    ("mypy", "mypy", ["plc_discovery", *TOP_LEVEL, "--ignore-missing-imports", "--no-error-summary"]),
+    ("black", "black", ["--check", "--diff", "plc_discovery", "tests", "simulators", "scripts", *TOP_LEVEL]),
+    ("isort", "isort", ["--check-only", "--diff", "plc_discovery", "tests", "simulators", "scripts", *TOP_LEVEL]),
+    (
+        "mypy",
+        "mypy",
+        ["plc_discovery", "simulators", "scripts", *TOP_LEVEL, "--ignore-missing-imports", "--no-error-summary"],
+    ),
 ]
 
 # The CI's unit-test and integration-test jobs ("-q" for a shorter output;

@@ -10,11 +10,11 @@ Usage:
 """
 
 import asyncio
-import struct
 import logging
+import struct
 from typing import Dict, List, Optional, Tuple
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("S7-Simulator")
 
 # Shared CLI helpers (support both direct execution and package import)
@@ -42,12 +42,12 @@ S7_FUNC_WRITE_VAR = 0x05
 S7_FUNC_SETUP_COMM = 0xF0
 
 # S7 Area IDs
-S7_AREA_PE = 0x81    # Process inputs
-S7_AREA_PA = 0x82    # Process outputs
-S7_AREA_MK = 0x83    # Merkers (flags)
-S7_AREA_DB = 0x84    # Data blocks
-S7_AREA_CT = 0x1C    # Counters
-S7_AREA_TM = 0x1D    # Timers
+S7_AREA_PE = 0x81  # Process inputs
+S7_AREA_PA = 0x82  # Process outputs
+S7_AREA_MK = 0x83  # Merkers (flags)
+S7_AREA_DB = 0x84  # Data blocks
+S7_AREA_CT = 0x1C  # Counters
+S7_AREA_TM = 0x1D  # Timers
 
 # Return codes
 S7_RET_OK = 0xFF
@@ -61,26 +61,26 @@ DB_MIN_LENGTH = 2000
 # USER_DATA: read SZL (system status list), as used by snap7's get_cpu_info
 S7_USERDATA_GROUP_SZL = 0x04
 S7_USERDATA_READ_SZL = 0x01
-SZL_COMPONENT_ID = 0x001C        # component identification
-SZL_RECORD_LENGTH = 34           # 2-byte index + 32 bytes of text
-SZL_MODULE_ID = 0x0011           # module identification (order number, versions)
-SZL_MODULE_RECORD_LENGTH = 28    # index, MlfB (20), BGTyp, Ausbg, Ausbe
+SZL_COMPONENT_ID = 0x001C  # component identification
+SZL_RECORD_LENGTH = 34  # 2-byte index + 32 bytes of text
+SZL_MODULE_ID = 0x0011  # module identification (order number, versions)
+SZL_MODULE_RECORD_LENGTH = 28  # index, MlfB (20), BGTyp, Ausbg, Ausbe
 
 # SZL 0x0011 records: index -> (order number, Ausbg, Ausbe). Index 1 is the
 # module, 6 the hardware, 7 the firmware ("V" + major, minor, patch).
 DEFAULT_MODULE_IDS = {
     0x0001: ("6ES7 515-2AM02-0AB0", 0x0000, 0x0003),
     0x0006: ("6ES7 515-2AM02-0AB0", 0x0000, 0x0003),
-    0x0007: ("", 0x5602, 0x0904),            # firmware V2.9.4
+    0x0007: ("", 0x5602, 0x0904),  # firmware V2.9.4
 }
 
 # SZL 0x001C records (index -> text) as an S7-1500 reports them
 DEFAULT_COMPONENT_IDS = {
-    0x0001: "S7-1500 Sim",                   # name of the automation system
-    0x0002: "PLC_1",                         # name of the module
-    0x0004: "Original Siemens Equipment",    # copyright
-    0x0005: "S C-SIM000001",                 # serial number
-    0x0007: "CPU 1515-2 PN Sim",             # module type name
+    0x0001: "S7-1500 Sim",  # name of the automation system
+    0x0002: "PLC_1",  # name of the module
+    0x0004: "Original Siemens Equipment",  # copyright
+    0x0005: "S C-SIM000001",  # serial number
+    0x0007: "CPU 1515-2 PN Sim",  # module type name
 }
 
 
@@ -98,7 +98,7 @@ class S7Device:
         # Memory areas
         self.data_blocks: Dict[int, Dict[int, int]] = {}  # DB -> {offset: byte}
         self.merkers: Dict[int, int] = {}  # Offset -> byte
-        self.inputs: Dict[int, int] = {}   # Offset -> byte
+        self.inputs: Dict[int, int] = {}  # Offset -> byte
         self.outputs: Dict[int, int] = {}  # Offset -> byte
 
         self._initialize_data()
@@ -196,7 +196,7 @@ class COTPProtocol(asyncio.Protocol):
     def connection_lost(self, exc):
         logger.info(f"Connection closed: {getattr(self, 'peer', '?')}")
 
-    def data_received(self, data: bytes):
+    def data_received(self, data: bytes) -> None:
         """Process received TPKT/COTP/S7comm data"""
         self.buffer += data
 
@@ -229,7 +229,7 @@ class COTPProtocol(asyncio.Protocol):
 
             try:
                 response = self._process_cotp(payload)
-                if response:
+                if response and self.transport is not None:
                     self.transport.write(response)
             except Exception as e:
                 logger.error(f"Error processing packet: {e}")
@@ -258,17 +258,29 @@ class COTPProtocol(asyncio.Protocol):
         self.connected = True
 
         # COTP Connection Confirm (CC)
-        cotp = bytes([
-            0x11,  # Length
-            0xD0,  # CC PDU type
-            0x00, 0x01,  # DST-REF
-            0x00, 0x01,  # SRC-REF
-            0x00,  # Class/options
-            # Parameters
-            0xC0, 0x01, 0x0A,  # TPDU size
-            0xC1, 0x02, 0x01, 0x00,  # Source TSAP
-            0xC2, 0x02, 0x01, 0x02,  # Destination TSAP
-        ])
+        cotp = bytes(
+            [
+                0x11,  # Length
+                0xD0,  # CC PDU type
+                0x00,
+                0x01,  # DST-REF
+                0x00,
+                0x01,  # SRC-REF
+                0x00,  # Class/options
+                # Parameters
+                0xC0,
+                0x01,
+                0x0A,  # TPDU size
+                0xC1,
+                0x02,
+                0x01,
+                0x00,  # Source TSAP
+                0xC2,
+                0x02,
+                0x01,
+                0x02,  # Destination TSAP
+            ]
+        )
 
         return self._make_tpkt(cotp)
 
@@ -310,7 +322,7 @@ class COTPProtocol(asyncio.Protocol):
         param_len = struct.unpack(">H", data[6:8])[0]
         # bytes 8-10: data length
 
-        params = data[10:10 + param_len]
+        params = data[10 : 10 + param_len]
 
         if len(params) < 1:
             return None
@@ -336,12 +348,16 @@ class COTPProtocol(asyncio.Protocol):
         pdu_size = min(requested, 960) if requested else 960
 
         # Response parameters
-        resp_params = bytes([
-            S7_FUNC_SETUP_COMM,
-            0x00,  # Reserved
-            0x00, 0x03,  # Max calling
-            0x00, 0x03,  # Max called
-        ]) + struct.pack(">H", pdu_size)
+        resp_params = bytes(
+            [
+                S7_FUNC_SETUP_COMM,
+                0x00,  # Reserved
+                0x00,
+                0x03,  # Max calling
+                0x00,
+                0x03,  # Max called
+            ]
+        ) + struct.pack(">H", pdu_size)
 
         return self._make_s7_response(pdu_ref, resp_params, b"")
 
@@ -363,10 +379,10 @@ class COTPProtocol(asyncio.Protocol):
 
             # Parse item specification
             # bytes 0-4: variable specification, address length, syntax id, transport size
-            length = struct.unpack(">H", params[offset + 4:offset + 6])[0]
-            db_number = struct.unpack(">H", params[offset + 6:offset + 8])[0]
+            length = struct.unpack(">H", params[offset + 4 : offset + 6])[0]
+            db_number = struct.unpack(">H", params[offset + 6 : offset + 8])[0]
             area = params[offset + 8]
-            address_bytes = params[offset + 9:offset + 12]
+            address_bytes = params[offset + 9 : offset + 12]
             address = (address_bytes[0] << 16) | (address_bytes[1] << 8) | address_bytes[2]
             byte_offset = address >> 3
 
@@ -415,13 +431,16 @@ class COTPProtocol(asyncio.Protocol):
         """SZL list (header + records) for 0x001C / 0x0011, None for others"""
         if szl_id == SZL_COMPONENT_ID:
             length = SZL_RECORD_LENGTH
-            records = [struct.pack(">H", index) + text.encode("ascii").ljust(length - 2, b"\x00")
-                       for index, text in self.device.component_ids.items()]
+            records = [
+                struct.pack(">H", index) + text.encode("ascii").ljust(length - 2, b"\x00")
+                for index, text in self.device.component_ids.items()
+            ]
         elif szl_id == SZL_MODULE_ID:
             length = SZL_MODULE_RECORD_LENGTH
-            records = [struct.pack(">H", index) + order.encode("ascii").ljust(20, b" ")
-                       + struct.pack(">HHH", 0, ausbg, ausbe)
-                       for index, (order, ausbg, ausbe) in self.device.module_ids.items()]
+            records = [
+                struct.pack(">H", index) + order.encode("ascii").ljust(20, b" ") + struct.pack(">HHH", 0, ausbg, ausbe)
+                for index, (order, ausbg, ausbe) in self.device.module_ids.items()
+            ]
         else:
             return None
         return struct.pack(">HHHH", szl_id, 0, length, len(records)) + b"".join(records)
@@ -430,8 +449,8 @@ class COTPProtocol(asyncio.Protocol):
         """USER_DATA: read SZL 0x001C / 0x0011 (CPU identification); other requests get an error"""
         pdu_ref = struct.unpack(">H", data[4:6])[0]
         param_len = struct.unpack(">H", data[6:8])[0]
-        params = data[10:10 + param_len]
-        body = data[10 + param_len:]
+        params = data[10 : 10 + param_len]
+        body = data[10 + param_len :]
         group = params[5] & 0x0F if len(params) >= 7 else None
         subfunction = params[6] if len(params) >= 7 else None
         szl_id = struct.unpack(">H", body[4:6])[0] if len(body) >= 8 else None
@@ -442,13 +461,15 @@ class COTPProtocol(asyncio.Protocol):
             return_code, error = S7_RET_OK, 0
         else:
             logger.warning(f"Unsupported USER_DATA request: group={group} subfunction={subfunction} szl={szl_id}")
-            payload, return_code, error = b"", S7_RET_ITEM_NOT_AVAILABLE, 0xD401   # SZL not available
+            payload, return_code, error = b"", S7_RET_ITEM_NOT_AVAILABLE, 0xD401  # SZL not available
         group_byte = 0x80 | (group or 0)
-        reply_params = struct.pack(">BBBBBBBBBBH", 0x00, 0x01, 0x12, 0x08, 0x12, group_byte,
-                                   subfunction or 0, 0x00, 0x00, 0x00, error)
+        reply_params = struct.pack(
+            ">BBBBBBBBBBH", 0x00, 0x01, 0x12, 0x08, 0x12, group_byte, subfunction or 0, 0x00, 0x00, 0x00, error
+        )
         reply_data = struct.pack(">BBH", return_code, 0x09 if payload else 0x00, len(payload)) + payload
-        header = struct.pack(">BBHHHH", S7_PROTOCOL_ID, S7_PDU_TYPE_USERDATA, 0, pdu_ref,
-                             len(reply_params), len(reply_data))
+        header = struct.pack(
+            ">BBHHHH", S7_PROTOCOL_ID, S7_PDU_TYPE_USERDATA, 0, pdu_ref, len(reply_params), len(reply_data)
+        )
         return self._make_tpkt(bytes([0x02, 0xF0, 0x80]) + header + reply_params + reply_data)
 
     def _make_s7_response(self, pdu_ref: int, params: bytes, data: bytes) -> bytes:
@@ -478,15 +499,12 @@ class COTPProtocol(asyncio.Protocol):
         return bytes([0x03, 0x00]) + struct.pack(">H", length) + data
 
 
-async def run_server(host: str, port: int, denied_ranges: List[Tuple[int, int]]):
+async def run_server(host: str, port: int, denied_ranges: List[Tuple[int, int]]) -> None:
     """Run S7 simulator server"""
     device = S7Device(denied_ranges)
 
     loop = asyncio.get_event_loop()
-    server = await loop.create_server(
-        lambda: COTPProtocol(device),
-        host, port
-    )
+    server = await loop.create_server(lambda: COTPProtocol(device), host, port)
 
     addr = server.sockets[0].getsockname()
     logger.info(f"S7 Simulator running on {addr[0]}:{addr[1]}")

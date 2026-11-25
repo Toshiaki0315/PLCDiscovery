@@ -17,11 +17,11 @@ Usage:
 """
 
 import asyncio
-import struct
 import logging
+import struct
 from typing import Dict, List, NamedTuple, Optional, Tuple
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("SLMP-Simulator")
 
 # Shared CLI helpers (support both direct execution and package import)
@@ -52,46 +52,76 @@ MAX_LOGGED_ERRORS = 1000
 
 # Device codes (binary, Q/L series; the iQ-R format uses the same codes in 2 bytes)
 DEVICE_CODES = {
-    "D": 0xA8,    # Data register
-    "W": 0xB4,    # Link register
-    "R": 0xAF,    # File register
-    "ZR": 0xB0,   # File register (serial number access)
-    "SD": 0xA9,   # Special register
-    "SW": 0xB5,   # Link special register
-    "TN": 0xC2,   # Timer current value
-    "CN": 0xC5,   # Counter current value
-    "M": 0x90,    # Internal relay
-    "X": 0x9C,    # Input
-    "Y": 0x9D,    # Output
-    "L": 0x92,    # Latch relay
-    "F": 0x93,    # Annunciator
-    "V": 0x94,    # Edge relay
-    "B": 0xA0,    # Link relay
-    "SM": 0x91,   # Special relay
-    "SB": 0xA1,   # Link special relay
-    "DX": 0xA2,   # Direct input
-    "DY": 0xA3,   # Direct output
-    "TS": 0xC1,   # Timer contact
-    "TC": 0xC0,   # Timer coil
-    "CS": 0xC4,   # Counter contact
-    "CC": 0xC3,   # Counter coil
+    "D": 0xA8,  # Data register
+    "W": 0xB4,  # Link register
+    "R": 0xAF,  # File register
+    "ZR": 0xB0,  # File register (serial number access)
+    "SD": 0xA9,  # Special register
+    "SW": 0xB5,  # Link special register
+    "TN": 0xC2,  # Timer current value
+    "CN": 0xC5,  # Counter current value
+    "M": 0x90,  # Internal relay
+    "X": 0x9C,  # Input
+    "Y": 0x9D,  # Output
+    "L": 0x92,  # Latch relay
+    "F": 0x93,  # Annunciator
+    "V": 0x94,  # Edge relay
+    "B": 0xA0,  # Link relay
+    "SM": 0x91,  # Special relay
+    "SB": 0xA1,  # Link special relay
+    "DX": 0xA2,  # Direct input
+    "DY": 0xA3,  # Direct output
+    "TS": 0xC1,  # Timer contact
+    "TC": 0xC0,  # Timer coil
+    "CS": 0xC4,  # Counter contact
+    "CC": 0xC3,  # Counter coil
 }
 DEVICE_NAMES = {code: name for name, code in DEVICE_CODES.items()}
 # Points of each device (numbers 0 to points - 1): the default parameters of
 # a Q03UDVCPU (file registers R / ZR: 32K / 96K points of the standard RAM)
 DEVICE_LIMITS = {
-    "D": 12288, "W": 8192, "R": 32768, "ZR": 98304, "SD": 2048, "SW": 2048,
-    "TN": 2048, "CN": 1024, "M": 8192, "X": 8192, "Y": 8192, "L": 8192,
-    "F": 2048, "V": 2048, "B": 8192, "SM": 2048, "SB": 2048, "DX": 8192,
-    "DY": 8192, "TS": 2048, "TC": 2048, "CS": 1024, "CC": 1024,
+    "D": 12288,
+    "W": 8192,
+    "R": 32768,
+    "ZR": 98304,
+    "SD": 2048,
+    "SW": 2048,
+    "TN": 2048,
+    "CN": 1024,
+    "M": 8192,
+    "X": 8192,
+    "Y": 8192,
+    "L": 8192,
+    "F": 2048,
+    "V": 2048,
+    "B": 8192,
+    "SM": 2048,
+    "SB": 2048,
+    "DX": 8192,
+    "DY": 8192,
+    "TS": 2048,
+    "TC": 2048,
+    "CS": 1024,
+    "CC": 1024,
 }
 # An iQ-R R04CPU with its default device settings (file registers assumed
 # like the Q03UDVCPU's: they depend on the memory configured)
 R04_DEVICE_LIMITS = {
     **DEVICE_LIMITS,
-    "D": 18432, "M": 12288, "X": 12288, "Y": 12288, "DX": 12288, "DY": 12288,
-    "SM": 4096, "SD": 4096, "TN": 1024, "TS": 1024, "TC": 1024,
-    "CN": 512, "CS": 512, "CC": 512,
+    "D": 18432,
+    "M": 12288,
+    "X": 12288,
+    "Y": 12288,
+    "DX": 12288,
+    "DY": 12288,
+    "SM": 4096,
+    "SD": 4096,
+    "TN": 1024,
+    "TS": 1024,
+    "TC": 1024,
+    "CN": 512,
+    "CS": 512,
+    "CC": 512,
 }
 
 
@@ -109,19 +139,19 @@ DEFAULT_CPU = "Q03UDVCPU"
 BIT_DEVICES = {"M", "X", "Y", "L", "F", "V", "B", "SM", "SB", "DX", "DY", "TS", "TC", "CS", "CC"}
 
 # End codes
-ERR_ILLEGAL_DEVICE = 0xC055       # used for denied / unknown devices (as before)
-ERR_POINTS = 0xC051               # number of points out of range
-ERR_ADDRESS_RANGE = 0xC056        # beyond the device's last number
-ERR_UNSUPPORTED = 0xC059          # command / subcommand not supported
-ERR_REQUEST_LENGTH = 0xC061       # request data length does not match
+ERR_ILLEGAL_DEVICE = 0xC055  # used for denied / unknown devices (as before)
+ERR_POINTS = 0xC051  # number of points out of range
+ERR_ADDRESS_RANGE = 0xC056  # beyond the device's last number
+ERR_UNSUPPORTED = 0xC059  # command / subcommand not supported
+ERR_REQUEST_LENGTH = 0xC061  # request data length does not match
 
 # Point limits of the Q series CPUs (3E/4E binary)
 MAX_BATCH_WORDS = 960
 MAX_BATCH_BITS = 7168
-MAX_RANDOM_POINTS = 192           # word points + double word points
+MAX_RANDOM_POINTS = 192  # word points + double word points
 MAX_BLOCK_POINTS = 960
 MAX_BLOCKS = 120
-MAX_RANDOM_WRITE_SIZE = 1920      # word points x 12 + double word points x 14
+MAX_RANDOM_WRITE_SIZE = 1920  # word points x 12 + double word points x 14
 MAX_RANDOM_WRITE_BITS = 188
 
 
@@ -211,10 +241,7 @@ class SLMPDevice:
         if device in BIT_DEVICES:
             self._check(device, address, count * 16)
             bits = self.memory[device]
-            return [
-                sum((bits.get(address + i * 16 + k, 0) & 1) << k for k in range(16))
-                for i in range(count)
-            ]
+            return [sum((bits.get(address + i * 16 + k, 0) & 1) << k for k in range(16)) for i in range(count)]
         self._check(device, address, count)
         return [self.memory[device].get(addr, 0) & 0xFFFF for addr in range(address, address + count)]
 
@@ -318,7 +345,7 @@ class SLMPProtocol(asyncio.Protocol):
     def connection_lost(self, exc):
         logger.info(f"Connection closed: {getattr(self, 'peer', '?')}")
 
-    def data_received(self, data: bytes):
+    def data_received(self, data: bytes) -> None:
         """Answer every complete frame; a frame may arrive in pieces or several at once"""
         self.buffer += data
         while self.buffer:
@@ -349,7 +376,7 @@ class SLMPProtocol(asyncio.Protocol):
             return None
         if len(self.buffer) < length_at + 2:
             return None
-        length = struct.unpack("<H", self.buffer[length_at:length_at + 2])[0]
+        length = struct.unpack("<H", self.buffer[length_at : length_at + 2])[0]
         if length > MAX_REQUEST_LENGTH:
             logger.warning(f"Request data length {length} too large; dropping the received data")
             self.buffer = b""
@@ -429,10 +456,10 @@ class SLMPProtocol(asyncio.Protocol):
         if len(data) < offset + size:
             raise SLMPError(ERR_REQUEST_LENGTH)
         if iqr:
-            number = struct.unpack("<I", data[offset:offset + 4])[0]
-            code = struct.unpack("<H", data[offset + 4:offset + 6])[0]
+            number = struct.unpack("<I", data[offset : offset + 4])[0]
+            code = struct.unpack("<H", data[offset + 4 : offset + 6])[0]
         else:
-            number = struct.unpack("<I", data[offset:offset + 3] + b"\x00")[0]
+            number = struct.unpack("<I", data[offset : offset + 3] + b"\x00")[0]
             code = data[offset + 3]
         name = DEVICE_NAMES.get(code)
         if name is None:
@@ -443,7 +470,7 @@ class SLMPProtocol(asyncio.Protocol):
     def _points(data: bytes, offset: int) -> Tuple[int, int]:
         if len(data) < offset + 2:
             raise SLMPError(ERR_REQUEST_LENGTH)
-        return struct.unpack("<H", data[offset:offset + 2])[0], offset + 2
+        return struct.unpack("<H", data[offset : offset + 2])[0], offset + 2
 
     def _batch_read(self, data: bytes, iqr: bool, bit_units: bool) -> bytes:
         device, number, offset = self._device_spec(data, 0, iqr)
@@ -561,10 +588,10 @@ class SLMPProtocol(asyncio.Protocol):
         for index in range(word_count + dword_count):
             device, number, offset = self._device_spec(data, offset, iqr)
             if index < word_count:
-                words.append((device, number, [struct.unpack("<H", data[offset:offset + 2])[0]]))
+                words.append((device, number, [struct.unpack("<H", data[offset : offset + 2])[0]]))
                 offset += 2
             else:
-                value = struct.unpack("<I", data[offset:offset + 4])[0]
+                value = struct.unpack("<I", data[offset : offset + 4])[0]
                 words.append((device, number, [value & 0xFFFF, value >> 16]))  # low word first
                 offset += 4
         for device, number, values in words:  # all checked before any is written
@@ -577,15 +604,12 @@ class SLMPProtocol(asyncio.Protocol):
 
 async def run_server(
     host: str, port: int, denied_ranges: List[Tuple[int, int]], writable: bool = False, cpu: str = DEFAULT_CPU
-):
+) -> None:
     """Run SLMP simulator server"""
     device = SLMPDevice(denied_ranges, writable=writable, cpu=cpu)
 
     loop = asyncio.get_event_loop()
-    server = await loop.create_server(
-        lambda: SLMPProtocol(device),
-        host, port
-    )
+    server = await loop.create_server(lambda: SLMPProtocol(device), host, port)
 
     addr = server.sockets[0].getsockname()
     logger.info(f"SLMP Simulator running on {addr[0]}:{addr[1]}")
@@ -598,10 +622,15 @@ async def run_server(
 
 def main():
     parser = simulator_parser("SLMP PLC Simulator", 5001, "5000-5100,7000-7050")
-    parser.add_argument("--writable", action="store_true",
-                        help="Accept batch / random writes (1401 / 1402); read-only by default")
-    parser.add_argument("--cpu", choices=list(CPU_MODELS), default=DEFAULT_CPU,
-                        help=f"Simulated CPU: model name and device ranges (default: {DEFAULT_CPU})")
+    parser.add_argument(
+        "--writable", action="store_true", help="Accept batch / random writes (1401 / 1402); read-only by default"
+    )
+    parser.add_argument(
+        "--cpu",
+        choices=list(CPU_MODELS),
+        default=DEFAULT_CPU,
+        help=f"Simulated CPU: model name and device ranges (default: {DEFAULT_CPU})",
+    )
     args = parser.parse_args()
     denied_ranges = parse_denied_ranges(args.denied)
     run_simulator(run_server(args.host, args.port, denied_ranges, args.writable, args.cpu), logger)

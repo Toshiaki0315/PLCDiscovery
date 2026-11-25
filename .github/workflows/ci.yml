@@ -147,19 +147,19 @@ jobs:
     
     - name: Run linting with flake8
       run: |
-        flake8 plc_discovery tests simulators $TOP_LEVEL --max-line-length=120 --ignore=E501,W503,E402,E203,E704
+        flake8 plc_discovery tests simulators scripts $TOP_LEVEL --max-line-length=120 --ignore=E501,W503,E402,E203,E704
     
     - name: Check code formatting with Black
       run: |
-        black --check --diff plc_discovery tests $TOP_LEVEL
+        black --check --diff plc_discovery tests simulators scripts $TOP_LEVEL
     
     - name: Check import sorting with isort
       run: |
-        isort --check-only --diff plc_discovery tests $TOP_LEVEL
+        isort --check-only --diff plc_discovery tests simulators scripts $TOP_LEVEL
     
     - name: Run type checking with mypy
       run: |
-        mypy plc_discovery $TOP_LEVEL --ignore-missing-imports --no-error-summary
+        mypy plc_discovery simulators scripts $TOP_LEVEL --ignore-missing-imports --no-error-summary
 
   # Build package
   build:
