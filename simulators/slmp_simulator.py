@@ -8,17 +8,18 @@ name and loopback test, and with --writable batch / random writes. Used for
 testing PLC Discovery tool, or another SLMP client (e.g. a device gateway),
 without physical hardware.
 
-Device numbers end where a Q03UDVCPU's do (see DEVICE_LIMITS): reading past
-them is answered with C056, like the real CPU.
+The simulated CPU is a Q03UDVCPU or an R04CPU (--cpu, see CPU_MODELS): its
+model name answers "read CPU model" and device numbers end where its do -
+reading past them is answered with C056, like the real CPU.
 
 Usage:
-    python slmp_simulator.py [--host 127.0.0.1] [--port 5001] [--writable]
+    python slmp_simulator.py [--host 127.0.0.1] [--port 5001] [--writable] [--cpu R04CPU]
 """
 
 import asyncio
 import struct
 import logging
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, NamedTuple, Optional, Tuple
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("SLMP-Simulator")
@@ -84,6 +85,26 @@ DEVICE_LIMITS = {
     "F": 2048, "V": 2048, "B": 8192, "SM": 2048, "SB": 2048, "DX": 8192,
     "DY": 8192, "TS": 2048, "TC": 2048, "CS": 1024, "CC": 1024,
 }
+# An iQ-R R04CPU with its default device settings (file registers assumed
+# like the Q03UDVCPU's: they depend on the memory configured)
+R04_DEVICE_LIMITS = {
+    **DEVICE_LIMITS,
+    "D": 18432, "M": 12288, "X": 12288, "Y": 12288, "DX": 12288, "DY": 12288,
+    "SM": 4096, "SD": 4096, "TN": 1024, "TS": 1024, "TC": 1024,
+    "CN": 512, "CS": 512, "CC": 512,
+}
+
+
+class CPUModel(NamedTuple):
+    code: int  # model code answered with the name (Read CPU Model Name, 0101)
+    limits: Dict[str, int]
+
+
+CPU_MODELS = {
+    "Q03UDVCPU": CPUModel(0x0366, DEVICE_LIMITS),
+    "R04CPU": CPUModel(0x4800, R04_DEVICE_LIMITS),
+}
+DEFAULT_CPU = "Q03UDVCPU"
 # Devices holding one bit per number (a word read packs 16 of them)
 BIT_DEVICES = {"M", "X", "Y", "L", "F", "V", "B", "SM", "SB", "DX", "DY", "TS", "TC", "CS", "CC"}
 
@@ -120,6 +141,7 @@ class SLMPDevice:
         denied_ranges: Optional[List[Tuple[int, int]]] = None,
         writable: bool = False,
         limits: Optional[Dict[str, int]] = None,
+        cpu: str = DEFAULT_CPU,
     ):
         """
         Initialize device memory.
@@ -127,16 +149,19 @@ class SLMPDevice:
         Args:
             denied_ranges: List of (start, end) tuples for addresses that should return errors
             writable: Accept write commands (1401 / 1402); otherwise they are unsupported (C059)
-            limits: Points per device, overriding DEVICE_LIMITS
+            limits: Points per device, overriding those of the CPU
+            cpu: Simulated CPU model (a key of CPU_MODELS)
         """
         # Every device starts empty (reads as 0); bit devices hold 0 / 1
         self.memory: Dict[str, Dict[int, int]] = {name: {} for name in DEVICE_CODES}
         self.denied_ranges = denied_ranges or []
         self.writable = writable
-        self.limits = {**DEVICE_LIMITS, **(limits or {})}
+        if cpu not in CPU_MODELS:
+            raise ValueError(f"unknown CPU model {cpu!r} (known: {', '.join(CPU_MODELS)})")
+        self.limits = {**CPU_MODELS[cpu].limits, **(limits or {})}
         # Answer to Read CPU Model Name (0101)
-        self.cpu_model = "Q03UDVCPU"
-        self.cpu_code = 0x0366
+        self.cpu_model = cpu
+        self.cpu_code = CPU_MODELS[cpu].code
         self._initialize_sample_data()
 
     def _initialize_sample_data(self):
@@ -550,9 +575,11 @@ class SLMPProtocol(asyncio.Protocol):
         return b""
 
 
-async def run_server(host: str, port: int, denied_ranges: List[Tuple[int, int]], writable: bool = False):
+async def run_server(
+    host: str, port: int, denied_ranges: List[Tuple[int, int]], writable: bool = False, cpu: str = DEFAULT_CPU
+):
     """Run SLMP simulator server"""
-    device = SLMPDevice(denied_ranges, writable=writable)
+    device = SLMPDevice(denied_ranges, writable=writable, cpu=cpu)
 
     loop = asyncio.get_event_loop()
     server = await loop.create_server(
@@ -562,6 +589,7 @@ async def run_server(host: str, port: int, denied_ranges: List[Tuple[int, int]],
 
     addr = server.sockets[0].getsockname()
     logger.info(f"SLMP Simulator running on {addr[0]}:{addr[1]}")
+    logger.info(f"CPU: {cpu} (D0-D{device.limits['D'] - 1}, M0-M{device.limits['M'] - 1})")
     logger.info(f"Denied address ranges: {denied_ranges}")
     logger.info("Writes: " + ("accepted (--writable)" if writable else "refused (read-only; --writable to accept)"))
 
@@ -572,9 +600,11 @@ def main():
     parser = simulator_parser("SLMP PLC Simulator", 5001, "5000-5100,7000-7050")
     parser.add_argument("--writable", action="store_true",
                         help="Accept batch / random writes (1401 / 1402); read-only by default")
+    parser.add_argument("--cpu", choices=list(CPU_MODELS), default=DEFAULT_CPU,
+                        help=f"Simulated CPU: model name and device ranges (default: {DEFAULT_CPU})")
     args = parser.parse_args()
     denied_ranges = parse_denied_ranges(args.denied)
-    run_simulator(run_server(args.host, args.port, denied_ranges, args.writable), logger)
+    run_simulator(run_server(args.host, args.port, denied_ranges, args.writable, args.cpu), logger)
 
 
 if __name__ == "__main__":

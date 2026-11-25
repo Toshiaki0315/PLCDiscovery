@@ -93,6 +93,7 @@ class _Row:
         self.var_denied = tk.StringVar(value=kind.denied or "（固定）")
         self.var_state = tk.StringVar(value="停止中")
         self.var_writable = tk.BooleanVar(value=False)
+        self.var_cpu = tk.StringVar(value=kind.cpus[0] if kind.cpus else "")
         self.var_clients = tk.StringVar(value="-")
         ttk.Label(parent, text=kind.title).grid(row=row, column=0, sticky=tk.W, padx=4, pady=2)
         self.ent_port = ttk.Entry(parent, textvariable=self.var_port, width=7)
@@ -101,13 +102,18 @@ class _Row:
         self.ent_denied.grid(row=row, column=2, padx=4, sticky=tk.EW)
         self.chk_writable = ttk.Checkbutton(parent, variable=self.var_writable)
         self.chk_writable.grid(row=row, column=3, padx=4)
+        # Simulated CPU model (SLMP): its model name and device ranges
+        self.cmb_cpu: Optional[ttk.Combobox] = None
+        if kind.cpus:
+            self.cmb_cpu = ttk.Combobox(parent, textvariable=self.var_cpu, values=kind.cpus, state="readonly", width=11)
+            self.cmb_cpu.grid(row=row, column=4, padx=4, sticky=tk.W)
         self.lbl_state = ttk.Label(parent, textvariable=self.var_state, width=14)
-        self.lbl_state.grid(row=row, column=4, padx=4, sticky=tk.W)
-        ttk.Label(parent, textvariable=self.var_clients, width=30).grid(row=row, column=5, padx=4, sticky=tk.W)
+        self.lbl_state.grid(row=row, column=5, padx=4, sticky=tk.W)
+        ttk.Label(parent, textvariable=self.var_clients, width=30).grid(row=row, column=6, padx=4, sticky=tk.W)
         self.btn = ttk.Button(parent, text="起動", width=6, command=lambda: app.toggle(kind.key))
-        self.btn.grid(row=row, column=6, padx=4)
+        self.btn.grid(row=row, column=7, padx=4)
         ttk.Button(parent, text="コマンド", width=8, command=lambda: app.show_command(kind.key)).grid(
-            row=row, column=7, padx=4
+            row=row, column=8, padx=4
         )
 
     def update(self, running: bool, port: Optional[int]) -> None:
@@ -115,6 +121,8 @@ class _Row:
         self.ent_port.configure(state=state)
         self.ent_denied.configure(state=tk.DISABLED if running or self.kind.denied is None else tk.NORMAL)
         self.chk_writable.configure(state=tk.DISABLED if running or not self.kind.writable else tk.NORMAL)
+        if self.cmb_cpu is not None:
+            self.cmb_cpu.configure(state=tk.DISABLED if running else "readonly")
         self.var_state.set(f"実行中（{port}）" if running else "停止中")
         if not running:
             self.var_clients.set("-")
@@ -177,13 +185,15 @@ class SimulatorApp:
 
         sims = ttk.LabelFrame(main, text="シミュレータ", padding=6)
         sims.pack(fill=tk.X, pady=6)
-        for col, text in enumerate(("種類", "ポート", "読めないアドレス", "書き込み可", "状態", "接続中のクライアント")):
+        for col, text in enumerate(
+            ("種類", "ポート", "読めないアドレス", "書き込み可", "CPU 機種", "状態", "接続中のクライアント")
+        ):
             ttk.Label(sims, text=text).grid(row=0, column=col, sticky=tk.W, padx=4)
         sims.columnconfigure(2, weight=1)
         for i, kind in enumerate(KINDS, start=1):
             self.rows[kind.key] = _Row(self, sims, i, kind)
         cmd = ttk.Frame(sims)
-        cmd.grid(row=len(KINDS) + 1, column=0, columnspan=8, sticky=tk.EW, pady=(6, 0))
+        cmd.grid(row=len(KINDS) + 1, column=0, columnspan=9, sticky=tk.EW, pady=(6, 0))
         ttk.Label(cmd, text="スキャナーのコマンド:").pack(side=tk.LEFT)
         ttk.Entry(cmd, textvariable=self.var_command, state="readonly").pack(
             side=tk.LEFT, fill=tk.X, expand=True, padx=4
@@ -271,8 +281,9 @@ class SimulatorApp:
             return False
         denied = row.var_denied.get().strip() if row.kind.denied is not None else None
         writable = row.var_writable.get() and row.kind.writable
+        cpu = row.var_cpu.get() if row.kind.cpus else None
         try:
-            self.controller.start(key, self.var_host.get().strip() or "127.0.0.1", port, denied, writable)
+            self.controller.start(key, self.var_host.get().strip() or "127.0.0.1", port, denied, writable, cpu)
         except Exception as e:
             logging.getLogger("Simulator-GUI").error(f"{row.kind.title}: failed to start: {e}")
             messagebox.showerror(
@@ -309,15 +320,17 @@ class SimulatorApp:
         for key, row in self.rows.items():
             settings = self.controller.settings(key)
             if settings is not None:
-                _, port, denied, writable = settings
-                state.simulators[key] = SimulatorSetting(port, denied, writable, running=True)
+                state.simulators[key] = SimulatorSetting(
+                    settings.port, settings.denied, settings.writable, running=True, cpu=settings.cpu
+                )
                 continue
             try:
                 port = int(row.var_port.get())
             except ValueError:
                 port = row.kind.port
             denied = row.var_denied.get().strip() if row.kind.denied is not None else None
-            state.simulators[key] = SimulatorSetting(port, denied, bool(row.var_writable.get()), running=False)
+            cpu = row.var_cpu.get() if row.kind.cpus else None
+            state.simulators[key] = SimulatorSetting(port, denied, bool(row.var_writable.get()), running=False, cpu=cpu)
         state.values = self.controller.written_values()
         state.generators = self.controller.generators()
         return state
@@ -353,6 +366,8 @@ class SimulatorApp:
             if row.kind.denied is not None and setting.denied is not None:
                 row.var_denied.set(setting.denied)
             row.var_writable.set(setting.writable)
+            if row.kind.cpus:
+                row.var_cpu.set(setting.cpu or row.kind.cpus[0])
         problems = apply_state(self.controller, state)
         self._refresh_rows()
         logging.getLogger("Simulator-GUI").info(f"state loaded: {path}")

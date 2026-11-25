@@ -245,7 +245,7 @@ def test_clients_and_settings(controller):
         while not controller.clients("slmp") and time.time() < deadline:
             time.sleep(0.01)
         assert controller.clients("slmp") == [f"127.0.0.1:{sock.getsockname()[1]}"]
-    assert controller.settings("slmp") == ("127.0.0.1", port, "0-0", True)
+    assert controller.settings("slmp") == ("127.0.0.1", port, "0-0", True, "Q03UDVCPU")
     assert controller.clients("modbus") == [] and controller.settings("modbus") is None
     with pytest.raises(ValueError, match="cannot accept writes"):
         controller.start("modbus", "127.0.0.1", 0, writable=True)
@@ -273,7 +273,7 @@ def test_state_round_trip_and_apply(controller):
     state = SavedState(
         host="127.0.0.1",
         simulators={
-            "slmp": SimulatorSetting(0, "0-0", True, running=True),
+            "slmp": SimulatorSetting(0, "0-0", True, running=True, cpu="R04CPU"),
             "modbus": SimulatorSetting(1502, "1-2", False, running=False),
             "logix": SimulatorSetting(0, None, False, running=True),
         },
@@ -283,7 +283,7 @@ def test_state_round_trip_and_apply(controller):
     loaded = SavedState.from_json(state.to_json())
     assert loaded == state
     assert apply_state(controller, loaded) == []
-    assert controller.settings("slmp")[2:] == ("0-0", True) and not controller.is_running("modbus")
+    assert controller.settings("slmp")[2:] == ("0-0", True, "R04CPU") and not controller.is_running("modbus")
     assert controller.read("slmp", "D", 3) == 33 and controller.read("logix", "TAG", "Temp") == 21.5
     assert [g.address for g in controller.generators()] == [4]
 
@@ -313,6 +313,8 @@ def test_apply_state_reports_what_failed_and_restores_the_rest(controller):
         ('{"version": 1, "simulators": {"plc5": {}}}', "unknown simulator"),
         ('{"version": 1, "simulators": {"slmp": {"port": 70000}}}', "0-65535"),
         ('{"version": 1, "simulators": {"modbus": {"writable": true}}}', "cannot accept writes"),
+        ('{"version": 1, "simulators": {"slmp": {"cpu": "FX5U"}}}', "Q03UDVCPU, R04CPU expected"),
+        ('{"version": 1, "simulators": {"modbus": {"cpu": "R04CPU"}}}', "one of none expected"),
         ('{"version": 1, "values": [{"kind": "slmp", "area": "D", "address": 0, "value": "x"}]}', "number expected"),
         (
             '{"version": 1, "generators": [{"kind": "slmp", "area": "D", "address": 0, "waveform": "square",'
@@ -340,3 +342,12 @@ def test_clients_column_text(monkeypatch):
     assert clients_text([]) == "0"
     assert clients_text(["127.0.0.1:5", "192.168.1.14:7", "127.0.0.1:6"]) == "3: 127.0.0.1 ×2, 192.168.1.14"
     assert clients_text(["10.0.0.1:1", "10.0.0.2:1", "10.0.0.3:1"]) == "3: 10.0.0.1, 10.0.0.2、ほか"
+
+
+def test_cpu_model_sets_name_and_ranges(controller):
+    port = controller.start("slmp", "127.0.0.1", 0, cpu="R04CPU")
+    assert _read_d(port, 18431, 18431)[0].status == StatusCode.OK  # D18431 exists on an R04CPU
+    assert _read_d(port, 18432, 18432)[0].status == StatusCode.NG_ILLEGAL_ADDR
+    controller.write("slmp", "D", 18000, 7)  # beyond a Q03UDVCPU's D12287
+    with pytest.raises(ValueError, match="unknown CPU model"):
+        controller.start("modbus", "127.0.0.1", 0, cpu="R04CPU")

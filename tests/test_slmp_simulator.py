@@ -13,6 +13,7 @@ import pymcprotocol
 import pytest
 
 from simulators.control import SimulatorController
+from simulators.slmp_simulator import SLMPDevice
 
 D, M, X = 0xA8, 0x90, 0x9C
 
@@ -287,3 +288,25 @@ def test_connection_closed_names_the_client():
     lines = _polled_log([_frame(0x0401, 0x0000, _device(0, D) + struct.pack("<H", 1))], 1)
     peer = lines[0].removeprefix("Connection from ")
     assert lines[-1] == f"Connection closed: {peer}" and ":" in peer
+
+
+def test_r04cpu_answers_its_model_and_ranges():
+    controller = SimulatorController()
+    try:
+        port = controller.start("slmp", "127.0.0.1", 0, cpu="R04CPU")
+        mc = pymcprotocol.Type3E(plctype="iQ-R")
+        mc.connect("127.0.0.1", port)
+        try:
+            assert mc.read_cputype() == ("R04CPU", "4800")
+            assert mc.batchread_bitunits("M12287", 1) == [0]  # M0-M12287 on an R04CPU
+            with pytest.raises(Exception, match="C056"):
+                mc.batchread_bitunits("M12288", 1)
+        finally:
+            mc.close()
+    finally:
+        controller.shutdown()
+
+
+def test_unknown_cpu_model_is_rejected():
+    with pytest.raises(ValueError, match="unknown CPU model"):
+        SLMPDevice(cpu="FX5U")

@@ -27,7 +27,7 @@ import random
 import threading
 from concurrent.futures import Future
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Set, Tuple, Union
 
 try:
     from .common import parse_denied_ranges, peer_text
@@ -43,7 +43,7 @@ try:
     )
     from .modbus_simulator import ModbusDevice, ModbusProtocol
     from .s7_simulator import COTPProtocol, S7Device
-    from .slmp_simulator import SLMPDevice, SLMPError, SLMPProtocol
+    from .slmp_simulator import CPU_MODELS, DEFAULT_CPU, SLMPDevice, SLMPError, SLMPProtocol
 except ImportError:
     from common import parse_denied_ranges, peer_text  # type: ignore[no-redef]
     from ethernet_ip_simulator import EtherNetIPDevice, EtherNetIPProtocol  # type: ignore[no-redef]
@@ -58,7 +58,7 @@ except ImportError:
     )
     from modbus_simulator import ModbusDevice, ModbusProtocol  # type: ignore[no-redef]
     from s7_simulator import COTPProtocol, S7Device  # type: ignore[no-redef]
-    from slmp_simulator import SLMPDevice, SLMPError, SLMPProtocol  # type: ignore[no-redef]
+    from slmp_simulator import CPU_MODELS, DEFAULT_CPU, SLMPDevice, SLMPError, SLMPProtocol  # type: ignore[no-redef]
 
 logger = logging.getLogger("Simulator-Control")
 
@@ -83,6 +83,8 @@ class SimulatorKind:
     scanner_args: str
     # Writes from clients can be allowed (read-only by default)
     writable: bool = False
+    # Simulated CPU models to choose from (the first is the default)
+    cpus: Tuple[str, ...] = ()
 
 
 KINDS: Tuple[SimulatorKind, ...] = (
@@ -94,6 +96,7 @@ KINDS: Tuple[SimulatorKind, ...] = (
         ("D", "W", "R", "ZR", "SD", "M", "X", "Y", "B", "L", "SM"),
         "--mode range --target {host} --protocol slmp --port {port} --device D --range 0-99",
         writable=True,
+        cpus=(DEFAULT_CPU, *(name for name in CPU_MODELS if name != DEFAULT_CPU)),
     ),
     SimulatorKind(
         "modbus",
@@ -308,8 +311,17 @@ class _Running:
     connections: Set[Any]
     denied: Optional[str] = None
     writable: bool = False
+    cpu: Optional[str] = None
     # Values written through the controller (by hand), saved with the state
     written: Dict[Tuple[str, Address], float] = field(default_factory=dict)
+
+
+class RunningSettings(NamedTuple):
+    host: str
+    port: int
+    denied: Optional[str]
+    writable: bool
+    cpu: Optional[str]
 
 
 def _tracked(factory: Callable[[], Any], connections: Set[Any]) -> Callable[[], Any]:
@@ -399,6 +411,7 @@ class SimulatorController:
         port: Optional[int] = None,
         denied: Optional[str] = None,
         writable: bool = False,
+        cpu: Optional[str] = None,
     ) -> int:
         """Start one simulator; returns the port it listens on"""
         kind = KINDS_BY_KEY[key]
@@ -406,6 +419,10 @@ class SimulatorController:
             raise ValueError(f"{kind.title} is already running")
         if writable and not kind.writable:
             raise ValueError(f"{kind.title} cannot accept writes")
+        if cpu is not None and cpu not in kind.cpus:
+            choices = ", ".join(kind.cpus) or "none"
+            raise ValueError(f"{kind.title}: unknown CPU model {cpu!r} (choices: {choices})")
+        cpu = cpu or (kind.cpus[0] if kind.cpus else None)
         port = kind.port if port is None else port
         if not 0 <= port <= 65535:
             raise ValueError(f"port must be 0-65535, got {port}")
@@ -413,16 +430,23 @@ class SimulatorController:
             denied_ranges = parse_denied_ranges(kind.denied if denied is None else denied)
         except ValueError:
             raise ValueError(f"invalid denied ranges {denied!r} (e.g. 5000-5100,7000-7050)") from None
-        running = self._call(self._start(kind, host, port, denied_ranges, writable))
+        running = self._call(self._start(kind, host, port, denied_ranges, writable, cpu))
         running.denied = (kind.denied if denied is None else denied) if kind.denied is not None else None
         running.writable = writable
+        running.cpu = cpu
         self._running[key] = running
-        writes = "; writes accepted" if writable else ""
-        logger.info(f"{kind.title} started on {host}:{running.port}{writes}")
+        details = (f"; CPU {cpu}" if cpu else "") + ("; writes accepted" if writable else "")
+        logger.info(f"{kind.title} started on {host}:{running.port}{details}")
         return int(running.port)
 
     async def _start(
-        self, kind: SimulatorKind, host: str, port: int, denied: List[Tuple[int, int]], writable: bool
+        self,
+        kind: SimulatorKind,
+        host: str,
+        port: int,
+        denied: List[Tuple[int, int]],
+        writable: bool,
+        cpu: Optional[str] = None,
     ) -> _Running:
         loop = asyncio.get_running_loop()
         closers: List[Callable[[], Any]] = []
@@ -452,7 +476,7 @@ class SimulatorController:
             closers.append(server.close)
             return _Running(kind, host, bound, device, closers, connections)
         factories: Dict[str, Callable[[], Any]] = {
-            "slmp": lambda: SLMPDevice(denied, writable=writable),
+            "slmp": lambda: SLMPDevice(denied, writable=writable, cpu=cpu or DEFAULT_CPU),
             "modbus": lambda: ModbusDevice(denied),
             "eip": lambda: EtherNetIPDevice(denied),
             "logix": lambda: EtherNetIPDevice(mode="logix"),
@@ -504,10 +528,12 @@ class SimulatorController:
 
         return list(self._call(peers()))
 
-    def settings(self, key: str) -> Optional[Tuple[str, int, Optional[str], bool]]:
-        """(host, port, denied ranges, writable) of a running simulator"""
+    def settings(self, key: str) -> Optional["RunningSettings"]:
+        """Host, port, denied ranges, writable and CPU of a running simulator"""
         running = self._running.get(key)
-        return (running.host, running.port, running.denied, running.writable) if running else None
+        if running is None:
+            return None
+        return RunningSettings(running.host, running.port, running.denied, running.writable, running.cpu)
 
     def stop_all(self) -> None:
         for key in list(self._running):
@@ -624,6 +650,7 @@ class SimulatorSetting:
     denied: Optional[str] = None
     writable: bool = False
     running: bool = False
+    cpu: Optional[str] = None  # SLMP only (None: the default model)
 
 
 @dataclass
@@ -640,7 +667,13 @@ class SavedState:
             "version": STATE_VERSION,
             "host": self.host,
             "simulators": {
-                key: {"port": s.port, "denied": s.denied, "writable": s.writable, "running": s.running}
+                key: {
+                    "port": s.port,
+                    "denied": s.denied,
+                    "writable": s.writable,
+                    "running": s.running,
+                    **({"cpu": s.cpu} if s.cpu else {}),
+                }
                 for key, s in self.simulators.items()
             },
             "values": [{"kind": k, "area": a, "address": addr, "value": v} for k, a, addr, v in self.values],
@@ -685,7 +718,11 @@ class SavedState:
             writable = item.get("writable", False) is True
             if writable and not kind.writable:
                 raise ValueError(f"simulators.{key}.writable: {kind.title} cannot accept writes")
-            state.simulators[key] = SimulatorSetting(port, denied, writable, item.get("running", False) is True)
+            cpu = item.get("cpu")
+            if cpu is not None and cpu not in kind.cpus:
+                choices = ", ".join(kind.cpus) or "none"
+                raise ValueError(f"simulators.{key}.cpu: one of {choices} expected, got {cpu!r}")
+            state.simulators[key] = SimulatorSetting(port, denied, writable, item.get("running", False) is True, cpu)
         for i, item in enumerate(_items(data, "values")):
             where = f"values[{i}]"
             state.values.append(
@@ -758,7 +795,7 @@ def apply_state(controller: SimulatorController, state: SavedState) -> List[str]
         if not setting.running:
             continue
         try:
-            controller.start(key, state.host, setting.port, setting.denied, setting.writable)
+            controller.start(key, state.host, setting.port, setting.denied, setting.writable, setting.cpu)
         except (OSError, ValueError) as e:
             problems.append(f"{KINDS_BY_KEY[key].title}: not started: {e}")
     for key, area, address, value in state.values:
