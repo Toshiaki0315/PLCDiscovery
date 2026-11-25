@@ -18,6 +18,7 @@ This will start:
 import argparse
 import asyncio
 import signal
+import sys
 import logging
 
 logging.basicConfig(
@@ -153,11 +154,15 @@ class SimulatorManager:
                 lambda: FINSUDPServerProtocol(fins_simulator),
                 local_addr=(self.host, 9600)
             )
+            try:
+                fins_tcp_server = await loop.create_server(
+                    lambda: FINSTCPServerProtocol(fins_simulator),
+                    self.host, 9600
+                )
+            except Exception:
+                transport.close()  # not half a simulator: "failed" means nothing is listening
+                raise
             self.udp_transports.append(transport)
-            fins_tcp_server = await loop.create_server(
-                lambda: FINSTCPServerProtocol(fins_simulator),
-                self.host, 9600
-            )
             self.servers.append(fins_tcp_server)
             logger.info(f"✓ FINS Simulator started on {self.host}:9600 (UDP + TCP)")
             logger.info("  Denied ranges: DM5000-5100, HR300-350")
@@ -240,6 +245,9 @@ async def main(host: str):
         pass
     finally:
         await manager.stop_all()
+    # False when no simulator could be started (every port in use: a second
+    # instance, or the simulator GUI is running)
+    return bool(getattr(manager, "servers", True))
 
 
 def run():
@@ -249,9 +257,13 @@ def run():
     args = parser.parse_args()
 
     try:
-        asyncio.run(main(args.host))
+        started = asyncio.run(main(args.host))
     except KeyboardInterrupt:
-        pass
+        return
+    if not started:
+        # The launchers (start_simulators.*) report the failure on this
+        logger.error("No simulator could be started.")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

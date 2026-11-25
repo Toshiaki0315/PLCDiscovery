@@ -405,16 +405,25 @@ class SimulatorController:
         device: Any
         if kind.key == "fins":
             device = FINSSimulator(host, port)
-            udp, _ = await loop.create_datagram_endpoint(lambda: FINSUDPServerProtocol(device), local_addr=(host, port))
-            closers.append(udp.close)
-            bound = udp.get_extra_info("sockname")[1]
-            try:
-                server = await loop.create_server(
-                    _tracked(lambda: FINSTCPServerProtocol(device), connections), host, bound
+            # UDP and TCP on one port number. With port 0 the system picks a
+            # free UDP port, but the same TCP number may be in use (e.g. as
+            # the local port of some connection): then another one is tried.
+            for attempt in range(1 if port else 20):
+                udp, _ = await loop.create_datagram_endpoint(
+                    lambda: FINSUDPServerProtocol(device), local_addr=(host, port)
                 )
-            except OSError:
-                udp.close()
-                raise
+                bound = udp.get_extra_info("sockname")[1]
+                try:
+                    server = await loop.create_server(
+                        _tracked(lambda: FINSTCPServerProtocol(device), connections), host, bound
+                    )
+                except OSError:
+                    udp.close()
+                    if port or attempt == 19:
+                        raise
+                    continue
+                break
+            closers.append(udp.close)
             closers.append(server.close)
             return _Running(kind, host, bound, device, closers, connections)
         factories: Dict[str, Callable[[], Any]] = {

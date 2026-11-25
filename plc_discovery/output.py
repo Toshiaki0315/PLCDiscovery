@@ -7,10 +7,11 @@ Provides CSV file generation for:
 - Access denied log (inaccessible addresses)
 """
 
+import codecs
 import csv
 import logging
 from pathlib import Path
-from typing import IO, Dict, List, Mapping, Optional, Set
+from typing import IO, Any, Dict, List, Mapping, Optional, Set
 
 from .config import DataPoint, PLCInfo, StatusCode
 from .utils import get_file_timestamp, get_timestamp, melsec_address
@@ -101,9 +102,27 @@ _ENCODING_ALIASES = {
 }
 
 
-def normalize_csv_encoding(encoding: str) -> str:
-    """Map a user-facing encoding name to the codec used for CSV files"""
-    return _ENCODING_ALIASES.get((encoding or "utf-8").lower(), encoding)
+# Python's own names of the codecs above (what any other spelling Python
+# accepts resolves to: "shiftjis", "mskanji", "932", "UTF8", ...)
+_CODEC_NAMES = {"shift_jis": "cp932", "cp932": "cp932", "utf_8": "utf-8", "utf_8_sig": "utf-8-sig"}
+
+
+def normalize_csv_encoding(encoding: Any) -> str:
+    """
+    Map a user-facing encoding name to the codec used for CSV files.
+
+    Any spelling Python knows is accepted (a config file may say shiftjis,
+    " cp932 " or an unquoted 932); a name Python does not know is returned
+    as it is, for validation to report.
+    """
+    name = str(encoding if encoding is not None else "utf-8").strip().lower() or "utf-8"
+    if name in _ENCODING_ALIASES:
+        return _ENCODING_ALIASES[name]
+    try:
+        codec = codecs.lookup(name).name
+    except LookupError:
+        return name
+    return _CODEC_NAMES.get(codec, codec)
 
 
 def _unique_path(path: Path) -> Path:
@@ -150,7 +169,10 @@ class CSVExporter:
         encoding = self.encoding
         if encoding == "utf-8-sig" and mode == "a" and filepath.exists() and filepath.stat().st_size > 0:
             encoding = "utf-8"
-        errors = "replace" if encoding == "cp932" else "strict"
+        # Only Unicode encodings can hold every character. In any other one
+        # (CP932, EUC-JP, ASCII, ...) a character it lacks becomes "?";
+        # failing there left a truncated file, in every cycle of a scan.
+        errors = "strict" if encoding.lower().startswith("utf") else "replace"
         return open(filepath, mode, newline="", encoding=encoding, errors=errors)
 
     def _ensure_output_dir(self):

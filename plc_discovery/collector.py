@@ -208,7 +208,12 @@ class PLCDataCollector:
             tags = tag_handler.tag_scan_list()
         if tags:
             self._report_progress(f"Full scan of {len(tags)} tags on {self.plc_info.ip_address}", 0, 1)
-            self._collected_data = await tag_handler.read_tags(tags)
+            self._collected_data = []
+            try:
+                self._collected_data = await tag_handler.read_tags(tags)
+            except asyncio.CancelledError:
+                self._keep_partial_points()  # thousands of tags: keep those already read
+                raise
             self._report_progress(f"Full scan complete. Collected {len(self._collected_data)} data points.", 1, 1)
             return self._collected_data
 
@@ -315,7 +320,11 @@ class PLCDataCollector:
             ]
         elif hasattr(self._handler, "read_tags"):
             tag_handler: Any = self._handler
-            points = await tag_handler.read_tags(tags)
+            try:
+                points = await tag_handler.read_tags(tags)
+            except asyncio.CancelledError:
+                self._keep_partial_points()
+                raise
         else:
             points = [
                 DataPoint(address=t, status=StatusCode.NG_UNSUPPORTED, timestamp=get_timestamp(), is_tag=True)

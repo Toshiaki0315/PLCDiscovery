@@ -7,7 +7,7 @@ rem  待ち受けアドレスは 127.0.0.1（このPCからのみ接続可）で
 rem  他のPCから接続したい場合: start_simulators.bat --host 0.0.0.0
 rem  ※工場のネットワーク上では、本物のPLCと紛らわしいため 0.0.0.0 にしないでください。
 rem
-rem  ポート: SLMP 5001 / Modbus 1502 / EtherNet/IP 44818 / S7 1102 / FINS 9600(UDP,TCP)
+rem  ポート: SLMP 5001 / Modbus 1502 / EtherNet/IP 44818（SLC形式）・44819（Logix形式）・44820（オムロン NJ/NX 形式） / S7 1102 / FINS 9600(UDP,TCP)
 rem  シミュレータは標準ライブラリだけで動くため、パッケージのインストールは不要です。
 rem ============================================================
 setlocal EnableExtensions

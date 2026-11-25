@@ -35,5 +35,11 @@ plc_scan_results/
 # URLs (secrets) for Teams/Slack notifications
 plc_config.yaml
 
-# SQLite database output (default path)
+# SQLite database output (default path), its backups and exports
 plc_data.db
+plc_data_backup_*.db
+plc_db_export_*/
+
+# Logs written with --audit-log / logging.file (README examples)
+audit.log
+*.log

@@ -28,4 +28,8 @@ plc_data.db
 
 # Local settings (webhook URLs); the *.example.* files stay in the image
 plc_config.yaml
+
+# Logs and database exports
+*.log
+plc_db_export_*
 type_mapping.json

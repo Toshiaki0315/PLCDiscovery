@@ -10,6 +10,8 @@ jobs:
   # Unit tests (fast, no external dependencies)
   unit-test:
     runs-on: ubuntu-latest
+    # No job runs for long; without a limit a hung step holds it for 6 hours
+    timeout-minutes: 20
     strategy:
       matrix:
         python-version: ['3.10', '3.11', '3.12']
@@ -66,6 +68,8 @@ jobs:
   # Integration tests (with simulators)
   integration-test:
     runs-on: ubuntu-latest
+    # No job runs for long; without a limit a hung step holds it for 6 hours
+    timeout-minutes: 20
     needs: unit-test
     
     steps:
@@ -96,6 +100,8 @@ jobs:
   # Data type tests (specific validation)
   data-type-test:
     runs-on: ubuntu-latest
+    # No job runs for long; without a limit a hung step holds it for 6 hours
+    timeout-minutes: 20
     
     steps:
     - name: Checkout code
@@ -119,6 +125,8 @@ jobs:
   # Code quality checks
   code-quality:
     runs-on: ubuntu-latest
+    # No job runs for long; without a limit a hung step holds it for 6 hours
+    timeout-minutes: 20
     env:
       # Entry-point scripts at the repository root, checked like the package
       TOP_LEVEL: plc_scanner.py plc_gui.py plc_gui_settings.py plc_gui_tags.py
@@ -157,6 +165,8 @@ jobs:
   # Build package
   build:
     runs-on: ubuntu-latest
+    # No job runs for long; without a limit a hung step holds it for 6 hours
+    timeout-minutes: 20
     needs: [unit-test, data-type-test]
     
     steps:
@@ -186,6 +196,8 @@ jobs:
   # Test CLI functionality
   cli-test:
     runs-on: ubuntu-latest
+    # No job runs for long; without a limit a hung step holds it for 6 hours
+    timeout-minutes: 20
     needs: unit-test
     
     steps:

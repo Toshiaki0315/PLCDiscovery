@@ -124,6 +124,9 @@ CREATE TABLE IF NOT EXISTS data_history (
 CREATE INDEX IF NOT EXISTS idx_data_points_plc_ip ON data_points(plc_ip);
 CREATE INDEX IF NOT EXISTS idx_data_points_plc_addr_id ON data_points(plc_ip, address, id);
 CREATE INDEX IF NOT EXISTS idx_data_points_target ON data_points(plc_ip, protocol, port, address, id);
+CREATE INDEX IF NOT EXISTS idx_history_plc_ip ON data_history(plc_ip);
+CREATE INDEX IF NOT EXISTS idx_history_address ON data_history(address);
+CREATE INDEX IF NOT EXISTS idx_history_changed_at ON data_history(changed_at);
 CREATE INDEX IF NOT EXISTS idx_data_points_address ON data_points(address);
 CREATE INDEX IF NOT EXISTS idx_data_points_timestamp ON data_points(timestamp);
 CREATE INDEX IF NOT EXISTS idx_data_points_session ON data_points(session_id);
@@ -164,6 +167,18 @@ class DatabaseConfig:
             max_size_mb=config.get("max_size_mb", 0) or 0,
             cleanup_interval_hours=config.get("cleanup_interval_hours", 24) or 24,
         )
+
+
+def _sqlite_integer(value: Optional[int]) -> Optional[int]:
+    """
+    The value as SQLite can store it (a signed 64-bit INTEGER), else None.
+    An unsigned 64-bit tag (ULINT / LWORD) with the top bit set does not
+    fit: its row is stored without the number - raw_hex still holds it -
+    instead of being dropped with an OverflowError.
+    """
+    if isinstance(value, int) and not -(2**63) <= value < 2**63:
+        return None
+    return value
 
 
 class DatabaseExporter:
@@ -287,7 +302,12 @@ class DatabaseExporter:
             "id, ip_address, mac_address, manufacturer, model, protocol, port, "
             "cpu_type, firmware_version, first_seen, last_seen"
         )
+        self._db.commit()
         with self._db:  # one transaction: all or nothing
+            # Explicit BEGIN: sqlite3 opens a transaction by itself only for
+            # INSERT/UPDATE/DELETE, so the RENAME and CREATE were committed
+            # one by one and a failure half-way left an empty plcs table
+            self._db.execute("BEGIN")
             self._db.execute("ALTER TABLE plcs RENAME TO plcs_v1")
             self._db.execute("""
                 CREATE TABLE plcs (
@@ -311,12 +331,19 @@ class DatabaseExporter:
         """Schema v2 -> v3: add protocol and port to the per-target tables"""
         for table in TARGET_TABLES:
             columns = {row[1] for row in self._db.execute(f"PRAGMA table_info({table})")}
-            if not columns or "protocol" in columns:
+            # Each column on its own: an upgrade that stopped between the two
+            # left "protocol" without "port", and was then taken for complete
+            missing = [
+                (name, kind) for name, kind in (("protocol", "TEXT"), ("port", "INTEGER")) if name not in columns
+            ]
+            if not columns or not missing:
                 continue  # table not created yet, or already v3
             logger.info(f"Upgrading database schema: protocol/port columns on {table}")
+            self._db.commit()
             with self._db:
-                self._db.execute(f"ALTER TABLE {table} ADD COLUMN protocol TEXT")
-                self._db.execute(f"ALTER TABLE {table} ADD COLUMN port INTEGER")
+                self._db.execute("BEGIN")
+                for name, kind in missing:
+                    self._db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {kind}")
 
     @property
     def _db(self) -> sqlite3.Connection:
@@ -537,7 +564,7 @@ class DatabaseExporter:
                         protocol,
                         port,
                         dp.address,
-                        dp.value,
+                        _sqlite_integer(dp.value),
                         dp.raw_hex,
                         dp.data_type,
                         # NaN / Infinity stored as JSON null (valid JSON for any reader)
@@ -554,11 +581,12 @@ class DatabaseExporter:
                 count += 1
 
                 # Track history if value changed
-                if self.config.track_history and dp.value is not None:
+                new_value = _sqlite_integer(dp.value)
+                if self.config.track_history and new_value is not None:
                     old_value = previous_values.get(dp.address)
-                    if old_value is not None and old_value != dp.value:
-                        self._record_change(plc_ip, dp.address, old_value, dp.value, protocol, port)
-                    previous_values[dp.address] = dp.value
+                    if old_value is not None and old_value != new_value:
+                        self._record_change(plc_ip, dp.address, old_value, new_value, protocol, port)
+                    previous_values[dp.address] = new_value
 
             except sqlite3.OperationalError:
 

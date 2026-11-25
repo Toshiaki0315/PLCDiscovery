@@ -170,7 +170,10 @@ SAFE_READ_WORDS: Dict[Protocol, int] = {
     Protocol.SLMP: 900,
     Protocol.ETHERNET_IP: 200,
     Protocol.MODBUS_TCP: 100,
-    Protocol.S7: 150,
+    # 111 words = 222 bytes: one request on the smallest PDU (240 bytes, S7-300 /
+    # S7-1200). python-snap7 sends a larger read as several requests back to
+    # back, outside the packet interval.
+    Protocol.S7: 111,
     Protocol.FINS: 400,
     Protocol.FINS_TCP: 400,
 }

@@ -672,7 +672,8 @@ class EtherNetIPProtocol(asyncio.Protocol):
             return self._reply(service, CIP_PATH_DESTINATION_UNKNOWN)
         offset, size = struct.unpack("<IH", body[:6])
         data = self._template_bytes(name, members)
-        data = data.ljust(offset + size, b"\x00")[offset:offset + size]
+        # Slice first: padding up to a huge offset allocated gigabytes
+        data = data[offset:offset + size].ljust(size, b"\x00")
         return self._reply(service, data=data)
 
     # Read Tag -----------------------------------------------------------------

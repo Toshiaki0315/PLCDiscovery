@@ -285,6 +285,11 @@ class EtherNetIPHandler(BaseProtocolHandler):
             return None, StatusCode.NG_TIMEOUT
         except Exception as e:
             error_str = str(e).lower()
+            if isinstance(e, _RefusedForNow):
+                # Answered, but not about the address (program mode, node
+                # busy): not learned as inaccessible, and no reconnect
+                logger.debug(f"EtherNet/IP read refused: {e}")
+                return None, StatusCode.NG_COMM_ERROR
             if isinstance(e, LookupError) or "path" in error_str or "not found" in error_str:
                 logger.debug(f"EtherNet/IP address error: {e}")
                 return None, StatusCode.NG_ILLEGAL_ADDR
@@ -320,16 +325,13 @@ class EtherNetIPHandler(BaseProtocolHandler):
             tag_name = f"{file_letter}{file_number}:{start_address}"
 
             def _read():
-                if count == 1:
-                    result = self._client.read(tag_name)
-                    if result.error:
-                        raise LookupError(f"{tag_name}: {result.error}")
-                    return [result.value]
-                # Array read: "N7:0{10}" reads 10 elements
-                result = self._client.read(f"{tag_name}{{{count}}}")
+                name = tag_name if count == 1 else f"{tag_name}{{{count}}}"  # "N7:0{10}" reads 10 elements
+                result = self._client.read(name)
                 if result.error:
-                    raise LookupError(f"{tag_name}{{{count}}}: {result.error}")
-                return list(result.value)
+                    if _is_address_error(result.error):
+                        raise LookupError(f"{name}: {result.error}")
+                    raise _RefusedForNow(f"{name}: {result.error}")
+                return [result.value] if count == 1 else list(result.value)
 
             data = await self._run_blocking(_read)
 
@@ -400,8 +402,11 @@ class EtherNetIPHandler(BaseProtocolHandler):
         structures one per member ("Tag.Member").
         """
         if self._plc_type == "generic":
-            return self._learn_denied_tags(await self._read_tags_generic(tags))
-        return self._learn_denied_tags(await self._read_tags_logix(tags))
+            points = await self._read_tags_generic(tags)
+        else:
+            points = await self._read_tags_logix(tags)
+        self.partial_points = []
+        return self._learn_denied_tags(points)
 
     def _learn_denied_tags(self, points: List[DataPoint]) -> List[DataPoint]:
         """
@@ -418,8 +423,10 @@ class EtherNetIPHandler(BaseProtocolHandler):
     async def _read_tags_logix(self, tags: List[str]) -> List[DataPoint]:
         """Read tags through LogixDriver, TAG_BATCH_SIZE per request"""
         results: List[DataPoint] = []
-        for start in range(0, len(tags), TAG_BATCH_SIZE):
-            batch = tags[start : start + TAG_BATCH_SIZE]
+        # What has been read so far, for a caller that is interrupted (Ctrl+C,
+        # the GUI's stop button) in the middle of a long tag list
+        self.partial_points = results
+        for batch in _logix_batches(tags):
             if self._plc_type == "slc":
                 # Data-file controllers have no tags
                 results += [_tag_point(split_element_count(t)[0], StatusCode.NG_UNSUPPORTED) for t in batch]
@@ -457,7 +464,7 @@ class EtherNetIPHandler(BaseProtocolHandler):
             self._audit_tag_read(batch, StatusCode.OK, started)
             definitions = getattr(self._client, "data_types", None)
             for name, reply in zip(batch, replies):
-                results += _tag_points(name, reply, definitions if isinstance(definitions, dict) else None)
+                results.extend(_tag_points(name, reply, definitions if isinstance(definitions, dict) else None))
         return results
 
     async def _read_tags_generic(self, tags: List[str]) -> List[DataPoint]:
@@ -473,6 +480,15 @@ class EtherNetIPHandler(BaseProtocolHandler):
         reconnects before the next one.
         """
         outcomes: Dict[int, List[DataPoint]] = {}
+        try:
+            return await self._read_tag_groups(tags, outcomes)
+        except asyncio.CancelledError:
+            # Interrupted: what was read so far, for the caller to save
+            self.partial_points = [point for index in sorted(outcomes) for point in outcomes[index]]
+            raise
+
+    async def _read_tag_groups(self, tags: List[str], outcomes: Dict[int, List[DataPoint]]) -> List[DataPoint]:
+        """The requests of _read_tags_generic; ``outcomes`` is filled as the tags are read"""
         queue: Deque[List[Tuple[int, str]]] = deque(
             [[(index, tag) for index, tag in group] for group in _generic_request_groups(list(enumerate(tags)))]
         )
@@ -489,9 +505,11 @@ class EtherNetIPHandler(BaseProtocolHandler):
             await self._rate_limiter.wait()
             client = self._client
 
+            interval = self.config.packet_interval_ms / 1000
+
             def read(client: Any = client, names: List[str] = names) -> Tuple[List[Any], bool]:
                 if len(names) == 1:
-                    return [_capture(read_symbolic, client, names[0])], True
+                    return [_capture(read_symbolic, client, names[0], interval)], True
                 return read_symbolic_batch(client, names)
 
             started = time.monotonic()
@@ -526,6 +544,63 @@ class EtherNetIPHandler(BaseProtocolHandler):
             # after the packet interval (never a burst inside one call)
             queue.extendleft(reversed([[item] for item in retry]))
         return [point for index in sorted(outcomes) for point in outcomes[index]]
+
+
+class _RefusedForNow(Exception):
+    """The controller answered with a status that is not about the address"""
+
+
+# Error texts of pycomm3 that are about the state of the controller or the
+# link, not about the address: the next scan may well read the same address
+_TRANSIENT_ERROR_TEXTS = (
+    "program mode",
+    "cannot buffer",
+    "will not communicate",
+    "disconnected",
+    "hardware fault",
+    "unknown status",
+    "no reponse",  # (sic) pycomm3
+    "no response",
+    "no data returned",
+    "not acknowledged",
+    "resource unavailable",
+    "device state conflict",
+    "connection",
+    "timeout",
+    "timed out",
+    "busy",
+)
+
+
+def _is_address_error(error: Any) -> bool:
+    """False for an error reply that says nothing about the address (see _TRANSIENT_ERROR_TEXTS)"""
+    text = str(error).lower()
+    return not any(marker in text for marker in _TRANSIENT_ERROR_TEXTS)
+
+
+def _logix_batches(tags: List[str]) -> List[List[str]]:
+    """
+    Tags grouped per LogixDriver.read() call: TAG_BATCH_SIZE single values,
+    an array read ("Tag[0]{1000}") alone. pycomm3 reads a large array with
+    one request per fragment, back to back; in a batch of 20 arrays that was
+    hundreds of requests inside one call, under one request timeout.
+    """
+    batches: List[List[str]] = []
+    batch: List[str] = []
+    for tag in tags:
+        if split_element_count(tag)[1] > 1:
+            if batch:
+                batches.append(batch)
+                batch = []
+            batches.append([tag])
+            continue
+        batch.append(tag)
+        if len(batch) == TAG_BATCH_SIZE:
+            batches.append(batch)
+            batch = []
+    if batch:
+        batches.append(batch)
+    return batches
 
 
 def _capture(func, *args):
@@ -628,8 +703,14 @@ def _tag_points(name: str, reply: Any, data_types: Optional[Dict[str, Any]] = No
     data_types), giving the type of each structure member.
     """
     if reply is None or getattr(reply, "error", None):
-        logger.debug(f"Tag {name}: {getattr(reply, 'error', 'no reply')}")
-        return [_tag_point(name.split("{")[0], StatusCode.NG_ILLEGAL_ADDR)]
+        error = getattr(reply, "error", "no reply")
+        logger.debug(f"Tag {name}: {error}")
+        # Only an error about the tag itself makes it "inaccessible" (learned
+        # and listed as denied); a busy controller is a communication error
+        status = (
+            StatusCode.NG_ILLEGAL_ADDR if reply is not None and _is_address_error(error) else StatusCode.NG_COMM_ERROR
+        )
+        return [_tag_point(name.split("{")[0], status)]
     reply_type = getattr(reply, "type", None)
     return _value_points(name, reply.value, reply_type if isinstance(reply_type, str) else None, data_types)
 

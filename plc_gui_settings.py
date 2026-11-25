@@ -25,7 +25,7 @@ from plc_discovery.notifications import (
     NotificationPriority,
     NotificationType,
 )
-from plc_discovery.output import DEFAULT_OUTPUT_DIR
+from plc_discovery.output import DEFAULT_OUTPUT_DIR, normalize_csv_encoding
 
 
 class JobOutputs:
@@ -72,6 +72,9 @@ class SettingsTabsMixin:
     # Path of a settings file whose values could not be put on screen:
     # saving it asks first (what is not shown would be overwritten)
     _settings_not_applied: Optional[str] = None
+    # network.discovery_timeout_ms / discovery_retry_count of the settings
+    # file (no field on screen; used for discovery as the CLI does)
+    _discovery_settings: Dict[str, int] = {}
 
     if TYPE_CHECKING:  # provided by plc_gui.PLCScannerApp
         root: tk.Tk
@@ -272,7 +275,7 @@ class SettingsTabsMixin:
                     raise ValueError("URL は http:// または https:// で始めてください。")
                 timeout = float(v_timeout.get())
                 retry = int(v_retry.get())
-                if timeout <= 0 or retry < 1:
+                if not math.isfinite(timeout) or timeout <= 0 or retry < 1:
                     raise ValueError
             except ValueError as e:
                 messagebox.showwarning(
@@ -500,14 +503,24 @@ class SettingsTabsMixin:
         ):
             if key in net:
                 var.set(str(net[key]))
+        self._discovery_settings = {
+            key: net[key]
+            for key, minimum in (("discovery_timeout_ms", 1), ("discovery_retry_count", 0))
+            if isinstance(net.get(key), int) and not isinstance(net[key], bool) and net[key] >= minimum
+        }
         out = mapping(get(config, "output", default={}))
         if out.get("directory"):
             self.var_output_dir.set(str(Path(out["directory"]).expanduser()))
         self.var_hex_addresses.set(bool(out.get("hex_addresses", False)))
         if out.get("periodic_csv") in ("per_cycle", "daily"):
             self.var_periodic_csv.set(out["periodic_csv"])
-        if out.get("encoding") in ("utf-8-sig", "utf-8", "shift-jis"):
-            self.var_encoding.set(out["encoding"])
+        # Any spelling the CLI accepts (cp932, sjis, UTF8, ...): otherwise the
+        # GUI wrote UTF-8 where the CLI writes CP932 with the same file, and
+        # "save" changed the file's encoding
+        shown = {"cp932": "shift-jis", "utf-8": "utf-8", "utf-8-sig": "utf-8-sig"}
+        encoding = shown.get(normalize_csv_encoding(out["encoding"])) if out.get("encoding") else None
+        if encoding:
+            self.var_encoding.set(encoding)
         db = mapping(out.get("database"))
         defaults = DatabaseConfig()
         self.var_db_enabled.set(bool(db.get("enabled", False)))

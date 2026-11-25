@@ -137,7 +137,7 @@ class CircuitBreaker:
         if self._state == CircuitState.OPEN:
             # Check if timeout has passed
             if self._last_failure_time:
-                elapsed = time.time() - self._last_failure_time
+                elapsed = time.monotonic() - self._last_failure_time
                 if elapsed >= self.config.timeout_seconds:
                     self._state = CircuitState.HALF_OPEN
                     self._success_count = 0
@@ -162,7 +162,8 @@ class CircuitBreaker:
     def record_failure(self):
         """Record a failed request"""
         self._failure_count += 1
-        self._last_failure_time = time.time()
+        # Monotonic: a wall-clock step (NTP) must not keep the circuit open longer
+        self._last_failure_time = time.monotonic()
 
         if self._state == CircuitState.HALF_OPEN:
             self._state = CircuitState.OPEN

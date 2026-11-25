@@ -62,7 +62,9 @@ def _recv(sock, count=1):
     buffer = b""
     responses = []
     while len(responses) < count:
-        buffer += sock.recv(4096)
+        received = sock.recv(4096)
+        assert received, "the simulator closed the connection"
+        buffer += received
         while len(buffer) >= 9:
             length = struct.unpack("<H", buffer[7:9])[0]
             if len(buffer) < 9 + length:

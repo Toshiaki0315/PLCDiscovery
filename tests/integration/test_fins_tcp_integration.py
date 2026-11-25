@@ -133,14 +133,17 @@ class TestFINSTCPFraming:
 
     @staticmethod
     def _recv_frame(sock):
-        header = b""
-        while len(header) < 16:
-            header += sock.recv(16 - len(header))
+        def read(count):
+            data = b""
+            while len(data) < count:
+                received = sock.recv(count - len(data))
+                assert received, "the simulator closed the connection"
+                data += received
+            return data
+
+        header = read(16)
         length = struct.unpack(">I", header[4:8])[0]
-        body = b""
-        while len(body) < length - 8:
-            body += sock.recv(length - 8 - len(body))
-        return header, body
+        return header, read(length - 8)
 
     def test_frame_split_across_packets(self, fins_simulator):
         """The server reassembles frames that arrive in pieces"""

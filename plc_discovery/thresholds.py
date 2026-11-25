@@ -37,6 +37,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterable, List, NamedTuple, Optional, Set, Tuple
 
 from .config import DataPoint, StatusCode
+from .utils import number_text
 
 OPERATORS: Dict[str, Callable[[float, float], bool]] = {
     ">": operator.gt,
@@ -66,7 +67,7 @@ class Threshold:
 
     @property
     def condition(self) -> str:
-        return f"{self.address} {self.op} {self.value:g}"
+        return f"{self.address} {self.op} {number_text(self.value)}"
 
     @property
     def label(self) -> str:
@@ -212,7 +213,9 @@ class ThresholdMonitor:
     """Per target, which thresholds are exceeded and what has been notified"""
 
     def __init__(self, thresholds: Iterable[Threshold]):
-        self.thresholds = list(thresholds)
+        # A limit listed twice is one limit: its state (e.g. the for_cycles
+        # count) is kept per limit and would be advanced twice per cycle
+        self.thresholds = list(dict.fromkeys(thresholds))
         Key = Tuple[str, Threshold]
         # Excursions in progress, with the time the value first went outside
         self._exceeded: Dict[Key, float] = {}

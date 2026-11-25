@@ -101,6 +101,7 @@ from plc_discovery.scan_runner import (  # noqa: F401  (status_report_message re
     ResultWriter,
     ScanItem,
     collect_items,
+    cycle_start,
     next_cycle_wait,
     no_answer_error,
     plc_answered,
@@ -558,9 +559,10 @@ async def run_periodic_scan(
         down: Set[str] = set()
         try:
             iteration = 0
+            cycle_started: Optional[float] = None
             while True:
                 iteration += 1
-                cycle_started = loop.time()
+                cycle_started = cycle_start(interval, cycle_started)
                 display.print_info(f"Iteration {iteration}")
 
                 for key, collector in collectors.items():
@@ -860,6 +862,8 @@ class _RunResults:
     target_errors: List[str] = dataclasses.field(default_factory=list)
     output_errors: List[str] = dataclasses.field(default_factory=list)
     interrupted: bool = False
+    # Targets a scan was run for (fewer than plcs when the run was interrupted)
+    scanned: int = 0
 
     def add_failure(self, label: str, reason: Optional[str]) -> None:
         self.failed_targets.append(label)
@@ -869,6 +873,7 @@ class _RunResults:
         self, label: str, success: bool, error: Optional[str], data_points: List[DataPoint], denied: Set[str]
     ) -> None:
         """Record one target's scan result"""
+        self.scanned += 1
         if not success:
             self.add_failure(label, error)
         if data_points:
@@ -1080,11 +1085,14 @@ async def _notify_scan_end(
                 failed_targets=failed,
             ),
         )
+    # Interrupted: the targets that were never scanned are not "successful"
+    total = results.scanned if results.interrupted else len(results.plcs)
+    total = max(total, len(failed))
     await _notify(
         notifier,
         lambda n: n.notify_scan_complete(
-            len(results.plcs),
-            len(results.plcs) - len(failed),
+            total,
+            total - len(failed),
             len(failed),
             duration,
             mode=mode_name,
@@ -1181,8 +1189,15 @@ def _close_run(db_exporter: Optional[DatabaseExporter], audit_file: Optional[str
         close_audit_logger()
 
 
-async def main():
-    """Main entry point"""
+async def run_cli() -> Optional[int]:
+    """
+    The whole run; returns the exit code (None or 0: success).
+
+    Returned, not raised with sys.exit(): on Python 3.10 a run interrupted
+    with Ctrl+C finishes inside asyncio.run()'s shutdown, where a SystemExit
+    raised in the task ended as "Task exception was never retrieved" with a
+    traceback, even with --quiet.
+    """
     args = parse_args()
 
     if args.generate_config:
@@ -1191,7 +1206,7 @@ async def main():
         except FileExistsError as e:
             print(f"Error: {e}")
             sys.exit(1)
-        return
+        return None
 
     _configure_logging(args)
     config_loader = _load_config(args)
@@ -1203,7 +1218,14 @@ async def main():
     if not args.quiet and not args.no_rich:
         display.print_header()
 
-    exporter = _create_exporter(args, config_loader)
+    try:
+        exporter = _create_exporter(args, config_loader)
+    except OSError as e:
+        # A file of that name, or a place that cannot be written: say so,
+        # and end the audit log's session, instead of a traceback
+        display.print_error(f"Cannot use the output directory: {e}")
+        _close_run(None, audit_file, 1)
+        sys.exit(1)
     db_exporter = _create_db_exporter(args, config_loader, display)
     notifier = _create_notifier(config_loader, display)
     data_types = _resolve_data_types_or_exit(args, config_loader, display)
@@ -1271,6 +1293,12 @@ async def main():
     finally:
         _close_run(db_exporter, audit_file, exit_code)
 
+    return exit_code
+
+
+async def main():
+    """Main entry point: run, then exit with the run's exit code"""
+    exit_code = await run_cli()
     if exit_code:
         sys.exit(exit_code)
 
@@ -1306,10 +1334,12 @@ def cli():
     """Console-script entry point (``plc-scanner``)"""
     make_streams_safe()
     try:
-        asyncio.run(main())
+        exit_code = asyncio.run(run_cli())
     except KeyboardInterrupt:
         # Second Ctrl+C or Python 3.10 (where the loop itself is interrupted)
         sys.exit(130)
+    if exit_code:
+        sys.exit(exit_code)
 
 
 if __name__ == "__main__":
