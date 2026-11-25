@@ -150,6 +150,40 @@ def _encoding_bom(encoding: str) -> Optional[str]:
     return next((name for bom, name in _BOMS if start.startswith(bom)), None)
 
 
+def _can_append(path: Path, encoding: str) -> bool:
+    """
+    Whether rows written in ``encoding`` can be appended to an existing file
+    without mixing two encodings in it (the setting may have been changed
+    since the file was started).
+
+    A file of plain ASCII fits every ASCII-compatible encoding. Otherwise
+    the file is taken to be UTF-8 when it decodes as UTF-8 (text of another
+    encoding practically never does), and must then be continued in UTF-8.
+    """
+    if _file_bom(path) != _encoding_bom(encoding):
+        return False
+    data = path.read_bytes()
+    try:
+        if encoding.lower().replace("_", "-").startswith(("utf-16", "utf-32")):
+            data.decode(encoding)
+            return True
+        if data.isascii():
+            return True
+        try:
+            data.decode("utf-8-sig")
+            is_utf8 = True
+        except UnicodeDecodeError:
+            is_utf8 = False
+        if encoding in ("utf-8", "utf-8-sig"):
+            return is_utf8
+        if is_utf8:
+            return False
+        data.decode(encoding)
+        return True
+    except (UnicodeDecodeError, LookupError):
+        return False
+
+
 def _unique_path(path: Path) -> Path:
     """Return path, or path with _1, _2, ... appended if it already exists
     (file names have one-second resolution)"""
@@ -396,6 +430,20 @@ class CSVExporter:
         file_exists = filepath.exists() and filepath.stat().st_size > 0
 
         try:
+            if file_exists and not _can_append(filepath, self.encoding):
+                # The log was started in another encoding (the setting was
+                # changed since; this file is kept across sessions).
+                # Appending would mix two encodings in one file: tag names
+                # and labels outside ASCII became unreadable in one half.
+                # The log continues in a file of its own.
+                name = self.encoding.replace("-", "").replace("_", "")
+                filepath = filepath.with_name(f"{filepath.stem}_{name}{filepath.suffix}")
+                file_exists = filepath.exists() and filepath.stat().st_size > 0
+                if not file_exists:
+                    logger.warning(
+                        f"The CSV encoding was changed: the access denied log continues in "
+                        f"{filepath.name} ({self.encoding})"
+                    )
             mode = "a" if file_exists else "w"
             with self._open_csv(filepath, mode) as f:
                 writer = _SafeDictWriter(f, fieldnames=DENIED_HEADERS)

@@ -357,11 +357,16 @@ class ConfigLoader:
             for event in item.get("events") or []:
                 if event not in known_events:
                     errors.append(f"{where}.events: unknown event '{event}'")
-            for key, minimum, exclusive in (("timeout", 0, True), ("retry_count", 1, False)):
-                if key in item:
-                    error = number_error(item[key], minimum, exclusive)
-                    if error:
-                        errors.append(f"{where}.{key} {error}")
+            if "timeout" in item:
+                error = number_error(item["timeout"], 0, exclusive=True)
+                if error:
+                    errors.append(f"{where}.timeout {error}")
+            if "retry_count" in item:
+                # A whole number: it is a count of attempts (range()), and
+                # 3.0 or 2.5 failed every send of this destination
+                error = integer_error(item["retry_count"], 1)
+                if error:
+                    errors.append(f"{where}.retry_count {error}")
         return errors
 
     def get_network_config(self) -> NetworkConfig:

@@ -99,7 +99,8 @@ class ParallelPLCScanner:
             return {}
 
         # Create semaphore for concurrency control
-        max_concurrent = self.config.max_concurrent
+        # At least 1: a semaphore of 0 never lets a scan start (waits for good)
+        max_concurrent = max(1, self.config.max_concurrent)
         self._semaphore = asyncio.Semaphore(max_concurrent)
 
         self._report_progress(

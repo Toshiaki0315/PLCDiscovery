@@ -1113,8 +1113,21 @@ class PLCScannerApp(SettingsTabsMixin):
                 started = cycle_start(interval, started)
                 if interval:
                     self._post("status", f"周期実行 {iteration} 回目: 読み取り中...")
-                points, path, denied_path = await runner.read(collector, writer)
-                self._post("data", points, collector.get_statistics(), path, denied_path, iteration)
+                read_failed = False
+                try:
+                    points, path, denied_path = await runner.read(collector, writer)
+                except Exception as e:
+                    if not interval:
+                        raise
+                    # Never ends the monitoring (as in the CLI): this cycle
+                    # is lost and the target counts as not answering
+                    logging.error(
+                        f"周期実行 {iteration} 回目の読み取りに失敗しました（監視は続けます）: {e or type(e).__name__}"
+                    )
+                    logging.getLogger(__name__).debug("read failed", exc_info=True)
+                    points, read_failed = [], True
+                if not read_failed:
+                    self._post("data", points, collector.get_statistics(), path, denied_path, iteration)
 
                 if not interval:
                     break
@@ -1122,7 +1135,7 @@ class PLCScannerApp(SettingsTabsMixin):
                 # Periodic monitoring: an error notification when the PLC stops
                 # answering (once per outage) and the periodic status report
                 # Connected is not enough: FINS/UDP has no connection to lose
-                unreachable = not collector.is_connected or not plc_answered(points)
+                unreachable = read_failed or not collector.is_connected or not plc_answered(points)
                 await runner.track_outage(target, not unreachable, ip)
                 await runner.check_thresholds(target, points, ip)
                 await runner.report_if_due({ip: points}, [ip] if unreachable else [], iteration)
@@ -1168,12 +1181,16 @@ class PLCScannerApp(SettingsTabsMixin):
         interrupted: bool = False,
     ) -> None:
         ok = sum(1 for p in points if p.status == StatusCode.OK)
-        all_ok = bool(points) and ok == len(points)
+        # As the CLI counts it: the target succeeded when the PLC answered.
+        # Addresses that are invalid on this PLC are a normal part of a scan
+        # (a full scan nearly always has some) and are reported in ng_points;
+        # counting them as a failed target made every such scan an error.
+        succeeded = bool(points) and plc_answered(points)
         await outputs.notify(
             lambda n: n.notify_scan_complete(
                 1,
-                1 if all_ok else 0,
-                0 if all_ok else 1,
+                1 if succeeded else 0,
+                0 if succeeded else 1,
                 duration,
                 mode="gui",
                 interrupted=interrupted,
