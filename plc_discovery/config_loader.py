@@ -5,7 +5,6 @@ Supports loading configuration from YAML or JSON files.
 Provides validation and default values for all settings.
 """
 
-import codecs
 import json
 import logging
 import math
@@ -167,8 +166,10 @@ KNOWN_TOP_LEVEL_KEYS = (
 def is_known_encoding(name: Any) -> bool:
     """True if Python has a codec of this name (the CSV writer's aliases included)"""
     try:
-        codecs.lookup(str(normalize_csv_encoding(str(name).strip())))
-    except LookupError:
+        # encode(), not codecs.lookup(): "base64" or "rot13" are codecs too,
+        # but not text encodings a CSV file can be written in
+        "".encode(normalize_csv_encoding(name))
+    except (LookupError, TypeError, ValueError):
         return False
     return True
 
@@ -235,7 +236,9 @@ class ConfigLoader:
         suffix = path.suffix.lower()
 
         try:
-            with open(path, "r", encoding="utf-8") as f:
+            # utf-8-sig: a file saved "UTF-8 with BOM" (Windows Notepad,
+            # PowerShell) loads like one without
+            with open(path, "r", encoding="utf-8-sig") as f:
                 if suffix in [".yaml", ".yml"]:
                     if not YAML_AVAILABLE:
                         raise ImportError("PyYAML is required for YAML config files. Install with: pip install pyyaml")
@@ -259,6 +262,11 @@ class ConfigLoader:
         """Recursively merge file config with defaults"""
         if not file_config:
             return
+        if not isinstance(file_config, dict):
+            raise ValueError(
+                "the config file must contain settings as 'section: ...' at the top level, "
+                f"not a {type(file_config).__name__}"
+            )
         self._file_config = file_config
 
         def merge_dict(base: Dict, override: Dict) -> Dict:

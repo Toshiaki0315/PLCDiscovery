@@ -50,11 +50,12 @@ dev = [
     "pytest-asyncio>=0.21.0",
     "pytest-cov>=4.1.0",
     "pytest-mock>=3.11.0",
+    "pytest-timeout>=2.2.0",
     "tomli>=2.0.0; python_version < '3.11'",
-    "flake8>=6.1.0",
-    "black>=23.0.0",
-    "isort>=5.12.0",
-    "mypy>=1.5.0",
+    "flake8==7.3.0",
+    "black==26.5.1",
+    "isort==6.0.1",
+    "mypy==1.18.1",
 ]
 
 [project.scripts]
@@ -138,11 +139,7 @@ ignore_missing_imports = true
 # lint tools)
 follow_imports = "skip"
 
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-python_files = ["test_*.py"]
-asyncio_mode = "auto"
-addopts = "-v --tb=short"
+# pytest is configured in pytest.ini (it takes precedence over this file)
 
 [tool.coverage.run]
 source = ["plc_discovery"]

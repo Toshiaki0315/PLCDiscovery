@@ -319,6 +319,7 @@ python plc_scanner.py --mode full --target 192.168.1.10 --no-database
 | `--no-database` | データベース出力を無効化 | - |
 | `--db-track-history` / `--no-db-track-history` | データベースの変更履歴追跡の有効／無効 | 設定ファイルの値（なければ有効） |
 | `--report` | レポート形式 (html/pdf/json) | - |
+| `--threshold` | 周期実行中に値が条件を越えたら通知（例: `"D100>80"`。演算子は `> >= < <= == !=`。複数はカンマ区切りか、オプションを繰り返す）。詳しくは「通知機能」を参照 | 設定ファイルの `thresholds` |
 | `--report-output` | レポート出力パス（指定したパスをそのまま使用） | 出力ディレクトリ内に自動生成 |
 | `--report-title` | レポートタイトル | "PLC Discovery レポート" |
 | `--report-company` | レポート記載会社名 | - |
@@ -409,6 +410,8 @@ logging:
 PLCDiscovery/
 ├── plc_scanner.py              # メインCLI
 ├── plc_gui.py                  # GUI（Tkinter）
+├── plc_gui_settings.py         # GUI の設定・通知・データベースのタブ
+├── plc_gui_tags.py             # GUI のタグ選択ダイアログ
 ├── plc_config.example.yaml     # 設定ファイルサンプル
 ├── requirements.txt            # 依存ライブラリ
 ├── requirements-dev.txt        # 開発用依存ライブラリ
@@ -417,12 +420,19 @@ PLCDiscovery/
 │   ├── __init__.py
 │   ├── config.py               # 設定・定数
 │   ├── config_loader.py        # 設定ファイルローダー
+│   ├── cli_args.py             # コマンドライン引数
+│   ├── names.py                # プロトコル名・デバイス名の解釈
+│   ├── settings_file.py        # 設定ファイルの保存（GUI）
 │   ├── data_types.py           # データ型変換モジュール
+│   ├── conversion.py           # 読み取り値への型変換の適用
 │   ├── database.py             # SQLiteデータベースモジュール
 │   ├── utils.py                # ユーティリティ
 │   ├── discovery.py            # 探索モジュール
 │   ├── broadcast_discovery.py  # UDPブロードキャスト探索
+│   ├── probes.py               # 探索用のプロトコル判定フレーム
 │   ├── collector.py            # データ収集モジュール
+│   ├── scan_runner.py          # CLI と GUI が共有するスキャン処理
+│   ├── thresholds.py           # しきい値の監視
 │   ├── parallel.py             # 並列処理モジュール
 │   ├── output.py               # CSV出力モジュール
 │   ├── audit_log.py            # 監査ログモジュール
@@ -435,36 +445,20 @@ PLCDiscovery/
 │       ├── base.py             # 基底ハンドラー
 │       ├── slmp.py             # SLMP プロトコル
 │       ├── ethernet_ip.py      # EtherNet/IP プロトコル
+│       ├── cip_symbolic.py     # EtherNet/IP のタグ名読み取り（オムロン NJ/NX）
 │       ├── modbus.py           # Modbus/TCP プロトコル
-│       └── s7.py               # S7 プロトコル
-├── tests/                      # ユニットテスト
+│       ├── s7.py               # S7 プロトコル
+│       └── fins.py             # FINS プロトコル（UDP / TCP）
+├── tests/                      # ユニットテスト（test_*.py）
 │   ├── conftest.py
-│   ├── test_config.py
-│   ├── test_config_loader.py
-│   ├── test_data_types.py
-│   ├── test_database.py        # データベーステスト
-│   ├── test_utils.py
-│   ├── test_discovery.py
-│   ├── test_broadcast_discovery.py
-│   ├── test_collector.py
-│   ├── test_parallel.py
-│   ├── test_output.py
-│   ├── test_progress.py
-│   ├── test_audit_log.py
-│   ├── test_notifications.py   # 通知機能テスト
-│   ├── test_report.py          # レポートテスト
-│   ├── test_retry.py           # リトライテスト
-│   ├── test_protocols.py
-│   └── integration/            # 統合テスト
-│       ├── conftest.py
-│       ├── test_slmp_integration.py
-│       ├── test_modbus_integration.py
-│       └── test_binary_search.py
+│   ├── test_regressions_*.py   # レビューで見つかった不具合の回帰テスト
+│   └── integration/            # 統合テスト（シミュレータを起動して実行）
 └── simulators/                 # テスト用ダミーPLCシミュレータ
     ├── README.md
     ├── run_all.py
     ├── simulator_gui.py        # シミュレータの GUI（起動・停止、値の書き換え・自動変化）
     ├── control.py              # GUI から使う起動・停止と値の操作
+    ├── common.py               # 各シミュレータ共通の引数と起動・停止
     ├── slmp_simulator.py
     ├── modbus_simulator.py
     ├── ethernet_ip_simulator.py
@@ -509,8 +503,8 @@ pytest -m integration
 # シミュレータを起動
 python simulators/run_all.py &
 
-# テスト実行
-python plc_scanner.py --mode discover
+# テスト実行（同一セグメント探索はループバックを対象にしないため、範囲を指定します）
+python plc_scanner.py --mode discover --ip-range 127.0.0.1
 python plc_scanner.py --mode full --target 127.0.0.1 --protocol slmp
 ```
 
@@ -733,8 +727,6 @@ await manager.notify_error(
     plc_ip="192.168.1.50"
 )
 ```
-
-詳しくは `simulators/README.md` を参照してください。
 
 ## データ型変換
 

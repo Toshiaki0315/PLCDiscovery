@@ -54,6 +54,9 @@ class TagPickerDialog:
     ):
         self.tags = tags
         self.selected = [t for t in selected if t in tags]
+        # Typed by hand and not an entry of the list ("Recipe[2]{3}",
+        # "Motor.Speed"): kept as they are when OK replaces the field
+        self.typed = [t for t in selected if t not in tags]
         self.on_select = on_select
         self.top = tk.Toplevel(parent)
         self.top.title("タグの選択")
@@ -123,5 +126,5 @@ class TagPickerDialog:
         self.lbl_count.configure(text=f"{len(self.selected)} 件を選択")
 
     def _ok(self) -> None:
-        self.on_select(list(self.selected))
+        self.on_select(self.typed + list(self.selected))
         self.top.destroy()

@@ -48,7 +48,14 @@ from plc_discovery.config import (
 from plc_discovery.data_types import ByteOrder, DataType
 from plc_discovery.discovery import PLCDiscovery, discover_plcs, merge_discovery_results
 from plc_discovery.output import DEFAULT_OUTPUT_DIR, CSVExporter
-from plc_discovery.scan_runner import CycleRunner, ResultWriter, ScanItem, next_cycle_wait, plc_answered
+from plc_discovery.scan_runner import (
+    CycleRunner,
+    ResultWriter,
+    ScanItem,
+    cycle_start,
+    next_cycle_wait,
+    plc_answered,
+)
 from plc_discovery.thresholds import Threshold, ThresholdMonitor, parse_thresholds
 from plc_discovery.utils import (
     MAX_IP_RANGE_HOSTS,
@@ -194,6 +201,19 @@ class QueueLogHandler(logging.Handler):
 # ---------------------------------------------------------------------------
 
 
+def _hook_mac_quit(root: tk.Tk, on_close: Callable[[], None]) -> None:
+    """
+    macOS: Cmd+Q and the application menu's Quit end the process without
+    WM_DELETE_WINDOW - no confirmation during a scan, no orderly disconnect
+    from the PLC. Route them through the window's close handler.
+    """
+    try:
+        if root.tk.call("tk", "windowingsystem") == "aqua":
+            root.createcommand("::tk::mac::Quit", on_close)
+    except tk.TclError as e:
+        logging.debug(f"Quit command not hooked: {e}")
+
+
 class PLCScannerApp(SettingsTabsMixin):
     """PLC探索・データ収集ツールのメイン画面"""
 
@@ -228,6 +248,7 @@ class PLCScannerApp(SettingsTabsMixin):
         self._load_settings(quiet=True)
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        _hook_mac_quit(self.root, self._on_close)
         self.root.after(100, self._poll_queue)
 
     # ----- 画面の状態（入力値など） ----------------------------------
@@ -702,6 +723,8 @@ class PLCScannerApp(SettingsTabsMixin):
             retry_interval_ms=self._int_field(self.var_retry_interval, "リトライ待機時間"),
             request_timeout_ms=self._int_field(self.var_timeout, "タイムアウト", minimum=100),
             max_concurrent=1,
+            # No field on screen: the settings file's values, as the CLI uses them
+            **self._discovery_settings,
         )
 
     def _exporter(self) -> CSVExporter:
@@ -729,6 +752,7 @@ class PLCScannerApp(SettingsTabsMixin):
     def _run_job(self, coro: Coroutine[Any, Any, Any], start_msg: str) -> None:
         """通信処理をワーカーに投入し、実行中はボタンを無効化する（同時実行は1件のみ）"""
         if self.worker.busy:
+            coro.close()  # never started: without this Python warns "was never awaited"
             messagebox.showinfo("実行中", "別の処理が実行中です。完了するか停止してから実行してください。")
             return
         self._set_busy(True, start_msg)
@@ -847,7 +871,8 @@ class PLCScannerApp(SettingsTabsMixin):
             hosts = len({p.ip_address for p in plcs})
             count = f"{len(plcs)} 件を検出" + (f"（{hosts} 台）" if hosts != len(plcs) else "")
             self.lbl_discover_count.configure(text=count)
-            self.var_status.set(f"探索完了: {count}  →  {path}")
+            saved = f"  →  {path}" if path else "（CSVは保存できませんでした。ログを確認してください）"
+            self.var_status.set(f"探索完了: {count}{saved}")
             self.last_output_dir = Path(path).parent if path else None
         else:
             self.lbl_discover_count.configure(text="PLCは見つかりませんでした")
@@ -1081,10 +1106,11 @@ class PLCScannerApp(SettingsTabsMixin):
         points: List[DataPoint] = []
         audit = get_audit_logger()
         audit.log_scan_start(ip, mode, ["ALL"] if items is None else [str(item) for item in items])
+        started: Optional[float] = None
         try:
             while True:
                 iteration += 1
-                started = loop.time()
+                started = cycle_start(interval, started)
                 if interval:
                     self._post("status", f"周期実行 {iteration} 回目: 読み取り中...")
                 points, path, denied_path = await runner.read(collector, writer)

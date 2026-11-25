@@ -23,6 +23,7 @@ from .database import DatabaseExporter
 from .notifications import NotificationManager, NotificationType
 from .output import CSVExporter
 from .thresholds import Threshold, ThresholdMonitor
+from .utils import number_text
 
 logger = logging.getLogger(__name__)
 
@@ -254,6 +255,21 @@ def no_answer_error(points: Sequence[DataPoint]) -> Optional[str]:
     return f"the PLC answered none of the {unanswered} addresses read ({counts})"
 
 
+def cycle_start(interval: Optional[float], previous_start: Optional[float]) -> float:
+    """
+    When this cycle of a periodic scan counts as started: one interval after
+    the previous one, so the period does not drift by the few milliseconds
+    every sleep overshoots (minutes per day at a 1 s interval). A cycle that
+    is late by half an interval or more (the read took too long) starts a
+    new schedule from now.
+    """
+    now = asyncio.get_running_loop().time()
+    if not interval or previous_start is None:
+        return now
+    scheduled = previous_start + interval
+    return scheduled if now - scheduled < interval / 2 else now
+
+
 def next_cycle_wait(interval: float, cycle_started: float) -> float:
     """Seconds until the next cycle: a fixed period, minus the time spent reading"""
     return max(0.0, interval - (asyncio.get_running_loop().time() - cycle_started))
@@ -347,6 +363,8 @@ class CycleRunner:
         now = asyncio.get_running_loop().time()
         if now - self._last_report < notifier.report_interval_seconds:
             return
+        if (NotificationType.STATUS_REPORT, "") in self._in_flight:
+            return  # the previous report is still being sent: this one goes out once it is done
         self._last_report = now
         message, problems = status_report_message(points_by_target, unreachable, iteration)
         await self._deliver(
@@ -387,11 +405,11 @@ class CycleRunner:
         check = self.thresholds.evaluate(target, points, may_notify, plc_ip=plc_ip, now=now)
         # Logged on every crossing, even while its notification is throttled
         for event in check.crossed:
-            logger.warning(f"{target}: threshold {event.threshold.label} exceeded (value {event.value:g})")
+            logger.warning(f"{target}: threshold {event.threshold.label} exceeded (value {number_text(event.value)})")
         for event in check.returned:
             logger.info(
                 f"{target}: threshold {event.threshold.label} back to normal "
-                f"(value {event.value:g}, outside for {event.duration:.0f}s)"
+                f"(value {number_text(event.value)}, outside for {event.duration:.0f}s)"
             )
         # Sent right away. One that could not be delivered is handed back
         # and offered again on a later cycle.
@@ -470,13 +488,17 @@ class CycleRunner:
         self._in_flight[(event_type, key)] = task
 
         def finished(done: "asyncio.Future[Any]") -> None:
-            self._in_flight.pop((event_type, key), None)
+            if self._in_flight.get((event_type, key)) is done:
+                del self._in_flight[(event_type, key)]
             failed = done.cancelled() or done.exception() is not None or done.result() is False
             if failed:
                 self._retry_at[(event_type, key)] = loop.time() + NOTIFY_RETRY_SECONDS
+                # A status report is not offered again (the next one is sent
+                # when it is due); nothing is, once the run is ending
+                retried = event_type != NotificationType.STATUS_REPORT and not done.cancelled()
                 logger.warning(
                     f"Notification '{event_type.value}'{f' for {key}' if key else ''} "
-                    "was not delivered; it will be retried"
+                    f"was not delivered{'; it will be retried' if retried else ''}"
                 )
                 if on_failed:
                     on_failed()

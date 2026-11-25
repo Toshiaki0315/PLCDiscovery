@@ -202,6 +202,13 @@ class ModbusProtocol(asyncio.Protocol):
                 self.buffer = b""
                 continue
 
+            if length < 2:
+                # No room for the unit and a function code: not a frame.
+                # (Consuming only the 6 header bytes left the unit byte in
+                # the buffer and misaligned every frame after it.)
+                self.buffer = b""
+                continue
+
             # Check if we have complete PDU
             total_length = 6 + length
             if len(self.buffer) < total_length:

@@ -251,7 +251,8 @@ class BaseProtocolHandler(ABC):
                     # from the range. The rest is reported without requests.
                     self._spend_unanswered()
                     self._comm_failure_streak = max(self._comm_failure_streak, self.COMM_FAILURE_ABORT_THRESHOLD)
-                    results.extend(self._failed_points(device_type, start, end, status, learn=False))
+                    results.extend(self._failed_points(device_type, start, start + chunk_size - 1, status, learn=False))
+                    results.extend(self._unsent_points(device_type, start + chunk_size, end, status))
                     break
                 # The PLC is there (data or an error answer): the failures
                 # of the other range must not block the reads of this one
@@ -292,6 +293,12 @@ class BaseProtocolHandler(ABC):
                     # the following chunks are read (and searched) normally
                     # instead of being taken for a dead link.
                     await self._link_alive()
+                if self._probe_failed and start + chunk_size <= end:
+                    # The address the PLC answered last is not answered any
+                    # more: the link is down. The rest of the range is
+                    # reported without sending another request per chunk.
+                    results.extend(self._unsent_points(device_type, start + chunk_size, end, status))
+                    break
             start += chunk_size
 
         self.partial_points = []
@@ -348,6 +355,28 @@ class BaseProtocolHandler(ABC):
             if learn:
                 self._session_cache.add_denied(address_key, status)
             results.append(DataPoint(address=address_key, status=status, timestamp=get_timestamp()))
+        return results
+
+    def _unsent_points(self, device_type: DeviceType, start: int, end: int, status: StatusCode) -> List[DataPoint]:
+        """
+        Points for a range no request is sent for (the link is down): the
+        failure status, not learned; an address learned earlier keeps its
+        learned status, as in every other scan.
+        """
+        results = []
+        for addr in range(start, end + 1):
+            address_key = f"{device_type.value}{addr}"
+            learned = (
+                self._session_cache.get_status(address_key) if self._session_cache.is_denied(address_key) else None
+            )
+            results.append(
+                DataPoint(
+                    address=address_key,
+                    status=learned or status,
+                    timestamp=get_timestamp(),
+                    cached=learned is not None,
+                )
+            )
         return results
 
     async def _tracked_read(
@@ -445,8 +474,14 @@ class BaseProtocolHandler(ABC):
             Tuple of (data or None, status code)
         """
         last_status = [StatusCode.NG_COMM_ERROR]
+        attempts = [0]
 
         async def do_read():
+            attempts[0] += 1
+            if attempts[0] > 1:
+                # A retry is a request like any other: the retry delay may be
+                # shorter than the packet interval (or 0)
+                await self._rate_limiter.wait()
             data, status = await self._tracked_read(device_type, start_address, count)
             last_status[0] = status
 
@@ -650,8 +685,9 @@ class BaseProtocolHandler(ABC):
                 parts[index] = await self._binary_search_read(
                     device_type, half_start, half_end, known_failure=half_status
                 )
-            elif await self._link_alive() is False:
-                # The link is down: not learned, nothing more is sent
+            elif self._probe_failed or await self._link_alive() is False:
+                # The link is down (found now, or while the other half was
+                # searched): not learned, nothing more is sent
                 parts[index] = self._failed_points(device_type, half_start, half_end, half_status, learn=False)
             else:
                 # Alive, or not known yet (nothing read so far): keep

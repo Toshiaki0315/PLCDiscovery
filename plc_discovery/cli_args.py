@@ -126,7 +126,7 @@ Examples:
         "(default: discovery.protocols from --config, otherwise all)",
     )
 
-    parser.add_argument("--port", type=int, help="Override default port for the protocol")
+    parser.add_argument("--port", type=_port_number, help="Override default port for the protocol (1-65535)")
 
     # Device/range specification
     parser.add_argument(
@@ -353,6 +353,17 @@ NETWORK_OPTIONS = {
     "--request-timeout": ("request_timeout", "request_timeout_ms"),
     "--max-concurrent": ("max_concurrent", "max_concurrent"),
 }
+
+
+def _port_number(text: str) -> int:
+    """--port: 1-65535 (70000 looked like a PLC that is off; 0 was silently ignored)"""
+    try:
+        port = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"must be a port number 1-65535, got '{text}'") from None
+    if not 1 <= port <= 65535:
+        raise argparse.ArgumentTypeError(f"must be a port number 1-65535, got {port}")
+    return port
 
 
 def network_option_errors(args: argparse.Namespace) -> List[str]:

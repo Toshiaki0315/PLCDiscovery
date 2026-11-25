@@ -257,8 +257,14 @@ def _ip_range_hosts(ip_range: str) -> Tuple[Iterable[str], int]:
             network = ipaddress.IPv4Network(ip_range, strict=False)
         except ValueError as e:
             raise ValueError(f"Invalid CIDR notation: {ip_range} - {e}") from None
-        if network.is_multicast or network.network_address.is_unspecified:
-            raise ValueError(f"Invalid CIDR notation: {ip_range} - not a network of devices (multicast or 0.0.0.0)")
+        if (
+            network.is_multicast
+            or network.network_address.is_unspecified
+            or int(network.broadcast_address) == 0xFFFFFFFF
+        ):
+            raise ValueError(
+                f"Invalid CIDR notation: {ip_range} - not a network of devices (multicast, 0.0.0.0 or broadcast)"
+            )
         size = network.num_addresses - 2 if network.prefixlen < 31 else network.num_addresses
         return (str(host) for host in network.hosts()), size
 
@@ -439,6 +445,15 @@ def read_arp_cache(timeout: float = 5.0) -> Dict[str, str]:
 def format_mac_address(mac_bytes: bytes) -> str:
     """Format MAC address bytes to string"""
     return ":".join(f"{b:02X}" for b in mac_bytes)
+
+
+def number_text(value: float) -> str:
+    """
+    A number as people write it: 1234567, 81.5, 0.3 (never 1.23457e+06,
+    which "%g" gives from the seventh digit on - a DWORD counter or a limit
+    on one was shown wrong, and two limits could look the same).
+    """
+    return f"{value:.12g}"
 
 
 def value_to_hex(value: int, word_size: int = 1) -> str:

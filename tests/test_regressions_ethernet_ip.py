@@ -246,7 +246,7 @@ def test_reads_singly_after_the_packet_interval(monkeypatch):
         calls.append(("batch", list(names)))
         return [(1, "INT"), READ_SINGLY, SymbolicReadError(StatusCode.NG_ILLEGAL_ADDR, "x")], True
 
-    def single(client, tag):
+    def single(client, tag, fragment_interval=0.0):
         calls.append(("single", tag))
         return "long text", "STRING"
 
@@ -270,7 +270,7 @@ def test_rejected_multiple_service_is_remembered(monkeypatch):
         calls.append(("batch", list(names)))
         return [READ_SINGLY] * len(names), False  # service not supported
 
-    def single(client, tag):
+    def single(client, tag, fragment_interval=0.0):
         calls.append(("single", tag))
         return 7, "DINT"
 

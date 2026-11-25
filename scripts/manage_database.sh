@@ -74,7 +74,11 @@ cmd_status() {
     echo -e "${BLUE}File Information:${NC}"
     echo "  Path: $DB_PATH"
     echo "  Size: $(du -h "$DB_PATH" | cut -f1)"
-    echo "  Modified: $(stat -f '%Sm' "$DB_PATH" 2>/dev/null || stat -c '%y' "$DB_PATH" 2>/dev/null | cut -d'.' -f1)"
+    # GNU stat first: on Linux "stat -f" means file-system status and printed
+    # a block of it before the fallback ran. BSD/macOS stat has no -c.
+    MODIFIED=$(stat -c '%y' "$DB_PATH" 2>/dev/null | cut -d'.' -f1)
+    [ -n "$MODIFIED" ] || MODIFIED=$(stat -f '%Sm' "$DB_PATH" 2>/dev/null)
+    echo "  Modified: $MODIFIED"
     echo ""
     
     echo -e "${BLUE}Schema Version:${NC}"
@@ -119,7 +123,11 @@ cmd_backup() {
     BACKUP_PATH="${DB_PATH%.db}_backup_$(date +%Y%m%d_%H%M%S).db"
     
     echo -e "${BLUE}Creating backup...${NC}"
-    sqlite3 "$DB_PATH" ".backup '$BACKUP_PATH'"
+    # Double quotes with backslash escapes: ".backup '<path>'" broke on a
+    # path containing an apostrophe
+    ESCAPED=${BACKUP_PATH//\\/\\\\}
+    ESCAPED=${ESCAPED//\"/\\\"}
+    sqlite3 "$DB_PATH" ".backup \"$ESCAPED\""
     
     echo -e "${GREEN}✓ Backup created: $BACKUP_PATH${NC}"
     echo "  Size: $(du -h "$BACKUP_PATH" | cut -f1)"
@@ -191,12 +199,13 @@ EOF
 cmd_vacuum() {
     check_db
     
-    SIZE_BEFORE=$(du -b "$DB_PATH" | cut -f1)
+    # wc -c: "du -b" does not exist on macOS
+    SIZE_BEFORE=$(wc -c < "$DB_PATH" | tr -d ' ')
     
     echo -e "${BLUE}Optimizing database...${NC}"
     sqlite3 "$DB_PATH" "VACUUM;"
     
-    SIZE_AFTER=$(du -b "$DB_PATH" | cut -f1)
+    SIZE_AFTER=$(wc -c < "$DB_PATH" | tr -d ' ')
     SAVED=$((SIZE_BEFORE - SIZE_AFTER))
     
     echo -e "${GREEN}✓ Optimization complete!${NC}"

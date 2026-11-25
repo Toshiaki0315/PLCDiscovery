@@ -46,6 +46,7 @@ The system is designed around three main functional areas:
 
 Each protocol has maximum communication limits that are automatically handled:
 - SLMP (3E Frame): 960 words max, 900 words recommended
+- S7: 111 words per request (222 bytes: one request on the smallest PDU, 240 bytes)
 - Modbus/TCP (FC03/04): 125 words max, 100 words recommended
 - EtherNet/IP (CIP): 252 words max, 200 words recommended
 
@@ -145,9 +146,10 @@ not count either way.
 **Constraints:**
 - Maximum split depth: 12 levels (log2(4096))
 - Estimated time per level: 100-500ms
-- A lost link is detected after 3 consecutive transport failures; the rest
-  of the range is then reported without further requests. Every request
-  that is not answered still costs one request timeout (default 5 s).
+- A lost link costs about 7 unanswered requests (the chunk with its
+  retries, its two halves, and one read of the address the PLC answered
+  last); the rest of the range is then reported without further requests.
+  Every request that is not answered costs one request timeout (default 5 s).
 
 ### Data Output Files
 

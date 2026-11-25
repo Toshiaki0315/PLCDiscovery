@@ -83,6 +83,13 @@ setup_env() {  # setup_env [--gui]
         echo "依存パッケージをインストールしています。数分かかることがあります..."
         "$VENV_PY" -m pip install --disable-pip-version-check -q --upgrade pip >/dev/null 2>&1
         if ! "$VENV_PY" -m pip install --disable-pip-version-check -r "$PLCD_ROOT/requirements.txt"; then
+            if [ -f "$PLCD_STAMP" ]; then
+                # 以前のインストールは成功している（オフラインの工場PCで requirements.txt が
+                # 更新された場合など）: 起動できなくするより、入っているパッケージで動かす
+                echo "[警告] パッケージを更新できませんでした。以前にインストールしたパッケージで起動します。" >&2
+                echo "  インターネットに接続できるときに、もう一度起動すると更新されます。" >&2
+                return 0
+            fi
             echo "[エラー] パッケージのインストールに失敗しました。" >&2
             echo "  インターネット接続やプロキシの設定を確認してから、もう一度実行してください。" >&2
             return 1

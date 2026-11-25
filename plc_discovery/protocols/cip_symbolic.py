@@ -14,6 +14,7 @@ Only reads are implemented; there is no write service here.
 
 import re
 import struct
+import time
 from typing import Any, List, Optional, Tuple, Union
 
 from ..config import StatusCode
@@ -152,9 +153,12 @@ def encode_tag_path(name: str) -> bytes:
     return bytes(path)
 
 
-def read_symbolic(client: Any, tag: str) -> Tuple[Any, str]:
+def read_symbolic(client: Any, tag: str, fragment_interval: float = 0.0) -> Tuple[Any, str]:
     """
     Read one tag ("Name", "Name.Member", "Array[2]{5}") through a CIPDriver.
+
+    A large array takes several requests (fragments); ``fragment_interval``
+    seconds are waited before each further one (the packet interval).
 
     Returns (value, type name); value is a list for an element count > 1.
     Raises SymbolicReadError for CIP error replies and undecodable data;
@@ -165,7 +169,9 @@ def read_symbolic(client: Any, tag: str) -> Tuple[Any, str]:
 
     type_code: Optional[int] = None
     payload = b""
-    for _ in range(MAX_FRAGMENTS):
+    for fragment in range(MAX_FRAGMENTS):
+        if fragment and fragment_interval > 0:
+            time.sleep(fragment_interval)  # called in a worker thread
         data = struct.pack("<HI", elements, len(payload))
         status, reply, error = _send(client, SERVICE_READ_TAG_FRAGMENTED, path, data)
         if status not in (STATUS_OK, STATUS_PARTIAL):

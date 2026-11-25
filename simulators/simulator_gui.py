@@ -148,6 +148,12 @@ class SimulatorApp:
         self._build()
         self._refresh_rows()
         root.protocol("WM_DELETE_WINDOW", self.close)
+        try:
+            # macOS: Cmd+Q / the menu's Quit do not go through WM_DELETE_WINDOW
+            if root.tk.call("tk", "windowingsystem") == "aqua":
+                root.createcommand("::tk::mac::Quit", self.close)
+        except tk.TclError:
+            pass
         root.after(200, self._poll)
 
     # -- layout --

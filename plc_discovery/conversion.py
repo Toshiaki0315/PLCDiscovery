@@ -126,6 +126,19 @@ def apply_data_type_conversion(
         else:
             run_end[idx] = addr[1] if addr else None
 
+    # With address-specific mappings, the values of the default type are
+    # aligned to where their unmapped stretch begins: right after a mapping,
+    # not at the start of the whole run (a mapping at an odd offset shifted
+    # every value behind it, and labelled the first word as part of the
+    # mapping's last address)
+    unmapped_start: List[Optional[int]] = [None] * len(parsed)
+    if type_manager:
+        for idx, addr in enumerate(parsed):
+            if addr is None or type_manager.get_mapping_for_address(addr[1], addr[0]):
+                continue
+            previous = unmapped_start[idx - 1] if idx and continues(parsed[idx - 1], addr) else None
+            unmapped_start[idx] = previous if previous is not None else addr[1]
+
     result: List[DataPoint] = []
     i = 0
     while i < len(data_points):
@@ -150,6 +163,7 @@ def apply_data_type_conversion(
         else:
             if type_manager:
                 dt, bo = type_manager.default_type, type_manager.default_byte_order
+                align_base = unmapped_start[i] if unmapped_start[i] is not None else align_base
             else:
                 dt, bo = data_type, byte_order
             if dt in VARIABLE_LENGTH_TYPES:

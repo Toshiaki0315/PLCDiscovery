@@ -24,6 +24,8 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Tuple, Type
 
+from .utils import number_text
+
 logger = logging.getLogger(__name__)
 
 # Try to import aiohttp for async HTTP requests
@@ -636,7 +638,7 @@ class NotificationManager:
         event = NotificationEvent(
             type=NotificationType.THRESHOLD_EXCEEDED,
             title="PLC Threshold Exceeded",
-            message=f"{target}: {condition} (value {value:g})",
+            message=f"{target}: {condition} (value {number_text(value)})",
             priority=NotificationPriority.HIGH,
             data={"plc_ip": plc_ip, "target": target, "condition": condition, "value": value, **extra_data},
             throttle_key=self.threshold_key(target, condition),
@@ -656,7 +658,10 @@ class NotificationManager:
         event = NotificationEvent(
             type=NotificationType.THRESHOLD_CLEARED,
             title="PLC Threshold Back to Normal",
-            message=f"{target}: {condition} back to normal (value {value:g}, outside for {duration_seconds:.0f}s)",
+            message=(
+                f"{target}: {condition} back to normal "
+                f"(value {number_text(value)}, outside for {duration_seconds:.0f}s)"
+            ),
             priority=NotificationPriority.NORMAL,
             data={
                 "plc_ip": plc_ip,

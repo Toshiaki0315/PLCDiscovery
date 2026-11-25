@@ -5,13 +5,16 @@ pytest>=7.4.0
 pytest-asyncio>=0.21.0
 pytest-cov>=4.1.0
 pytest-mock>=3.11.0
+pytest-timeout>=2.2.0
 tomli>=2.0.0; python_version < "3.11"   # TOML reader for tests on Python 3.10
 
 # Code Quality
-flake8>=6.1.0
-black>=23.0.0
-isort>=5.12.0
-mypy>=1.5.0
+# The versions CI checks with (.github/workflows/ci.yml): another black or
+# isort formats differently and "black --check" then fails only in CI
+flake8==7.3.0
+black==26.5.1
+isort==6.0.1
+mypy==1.18.1
 
 # Type stubs
 types-setuptools
