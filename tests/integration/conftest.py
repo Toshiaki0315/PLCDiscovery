@@ -426,7 +426,11 @@ def network_config():
         discovery_timeout_ms=2000,
         discovery_retry_count=2,
         packet_interval_ms=10,
-        retry_interval_ms=100,
+        # Waited after every failed request of a binary search: 100 ms made
+        # each test of a 101-address denied Modbus range take 11 s (Modbus
+        # splits down to single addresses, about 100 waits). The splitting
+        # tested is the same with a shorter wait.
+        retry_interval_ms=10,
         request_timeout_ms=3000,
         max_concurrent=1,
     )

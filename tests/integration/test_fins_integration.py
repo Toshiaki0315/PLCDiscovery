@@ -4,6 +4,8 @@ FINS Integration Tests
 Tests actual communication with FINS simulator.
 """
 
+import dataclasses
+
 import pytest
 
 from plc_discovery.collector import PLCDataCollector
@@ -34,7 +36,9 @@ class TestFINSConnection:
 
         # UDP itself has no handshake; connect() verifies that a FINS node
         # answers, so a port without a FINS server must not be "connected".
-        async with PLCDataCollector(plc_info, network_config) as collector:
+        # (Nothing answers: a short timeout, not the fixture's 3 s per try.)
+        config = dataclasses.replace(network_config, request_timeout_ms=500)
+        async with PLCDataCollector(plc_info, config) as collector:
             assert collector._handler.is_connected is False
             # Reading retries the connection and reports the address as a
             # communication error rather than returning nothing
