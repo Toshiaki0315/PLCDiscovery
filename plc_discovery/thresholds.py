@@ -165,7 +165,9 @@ def threshold_from_dict(item: Any, where: str = "threshold") -> Threshold:
 
 def parse_thresholds(texts: Iterable[str]) -> List[Threshold]:
     """CLI / GUI conditions; each text may hold several, separated by commas"""
-    return [parse_threshold(part) for text in texts for part in str(text).split(",") if part.strip()]
+    # Commas inside brackets belong to the address ("Matrix[0,0]>5")
+    parts = (part for text in texts for part in re.split(r",(?![^\[\]]*\])", str(text)))
+    return [parse_threshold(part) for part in parts if part.strip()]
 
 
 def numeric_value(point: DataPoint) -> Optional[float]:

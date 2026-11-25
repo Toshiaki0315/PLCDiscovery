@@ -566,7 +566,13 @@ def test_stopped_single_scan_keeps_what_it_read(tmp_path):
                 CSVExporter(str(tmp_path), "utf-8-sig"),
             )
         )
-        await asyncio.sleep(0.7)
+        # Not a fixed sleep: wait until the scan has moved on to its second
+        # range, so something was read whatever the speed of the machine
+        for _ in range(2000):
+            if app._progress_cb.call_count >= 2 or job.done():
+                break
+            await asyncio.sleep(0.01)
+        assert not job.done()
         job.cancel()  # the Stop button
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(job, timeout=10)

@@ -108,7 +108,7 @@ from plc_discovery.scan_runner import (  # noqa: F401  (status_report_message re
     status_report_message,
 )
 from plc_discovery.thresholds import Threshold, ThresholdMonitor
-from plc_discovery.utils import get_timestamp, ip_range_error, sorted_addresses
+from plc_discovery.utils import get_timestamp, ip_range_error, sorted_addresses, wait_for
 
 logger = logging.getLogger(__name__)
 
@@ -232,38 +232,38 @@ async def run_parallel_scan(
     display.print_info(f"Starting parallel scan of {len(plcs)} PLCs (max {limit} concurrent)...")
     semaphore = asyncio.Semaphore(limit)
 
+    tasks: List["asyncio.Future[ScanOutcome]"] = []
+
     async def scan(label: str, plc_info: PLCInfo, instance: Optional[str]) -> ScanOutcome:
         async with semaphore:
-            try:
-                return await run_single_scan(
-                    plc_info,
-                    config,
-                    exporter,
-                    display,
-                    mode,
-                    device_ranges,
-                    data_type,
-                    byte_order,
-                    type_manager,
-                    db_exporter,
-                    label=label,
-                    instance=instance,
-                )
-            except Exception as e:
-                # One target's unexpected error never stops the others; its
-                # addresses are still written as NG_COMM_ERROR
-                outcome = ScanOutcome(plc_info.ip_address, label=label, error=str(e))
-                display.print_error(f"{label}: {e}")
-                outcome.data_points = _unreached_points(plc_info, mode, device_ranges)
-                writer = ResultWriter(plc_info, exporter, display, db_exporter, label=label, instance=instance)
-                writer.export_points(outcome.data_points)
-                return outcome
+            outcome = await scan_target(
+                plc_info,
+                config,
+                exporter,
+                display,
+                mode,
+                device_ranges,
+                data_type,
+                byte_order,
+                type_manager,
+                db_exporter,
+                label,
+                instance,
+            )
+        if outcome.interrupted:
+            # Python 3.10 delivers Ctrl+C as KeyboardInterrupt to whatever
+            # is running: when that was this target's read, only this target
+            # stopped and the others ran to their end. Stop them as well.
+            for task in tasks:
+                if task is not asyncio.current_task():
+                    task.cancel()
+        return outcome
 
     labels = target_labels(plcs)
-    tasks = [
+    tasks.extend(
         asyncio.ensure_future(scan(label, plc, instance))
         for label, plc, instance in zip(labels, plcs, target_instances(plcs))
-    ]
+    )
     try:
         # return_exceptions: on Ctrl+C gather waits until every target has
         # stopped. Without it, a target still waiting for its turn ended
@@ -274,7 +274,13 @@ async def run_parallel_scan(
         _uncancel_current_task()
     # A target that was still waiting for its turn when the scan was
     # interrupted was not scanned and is not reported (as in a sequential scan)
-    results = {label: task.result() for label, task in zip(labels, tasks) if not task.cancelled()}
+    # (nor one whose task ended on a second Ctrl+C: its exception must not
+    # take the results of the others with it)
+    results = {
+        label: task.result()
+        for label, task in zip(labels, tasks)
+        if task.done() and not task.cancelled() and task.exception() is None
+    }
     display.print_scan_results(
         {
             label: {
@@ -290,6 +296,49 @@ async def run_parallel_scan(
         }
     )
     return results
+
+
+async def scan_target(
+    plc_info: PLCInfo,
+    config: NetworkConfig,
+    exporter: CSVExporter,
+    display: RichProgressDisplay,
+    mode: ScanMode,
+    device_ranges: Optional[List[ScanItem]],
+    data_type: Optional[DataType],
+    byte_order: ByteOrder,
+    type_manager: Optional[DataTypeManager],
+    db_exporter: Optional[DatabaseExporter],
+    label: str,
+    instance: Optional[str],
+) -> "ScanOutcome":
+    """
+    run_single_scan for one of several targets: an unexpected error of this
+    target is its own failure and never stops the scan of the others; its
+    addresses are still written as NG_COMM_ERROR.
+    """
+    try:
+        return await run_single_scan(
+            plc_info,
+            config,
+            exporter,
+            display,
+            mode,
+            device_ranges,
+            data_type,
+            byte_order,
+            type_manager,
+            db_exporter,
+            label=label,
+            instance=instance,
+        )
+    except Exception as e:
+        outcome = ScanOutcome(plc_info.ip_address, label=label, error=str(e) or type(e).__name__)
+        display.print_error(f"{label}: {outcome.error}")
+        outcome.data_points = _unreached_points(plc_info, mode, device_ranges)
+        writer = ResultWriter(plc_info, exporter, display, db_exporter, label=label, instance=instance)
+        writer.export_points(outcome.data_points)
+        return outcome
 
 
 @dataclasses.dataclass
@@ -398,8 +447,11 @@ async def run_single_scan(
     if data_type:
         display.print_info(f"Data type conversion: {data_type.value} ({byte_order.value})")
 
+    collector = PLCDataCollector(plc_info, config)
+    stats: Optional[Dict[str, Any]] = None
+    denied_statuses: Dict[str, StatusCode] = {}
     try:
-        async with PLCDataCollector(plc_info, config) as collector:
+        async with collector:
             if not _check_connected(collector, plc_info, outcome, display):
                 # Still write every requested address as NG_COMM_ERROR, so the
                 # output shows what could not be read (PLC off or unreachable)
@@ -443,9 +495,26 @@ async def run_single_scan(
                 stats["total_points"] - stats["success_count"],
                 (loop.time() - scan_started) * 1000,
             )
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        # Ctrl+C while connecting, or while the connection was being closed
+        # after the scan. The scan's data must not depend on how long the
+        # PLC takes to answer the close: it is written below either way.
+        outcome.interrupted = True
+        _uncancel_current_task()
+        try:
+            await wait_for(collector.disconnect(), timeout=2)
+        except (Exception, asyncio.CancelledError) as e:
+            logger.debug(f"{ip}: disconnect after interruption: {e!r}")
+        if stats is None:
+            display.print_warning(f"{ip}: interrupted by user before anything was read")
+            outcome.error = "interrupted before the scan started"
+            return outcome
+        display.print_warning(f"Scan interrupted by user; saving the {len(outcome.data_points)} data points read")
     except Exception as e:
         audit.log_error(str(e), {"plc_ip": ip})
         raise
+    if stats is None:
+        return outcome  # not connected: reported above
 
     outcome.data_points = apply_data_type_conversion(outcome.data_points, data_type, byte_order, type_manager)
     filepath = writer.export_points(outcome.data_points)
@@ -566,11 +635,19 @@ async def run_periodic_scan(
                 display.print_info(f"Iteration {iteration}")
 
                 for key, collector in collectors.items():
-                    points = (await runner.read(collector, writers[key])).points
+                    read_failed = False
+                    try:
+                        points = (await runner.read(collector, writers[key])).points
+                    except Exception as e:
+                        # Never ends the monitoring (of every target): this
+                        # cycle of this target is lost and it counts as down
+                        display.print_error(f"{key}: read failed: {e or type(e).__name__}")
+                        logger.debug(f"{key}: read failed", exc_info=True)
+                        points, read_failed = [], True
                     # Reachable = connected and answering: a handler without a
                     # connection to lose (FINS/UDP) or with one that outlives
                     # the PLC stays "connected" while nothing is answered
-                    answering = collector.is_connected and plc_answered(points)
+                    answering = collector.is_connected and plc_answered(points) and not read_failed
                     if answering:
                         down.discard(key)
                     else:
@@ -1035,7 +1112,7 @@ async def _run_scans(
     else:
         # Single or sequential scan
         for label, plc_info, instance in zip(target_labels(plc_infos), plc_infos, target_instances(plc_infos)):
-            outcome = await run_single_scan(
+            outcome = await scan_target(
                 plc_info,
                 config,
                 exporter,
@@ -1046,8 +1123,8 @@ async def _run_scans(
                 byte_order,
                 type_manager,
                 db_exporter,
-                label=label,
-                instance=instance,
+                label,
+                instance,
             )
             results.add(label, outcome.success, outcome.error, outcome.data_points, outcome.denied_addresses)
             if outcome.interrupted:
@@ -1203,7 +1280,7 @@ async def run_cli() -> Optional[int]:
     if args.generate_config:
         try:
             generate_config_template(args.generate_config)
-        except FileExistsError as e:
+        except (OSError, ValueError) as e:  # exists, wrong extension, directory missing or not writable
             print(f"Error: {e}")
             sys.exit(1)
         return None
@@ -1212,12 +1289,21 @@ async def run_cli() -> Optional[int]:
     config_loader = _load_config(args)
     _apply_config_logging(args, config_loader)
     mode_name, interval, config = _resolve_run_settings(args, config_loader)
-    audit_file = _init_audit(args, config_loader)
-
     display = RichProgressDisplay(use_rich=not args.no_rich)
     if not args.quiet and not args.no_rich:
         display.print_header()
 
+    # Checked before anything is opened: an invalid --threshold or type
+    # mapping ended the run after the audit session had started (left
+    # without its end) and the database had already been cleaned up
+    data_types = _resolve_data_types_or_exit(args, config_loader, display)
+    try:
+        thresholds = resolve_thresholds(args, config_loader)
+    except ValueError as e:
+        display.print_error(str(e))
+        sys.exit(1)
+
+    audit_file = _init_audit(args, config_loader)
     try:
         exporter = _create_exporter(args, config_loader)
     except OSError as e:
@@ -1228,12 +1314,6 @@ async def run_cli() -> Optional[int]:
         sys.exit(1)
     db_exporter = _create_db_exporter(args, config_loader, display)
     notifier = _create_notifier(config_loader, display)
-    data_types = _resolve_data_types_or_exit(args, config_loader, display)
-    try:
-        thresholds = resolve_thresholds(args, config_loader)
-    except ValueError as e:
-        display.print_error(str(e))
-        sys.exit(1)
     if mode_name == "discover" and getattr(args, "threshold", None):
         display.print_warning(THRESHOLDS_IGNORED)
 
@@ -1244,7 +1324,13 @@ async def run_cli() -> Optional[int]:
 
         # Tag all database rows of this run with one scan session
         if db_exporter and db_exporter.is_enabled:
-            db_exporter.begin_session(mode_name)
+            try:
+                db_exporter.begin_session(mode_name)
+            except Exception as e:
+                # Locked by another program at this moment: the PLCs are
+                # still scanned and the CSV files written. Later database
+                # writes are tried, and reported, one by one.
+                display.print_warning(f"Database session could not be started ({e}); the scan continues")
 
         if mode_name == "discover":
             await _run_discover(args, config_loader, config, exporter, display, db_exporter, notifier, results)

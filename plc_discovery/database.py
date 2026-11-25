@@ -254,7 +254,7 @@ class DatabaseExporter:
     def _initialize_database(self):
         """Initialize database and create schema"""
         try:
-            db_path = Path(self.config.path)
+            db_path = Path(self.config.path).expanduser()
             db_path.parent.mkdir(parents=True, exist_ok=True)
 
             self._connection = sqlite3.connect(str(db_path), check_same_thread=False)

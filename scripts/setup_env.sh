@@ -53,6 +53,14 @@ setup_env() {  # setup_env [--gui]
     local need_tk=0 base
     [ "${1:-}" = "--gui" ] && need_tk=1
 
+    # 仮想環境の Python が動かない（作成元の Python がアンインストール・更新
+    # されてリンク切れになった）場合は作り直す。上書きの venv 作成では直らず、
+    # インストール済みの印も残るため、毎回「成功」して起動だけ失敗していた
+    if [ -e "$PLCD_VENV" ] && ! "$VENV_PY" -c '' 2>/dev/null; then
+        echo "仮想環境の Python が動かないため、作り直します..."
+        rm -rf "$PLCD_VENV"
+    fi
+
     # GUI 用: 既存の仮想環境に Tkinter がなく、Tkinter のある Python が
     # 見つかれば、その Python で仮想環境を作り直す
     if [ "$need_tk" = 1 ] && [ -x "$VENV_PY" ] && ! "$VENV_PY" -c 'import tkinter' 2>/dev/null; then

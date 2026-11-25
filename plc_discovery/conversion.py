@@ -37,7 +37,7 @@ def load_type_mapping(path: str, overrides: Optional[Dict[str, str]] = None) -> 
     without their own byte_order follow --byte-order.
     """
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8-sig") as f:  # with or without a BOM
             if path.endswith(".json"):
                 config = json.load(f)
             else:
@@ -138,6 +138,16 @@ def apply_data_type_conversion(
                 continue
             previous = unmapped_start[idx - 1] if idx and continues(parsed[idx - 1], addr) else None
             unmapped_start[idx] = previous if previous is not None else addr[1]
+    # ... and where it ends: a STRING / RAW default type takes the stretch,
+    # not the run up to (and beyond) the next mapping
+    unmapped_end: List[Optional[int]] = [None] * len(parsed)
+    if type_manager:
+        for idx in range(len(parsed) - 1, -1, -1):
+            addr = parsed[idx]
+            if addr is None or unmapped_start[idx] is None:
+                continue
+            following = unmapped_end[idx + 1] if idx + 1 < len(parsed) and continues(addr, parsed[idx + 1]) else None
+            unmapped_end[idx] = following if following is not None else addr[1]
 
     result: List[DataPoint] = []
     i = 0
@@ -168,7 +178,7 @@ def apply_data_type_conversion(
                 dt, bo = data_type, byte_order
             if dt in VARIABLE_LENGTH_TYPES:
                 # STRING / RAW without a mapping: the whole requested range
-                end = run_end[i]
+                end = unmapped_end[i] if type_manager and unmapped_end[i] is not None else run_end[i]
                 word_count = end - align_base + 1 if end is not None else 1
             else:
                 word_count = DataTypeConverter.get_word_count(dt) if dt else 1

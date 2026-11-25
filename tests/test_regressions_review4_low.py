@@ -16,6 +16,7 @@ import asyncio
 import json
 import struct
 import sys
+import threading
 import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -163,7 +164,7 @@ def test_busy_slc_controller_is_not_learned_as_an_invalid_address():
 
 
 def test_busy_logix_controller_does_not_make_a_tag_inaccessible():
-    busy = _tag_points("Speed", Tag("Speed", None, None, "Resource unavailable"))
+    busy = _tag_points("Speed", Tag("Speed", None, None, "Insufficient resource"))
     missing = _tag_points("Nope", Tag("Nope", None, None, "Path segment error"))
     assert [p.status for p in busy + missing] == [StatusCode.NG_COMM_ERROR, StatusCode.NG_ILLEGAL_ADDR]
 
@@ -191,24 +192,28 @@ def test_fragments_of_a_generic_array_read_wait_for_the_packet_interval(monkeypa
 
 
 def test_interrupted_tag_scan_keeps_the_tags_already_read():
+    reached, release = threading.Event(), threading.Event()
+
     class Client:
         data_types: dict = {}
 
         def read(self, *tags):
             if tags[0] == "T040":
-                time.sleep(0.5)  # the user stops the scan during this batch
+                reached.set()  # the user stops the scan during this batch
+                release.wait(10)
             return [Tag(tag, 1, "DINT", None) for tag in tags]
 
     async def run():
-        handler = EtherNetIPHandler("10.0.0.2", config=NetworkConfig(packet_interval_ms=0, request_timeout_ms=5000))
+        handler = EtherNetIPHandler("10.0.0.2", config=NetworkConfig(packet_interval_ms=0, request_timeout_ms=20000))
         handler._client, handler._connected, handler._plc_type = Client(), True, "logix"
         task = asyncio.ensure_future(handler.read_tags([f"T{i:03d}" for i in range(100)]))
-        await asyncio.sleep(0.2)
+        # No fixed sleeps: wait until the third batch is being read
+        assert await asyncio.get_running_loop().run_in_executor(None, reached.wait, 10)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(task, timeout=10)
         partial = list(handler.partial_points)
-        await asyncio.sleep(0.5)  # the worker thread ends
+        release.set()  # the worker thread ends
         return partial
 
     partial = asyncio.run(run())
@@ -461,7 +466,9 @@ def test_fins_simulator_picks_another_port_when_the_tcp_one_is_taken(monkeypatch
     controller = SimulatorController()
     try:
         port = controller.start("fins", "127.0.0.1", 0)
-        assert len(attempts) == 2 and port == attempts[1]
+        # At least two: the second TCP number may really be taken as well
+        # (the collision this is about), which is then one more attempt
+        assert len(attempts) >= 2 and port == attempts[-1]
         controller.stop("fins")
         attempts.clear()
         # A port the user chose is not replaced by another one

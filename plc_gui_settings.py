@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Coroutine, Dict, Lis
 from plc_discovery import settings_file
 from plc_discovery.audit_log import get_audit_logger, init_audit_logger
 from plc_discovery.config import NetworkConfig
+from plc_discovery.config_loader import is_known_encoding
 from plc_discovery.database import DatabaseConfig, DatabaseExporter
 from plc_discovery.notifications import (
     CONFIGURABLE_EVENTS,
@@ -26,6 +27,7 @@ from plc_discovery.notifications import (
     NotificationType,
 )
 from plc_discovery.output import DEFAULT_OUTPUT_DIR, normalize_csv_encoding
+from plc_discovery.utils import number_text
 
 
 class JobOutputs:
@@ -75,6 +77,18 @@ class SettingsTabsMixin:
     # network.discovery_timeout_ms / discovery_retry_count of the settings
     # file (no field on screen; used for discovery as the CLI does)
     _discovery_settings: Dict[str, int] = {}
+    # (encoding of the settings file, the choice on screen when it was
+    # loaded) while the file names an encoding the screen cannot show
+    _kept_encoding: Optional[tuple] = None
+    # Settings of the loaded file that could not be put on screen
+    _settings_dropped: Sequence[str] = ()
+
+    def _csv_encoding(self) -> str:
+        """The CSV encoding: the choice on screen, or the settings file's own while that is untouched"""
+        kept = self._kept_encoding
+        if kept and self.var_encoding.get() == kept[1]:
+            return str(kept[0])
+        return str(self.var_encoding.get())
 
     if TYPE_CHECKING:  # provided by plc_gui.PLCScannerApp
         root: tk.Tk
@@ -289,7 +303,11 @@ class SettingsTabsMixin:
                     "type": v_type.get(),
                     "url": url,
                     "enabled": v_enabled.get(),
-                    "events": [t.value for t, var in v_events.items() if var.get()],
+                    # Events without a checkbox here (plc_recovered, ...) are
+                    # kept: removing the only one made the list empty, which
+                    # means "every event"
+                    "events": [t.value for t, var in v_events.items() if var.get()]
+                    + [e for e in current.get("events") or [] if e not in {t.value for t in v_events}],
                     "timeout": timeout,
                     "retry_count": retry,
                 }
@@ -462,7 +480,7 @@ class SettingsTabsMixin:
             },
             "output": {
                 "directory": self.var_output_dir.get().strip() or DEFAULT_OUTPUT_DIR,
-                "encoding": self.var_encoding.get(),
+                "encoding": self._csv_encoding(),
                 "hex_addresses": self.var_hex_addresses.get(),
                 "periodic_csv": self.var_periodic_csv.get(),
                 "database": {
@@ -482,20 +500,38 @@ class SettingsTabsMixin:
         """読み込んだ設定（既定値と合成済み）を③〜⑤タブに反映する"""
         get = settings_file.section
 
-        def mapping(value: Any) -> Dict:
+        # What the file holds but the screen cannot show. Whatever is listed
+        # here would be overwritten by "save" (which writes what is on
+        # screen), so saving asks first - see _load_settings.
+        dropped: List[str] = []
+        self._settings_dropped = dropped
+
+        def mapping(value: Any, name: str = "") -> Dict:
+            if value is not None and not isinstance(value, dict):
+                dropped.append(name or "section")
             return value if isinstance(value, dict) else {}
 
-        def number(value: Any, default: float) -> str:
+        def number(value: Any, default: float, name: str = "") -> str:
             # A value of the wrong type (max_size_mb: "x", or left empty) is
             # shown as the default. It must not stop the rest from being
             # applied: the notification destinations further down were left
             # empty, and the next "save" wrote that over the file.
             try:
-                return f"{float(value):g}"
+                if isinstance(value, bool):
+                    raise TypeError
+                return number_text(float(value))  # every digit: "%g" showed 1000000 as 1e+06
             except (TypeError, ValueError):
-                return f"{default:g}"
+                dropped.append(name or "number")
+                return number_text(default)
 
-        net = mapping(get(config, "network", default={}))
+        def flag(value: Any, default: bool, name: str) -> bool:
+            # bool("false") is True: a quoted "no" switched the option on
+            if isinstance(value, bool):
+                return value
+            dropped.append(name)
+            return default
+
+        net = mapping(get(config, "network", default={}), "network")
         for var, key in (
             (self.var_packet_interval, "packet_interval_ms"),
             (self.var_retry_interval, "retry_interval_ms"),
@@ -508,36 +544,55 @@ class SettingsTabsMixin:
             for key, minimum in (("discovery_timeout_ms", 1), ("discovery_retry_count", 0))
             if isinstance(net.get(key), int) and not isinstance(net[key], bool) and net[key] >= minimum
         }
-        out = mapping(get(config, "output", default={}))
+        out = mapping(get(config, "output", default={}), "output")
         if out.get("directory"):
             self.var_output_dir.set(str(Path(out["directory"]).expanduser()))
-        self.var_hex_addresses.set(bool(out.get("hex_addresses", False)))
+        self.var_hex_addresses.set(flag(out.get("hex_addresses", False), False, "output.hex_addresses"))
         if out.get("periodic_csv") in ("per_cycle", "daily"):
             self.var_periodic_csv.set(out["periodic_csv"])
         # Any spelling the CLI accepts (cp932, sjis, UTF8, ...): otherwise the
         # GUI wrote UTF-8 where the CLI writes CP932 with the same file, and
         # "save" changed the file's encoding
         shown = {"cp932": "shift-jis", "utf-8": "utf-8", "utf-8-sig": "utf-8-sig"}
-        encoding = shown.get(normalize_csv_encoding(out["encoding"])) if out.get("encoding") else None
-        if encoding:
-            self.var_encoding.set(encoding)
-        db = mapping(out.get("database"))
+        self._kept_encoding = None
+        if out.get("encoding"):
+            normalized = normalize_csv_encoding(out["encoding"])
+            if normalized in shown:
+                self.var_encoding.set(shown[normalized])
+            elif is_known_encoding(out["encoding"]):
+                # Valid, but none of the three choices on screen (euc-jp,
+                # utf-16, ...): used and saved as it is, until another one
+                # is chosen (see _csv_encoding)
+                self._kept_encoding = (normalized, self.var_encoding.get())
+                logging.info(f"CSVの文字コード {normalized} は画面では選べません。設定ファイルの値のまま使います。")
+            else:
+                dropped.append("output.encoding")
+        db = mapping(out.get("database"), "output.database")
         defaults = DatabaseConfig()
-        self.var_db_enabled.set(bool(db.get("enabled", False)))
+        self.var_db_enabled.set(flag(db.get("enabled", False), False, "output.database.enabled"))
         self.var_db_path.set(str(db.get("path") or defaults.path))
-        self.var_db_history.set(bool(db.get("track_history", True)))
-        self.var_db_days.set(number(db.get("max_history_days", defaults.max_history_days), defaults.max_history_days))
-        self.var_db_size.set(number(db.get("max_size_mb", defaults.max_size_mb), defaults.max_size_mb))
-        self.var_db_interval.set(
-            number(db.get("cleanup_interval_hours", defaults.cleanup_interval_hours), defaults.cleanup_interval_hours)
+        self.var_db_history.set(flag(db.get("track_history", True), True, "output.database.track_history"))
+        self.var_db_days.set(
+            number(db.get("max_history_days", defaults.max_history_days), defaults.max_history_days, "max_history_days")
         )
-        timing = mapping(get(config, "notification_settings", default={}))
-        self.var_report_interval.set(number(timing.get("report_interval_minutes", 0), 0))
-        self.var_min_interval.set(number(timing.get("min_interval_minutes", 0), 0))
+        self.var_db_size.set(number(db.get("max_size_mb", defaults.max_size_mb), defaults.max_size_mb, "max_size_mb"))
+        self.var_db_interval.set(
+            number(
+                db.get("cleanup_interval_hours", defaults.cleanup_interval_hours),
+                defaults.cleanup_interval_hours,
+                "cleanup_interval_hours",
+            )
+        )
+        timing = mapping(get(config, "notification_settings", default={}), "notification_settings")
+        self.var_report_interval.set(number(timing.get("report_interval_minutes", 0), 0, "report_interval_minutes"))
+        self.var_min_interval.set(number(timing.get("min_interval_minutes", 0), 0, "min_interval_minutes"))
         destinations = get(config, "notifications", default=[])
-        self.notify_destinations = [
-            dict(d) for d in (destinations if isinstance(destinations, list) else []) if isinstance(d, dict)
-        ]
+        if destinations is not None and not isinstance(destinations, list):
+            dropped.append("notifications")
+            destinations = []
+        if any(not isinstance(d, dict) for d in destinations or []):
+            dropped.append("notifications")
+        self.notify_destinations = [dict(d) for d in destinations or [] if isinstance(d, dict)]
         self._refresh_notify_tree()
 
     def _browse_settings_file(self) -> None:
@@ -598,6 +653,13 @@ class SettingsTabsMixin:
             logging.error(f"設定ファイルの値を画面に反映できませんでした（{path}）: {e}")
             if not quiet:
                 messagebox.showerror("読み込みエラー", f"設定ファイルの値に誤りがあります:\n{e}")
+        if self._settings_dropped:
+            # Shown as defaults, not as the file has them: saving would write
+            # the defaults over the file (a destination list of the wrong
+            # shape lost its webhook URLs), so it asks first
+            self._settings_not_applied = path
+            names = ", ".join(dict.fromkeys(self._settings_dropped))
+            logging.warning(f"設定ファイルの次の項目は画面に反映できませんでした（既定値で表示しています）: {names}")
         self._start_audit_log(config)
         if errors:
             logging.warning("設定ファイルに誤りがあります: " + " / ".join(errors[:5]))

@@ -2,18 +2,22 @@
 Utility functions for PLC Discovery Tool
 """
 
+import asyncio
 import ipaddress
 import logging
 import re
 import socket
 from datetime import datetime
-from typing import Any, Awaitable, Dict, Generator, Iterable, List, Optional, Tuple
+from typing import Any, Awaitable, Dict, Generator, Iterable, List, Optional, Tuple, TypeVar
 
 from .config import MANUFACTURER_OUI, StatusCode
 
 # Library code must not configure the root logger; applications
 # (plc_scanner.py, plc_gui.py) set up handlers and levels themselves.
 logger = logging.getLogger(__name__)
+
+
+_T = TypeVar("_T")
 
 
 def get_local_ip() -> str:
@@ -447,13 +451,44 @@ def format_mac_address(mac_bytes: bytes) -> str:
     return ":".join(f"{b:02X}" for b in mac_bytes)
 
 
+async def wait_for(awaitable: Awaitable[_T], timeout: Optional[float]) -> _T:
+    """
+    asyncio.wait_for() that never loses a cancellation.
+
+    Before Python 3.12, asyncio.wait_for() returns the result - and drops
+    the CancelledError - when the caller is cancelled just as the awaited
+    future finishes. A read from a PLC finishes all the time, so a request
+    to stop (Ctrl+C, the GUI's stop button) was occasionally ignored and the
+    scan went on to its end. Same contract otherwise: the result, or
+    asyncio.TimeoutError after ``timeout`` seconds with the awaitable
+    cancelled.
+    """
+    task = asyncio.ensure_future(awaitable)
+    # Its exception is looked at even when nobody waits for it any more
+    task.add_done_callback(lambda done: done.cancelled() or done.exception())
+    try:
+        finished, _ = await asyncio.wait({task}, timeout=timeout)
+    except asyncio.CancelledError:
+        task.cancel()
+        raise
+    if not finished:
+        task.cancel()
+        await asyncio.wait({task})  # let it end (a coroutine runs its cleanup)
+        raise asyncio.TimeoutError()
+    return task.result()
+
+
 def number_text(value: float) -> str:
     """
     A number as people write it: 1234567, 81.5, 0.3 (never 1.23457e+06,
     which "%g" gives from the seventh digit on - a DWORD counter or a limit
     on one was shown wrong, and two limits could look the same).
     """
-    return f"{value:.12g}"
+    if isinstance(value, float) and value.is_integer() and abs(value) < 2**63:
+        return str(int(value))  # every digit of a 64-bit counter or limit
+    if isinstance(value, int):
+        return str(value)
+    return f"{value:.15g}"
 
 
 def value_to_hex(value: int, word_size: int = 1) -> str:
