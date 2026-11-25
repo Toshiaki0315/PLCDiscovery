@@ -650,6 +650,9 @@ async def run_periodic_scan(
                         display.print_error(f"{key}: read failed: {e or type(e).__name__}")
                         logger.debug(f"{key}: read failed", exc_info=True)
                         points, read_failed = [], True
+                        # No longer being read: a stop while waiting must
+                        # not save the rest of this failed cycle
+                        reading = None
                     # Reachable = connected and answering: a handler without a
                     # connection to lose (FINS/UDP) or with one that outlives
                     # the PLC stays "connected" while nothing is answered
