@@ -567,9 +567,12 @@ def test_stopped_single_scan_keeps_what_it_read(tmp_path):
             )
         )
         # Not a fixed sleep: wait until the scan has moved on to its second
-        # range, so something was read whatever the speed of the machine
+        # range, so something was read whatever the speed of the machine.
+        # The full scan reports "Starting" (1st call), then each range just
+        # before reading it: the 2nd call comes before anything was read,
+        # the 3rd once the first range is complete
         for _ in range(2000):
-            if app._progress_cb.call_count >= 2 or job.done():
+            if app._progress_cb.call_count >= 3 or job.done():
                 break
             await asyncio.sleep(0.01)
         assert not job.done()

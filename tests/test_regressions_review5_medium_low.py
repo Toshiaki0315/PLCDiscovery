@@ -340,8 +340,10 @@ def test_gui_second_stop_while_disconnecting_keeps_the_partial_scan(tmp_path, mo
                 CSVExporter(str(tmp_path), "utf-8-sig"),
             )
         )
+        # 3rd progress call: the first range is read ("Starting" and the
+        # first "Scanning" come before anything was read)
         for _ in range(2000):
-            if app._progress_cb.call_count >= 2 or job.done():
+            if app._progress_cb.call_count >= 3 or job.done():
                 break
             await asyncio.sleep(0.01)
         job.cancel()  # Stop
