@@ -2,6 +2,7 @@
 Regression tests for CSV output, found and fixed in code reviews.
 """
 
+import asyncio
 import csv
 import io
 import json
@@ -13,11 +14,12 @@ import pytest
 
 import plc_scanner
 from plc_discovery import progress
+from plc_discovery.audit_log import AuditLogger, close_audit_logger, get_audit_logger, init_audit_logger
 from plc_discovery.config import DataPoint, DeviceRange, DeviceType, NetworkConfig, PLCInfo, Protocol, StatusCode
 from plc_discovery.config_loader import DEFAULT_CONFIG
 from plc_discovery.data_types import ByteOrder, DataType
 from plc_discovery.output import CSVExporter, csv_safe, load_denied_addresses, normalize_csv_encoding
-from plc_discovery.progress import RichProgressDisplay
+from plc_discovery.progress import RichProgressDisplay, create_progress_callback
 from plc_discovery.protocols.base import BaseProtocolHandler
 from plc_discovery.retry import RetryConfig, RetryStrategy
 
@@ -263,3 +265,168 @@ def test_rich_markup_in_messages_is_escaped():
     with display.console.capture() as captured:
         display.print_info("value [bold]x[/bold] and [/unbalanced]")
     assert "[bold]x[/bold] and [/unbalanced]" in captured.get()
+
+
+def test_audit_console_output_failure_does_not_reach_the_caller(tmp_path):
+    log = tmp_path / "audit.jsonl"
+    audit = AuditLogger(str(log), console_output=True)
+    try:
+        with patch("builtins.print", side_effect=UnicodeEncodeError("cp932", "タグ", 0, 1, "illegal")):
+            audit.log_tag_read("10.0.0.1", "ETHERNET_IP", ["温度"], "OK", 1.0)  # must not raise
+    finally:
+        audit.close()
+    assert "温度" in log.read_text(encoding="utf-8")  # the file record is written all the same
+
+
+def test_character_missing_from_the_encoding_does_not_fail_the_file(tmp_path):
+    exporter = CSVExporter(str(tmp_path), "euc-jp")
+    point = DataPoint(address="Motor①ü", value=1, raw_hex="0001", status=StatusCode.OK)
+    path = exporter.export_plc_data([point], "10.0.0.1")  # raised UnicodeEncodeError, leaving a truncated file
+    text = Path(path).read_text(encoding="euc-jp")
+    assert "Motor" in text and "?" in text
+
+
+def test_daily_csv_continues_in_its_own_file_after_the_encoding_was_changed(tmp_path):
+    def append(encoding, address):
+        exporter = CSVExporter(str(tmp_path), encoding)
+        point = DataPoint(address=address, value=1, raw_hex="0001", status=StatusCode.OK, timestamp="t")
+        return Path(exporter.append_plc_data([point], "10.0.0.1"))
+
+    first = append("utf-8-sig", "D0")
+    assert append("utf-8-sig", "D1") == first
+    second = append("shift-jis", "D2")
+    assert append("shift-jis", "D3") == second
+    assert second != first and second.name.endswith("_cp932.csv")
+    # Was one file: the BOM made its header unreadable in CP932, and D2 / D3
+    # were written with an empty address column
+    assert [line.split(",")[0] for line in first.read_text(encoding="utf-8-sig").splitlines()] == [
+        "address",
+        "D0",
+        "D1",
+    ]
+    assert [line.split(",")[0] for line in second.read_text(encoding="cp932").splitlines()] == ["address", "D2", "D3"]
+
+
+def test_home_directory_in_paths_is_expanded(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    exporter = CSVExporter("~/plc_results", "utf-8")  # created a directory called "~"
+    assert exporter.output_dir == tmp_path / "plc_results"
+
+
+def test_denied_log_continues_in_its_own_file_after_the_encoding_was_changed(tmp_path):
+    CSVExporter(str(tmp_path), "utf-8").export_denied_addresses({"温度"}, "10.0.0.1")
+    second = CSVExporter(str(tmp_path), "shift-jis").export_denied_addresses({"圧力"}, "10.0.0.1")
+
+    first = tmp_path / "access_denied_log.csv"
+    assert second != str(first)
+    # Each file is readable in one encoding (was: CP932 rows inside the UTF-8 file)
+    assert "温度" in first.read_text(encoding="utf-8") and "圧力" not in first.read_text(encoding="utf-8")
+    text = (tmp_path / "access_denied_log_cp932.csv").read_text(encoding="cp932")
+    assert text.splitlines()[0] == "address,status,last_attempt,plc_ip" and "圧力" in text
+
+    # ... and later rows of either encoding go to the file of that encoding
+    CSVExporter(str(tmp_path), "shift-jis").export_denied_addresses({"流量"}, "10.0.0.1")
+    CSVExporter(str(tmp_path), "utf-8").export_denied_addresses({"D9"}, "10.0.0.1")
+    assert "流量" in (tmp_path / "access_denied_log_cp932.csv").read_text(encoding="cp932")
+    assert "D9" in first.read_text(encoding="utf-8")
+    assert len(list(tmp_path.glob("access_denied_log*.csv"))) == 2
+
+
+@pytest.mark.parametrize("encodings", [("utf-8", "shift-jis"), ("shift-jis", "utf-8"), ("utf-8-sig", "utf-8-sig")])
+def test_denied_log_of_plain_addresses_stays_one_file(tmp_path, encodings):
+    for encoding, address in zip(encodings, ("D100", "D200")):
+        CSVExporter(str(tmp_path), encoding).export_denied_addresses({address}, "10.0.0.1")
+    files = list(tmp_path.glob("access_denied_log*.csv"))
+    assert len(files) == 1
+    lines = files[0].read_text(encoding="utf-8-sig").splitlines()
+    assert len(lines) == 3 and lines[0].startswith("address,")
+
+
+def test_denied_log_with_and_without_bom_is_not_mixed(tmp_path):
+    CSVExporter(str(tmp_path), "utf-8").export_denied_addresses({"D100"}, "10.0.0.1")
+    CSVExporter(str(tmp_path), "utf-8-sig").export_denied_addresses({"D200"}, "10.0.0.1")
+    assert len(list(tmp_path.glob("access_denied_log*.csv"))) == 2
+
+
+FAST = NetworkConfig(packet_interval_ms=0, retry_interval_ms=1, request_timeout_ms=200)
+
+
+class _Silent(BaseProtocolHandler):
+    """Times out when a request touches ``bad``; never answers after ``dead_after`` requests"""
+
+    protocol = Protocol.MODBUS_TCP
+
+    def __init__(self, bad=(), dead_after=None):
+        super().__init__("127.0.0.1", 1, FAST)
+        self._connected = True
+        self.bad = set(bad)
+        self.dead_after = dead_after
+        self.requests = 0
+
+    async def connect(self):
+        return True
+
+    async def disconnect(self):
+        pass
+
+    async def read_device_raw(self, device_type, start_address, count):
+        self.requests += 1
+        addresses = range(start_address, start_address + count)
+        if (self.dead_after is not None and self.requests > self.dead_after) or self.bad.intersection(addresses):
+            return None, StatusCode.NG_TIMEOUT
+        return list(addresses), StatusCode.OK
+
+
+def test_every_read_request_is_in_the_audit_log(tmp_path):
+    log = tmp_path / "audit.jsonl"
+    init_audit_logger(str(log))
+    try:
+
+        class Handler(_Silent):
+            async def read_device_raw(self, device_type, start_address, count):
+                self.requests += 1
+                if start_address + count > 150:
+                    return None, StatusCode.NG_ILLEGAL_ADDR
+                return [0] * count, StatusCode.OK
+
+        handler = Handler()
+        asyncio.run(handler.read_device_range(DeviceRange(DeviceType.HR, 0, 199)))
+    finally:
+        close_audit_logger()
+
+    events = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    reads = [e for e in events if e["event_type"] in ("READ_SUCCESS", "READ_ERROR")]
+    assert len(reads) == handler.requests
+    first = reads[0]
+    assert (first["plc_ip"], first["protocol"], first["device"]) == ("127.0.0.1", "MODBUS_TCP", "HR")
+    assert (first["address_start"], first["address_end"], first["status"]) == (0, 99, "SUCCESS")
+    assert any(e["event_type"] == "READ_ERROR" and e["error_message"] == "NG_ILLEGAL_ADDR" for e in reads)
+
+
+def test_audit_event_that_is_not_json_is_still_recorded(tmp_path):
+    log = tmp_path / "audit.jsonl"
+    init_audit_logger(str(log))
+    try:
+        get_audit_logger().log_error("scan failed", {"values": {7}, "path": tmp_path})  # a set, a Path: not JSON
+    finally:
+        close_audit_logger()
+    events = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    errors = [e for e in events if e["event_type"] == "ERROR"]
+    # Written as text, not dropped: an audit log must not lose a record
+    assert len(errors) == 1 and errors[0]["error_message"] == "scan failed"
+    assert errors[0]["metadata"] == {"values": "{7}", "path": str(tmp_path)}
+
+
+def test_empty_denied_log_gets_its_header(tmp_path):
+    exporter = CSVExporter(str(tmp_path), "utf-8")
+    (tmp_path / "access_denied_log.csv").write_bytes(b"")
+    path = exporter.export_denied_addresses({"D100"}, "10.0.0.1")
+    lines = open(path, encoding="utf-8").read().splitlines()
+    assert lines[0].startswith("address") and "D100" in lines[1]
+
+
+def test_progress_callback_updates_the_first_task():
+    display = MagicMock()
+    create_progress_callback(display, 0)("reading", 3, 10)  # rich's first task id is 0
+    display._progress.update.assert_called_once_with(0, completed=3, total=10, description="reading")

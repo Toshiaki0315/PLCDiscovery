@@ -2,12 +2,14 @@
 Regression tests for Modbus/TCP, found and fixed in code reviews.
 """
 
+import asyncio
 from collections import Counter
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from plc_discovery.config import DeviceRange, DeviceType, NetworkConfig, StatusCode
+from plc_discovery.config import DeviceRange, DeviceType, NetworkConfig, Protocol, StatusCode
+from plc_discovery.protocols.base import BaseProtocolHandler
 from plc_discovery.protocols.modbus import ModbusHandler
 
 
@@ -84,3 +86,82 @@ async def test_r4_modbus_client_without_internal_retries():
         handler = ModbusHandler("127.0.0.1", 502, config=NetworkConfig())
         assert await handler.connect()
     assert client_cls.call_args.kwargs["retries"] == 0
+
+
+FAST = NetworkConfig(packet_interval_ms=0, retry_interval_ms=1, request_timeout_ms=200)
+
+
+def _fake_handler(base, valid):
+    class Fake(base):
+        def __init__(self):
+            BaseProtocolHandler.__init__(self, "127.0.0.1", 1, FAST)
+            self._connected = True
+            self.requests = 0
+
+        async def connect(self):
+            return True
+
+        async def disconnect(self):
+            pass
+
+        async def read_device_raw(self, device_type, start_address, count):
+            self.requests += 1
+            addresses = range(start_address, start_address + count)
+            if all(a in valid for a in addresses):
+                return list(addresses), StatusCode.OK
+            return None, StatusCode.NG_ILLEGAL_ADDR
+
+    return Fake()
+
+
+def test_modbus_island_between_invalid_registers_is_read():
+    handler = _fake_handler(ModbusHandler, set(range(40, 61)))
+    points = asyncio.run(handler.read_device_range(DeviceRange(DeviceType.HR, 0, 99)))
+    by_address = {p.address: p for p in points}
+    assert len(points) == 100
+    assert all(by_address[f"HR{a}"].status == StatusCode.OK for a in range(40, 61))
+    assert Counter(p.status for p in points)[StatusCode.NG_ILLEGAL_ADDR] == 79
+    assert handler.get_denied_addresses() == {f"HR{a}" for a in range(100) if not 40 <= a <= 60}
+
+
+def test_modbus_reconnects_after_a_transport_error():
+    handler = ModbusHandler("127.0.0.1", port=1, config=FAST)
+    handler._connected = True
+    handler._client = MagicMock()
+    handler._client.read_holding_registers.side_effect = ConnectionResetError("closed by the PLC")
+    data, status = asyncio.run(handler.read_device_raw(DeviceType.HR, 0, 10))
+    assert (data, status) == (None, StatusCode.NG_COMM_ERROR)
+    assert handler._needs_reconnect  # re-established before the next request
+
+
+def test_modbus_contiguous_option_restores_the_edge_check():
+    class Device(ModbusHandler):
+        def __init__(self, **options):
+            super().__init__("127.0.0.1", port=1, config=FAST, **options)
+            self._connected = True
+            self.requests = 0
+
+        async def _ensure_fresh_connection(self):
+            return True
+
+        async def read_device_raw(self, device_type, start_address, count):
+            self.requests += 1
+            if start_address + count <= 100:
+                return list(range(start_address, start_address + count)), StatusCode.OK
+            return None, StatusCode.NG_ILLEGAL_ADDR
+
+    sparse, contiguous = Device(), Device(contiguous=1)
+    for handler in (sparse, contiguous):
+        points = asyncio.run(handler.read_device_range(DeviceRange(DeviceType.HR, 0, 499)))
+        assert sum(p.status == StatusCode.OK for p in points) == 100
+        assert sum(p.status == StatusCode.NG_ILLEGAL_ADDR for p in points) == 400
+    assert contiguous.requests <= 1 + 4 * 3  # the chunk and its two ends, per invalid chunk
+    assert sparse.requests > 10 * contiguous.requests  # every register confirmed on its own
+
+
+def test_modbus_full_scan_ranges_still_use_input_registers():
+    # IR stays a Modbus device (input registers); only FINS dropped it
+    from plc_discovery.config import DEFAULT_DEVICE_RANGES
+
+    assert DeviceRange(DeviceType.IR, 0, 9999) in DEFAULT_DEVICE_RANGES[Protocol.MODBUS_TCP]
+    assert all(r.device_type != DeviceType.IR for r in DEFAULT_DEVICE_RANGES[Protocol.FINS])

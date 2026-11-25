@@ -2,7 +2,9 @@
 Regression tests for miscellaneous behaviour, found and fixed in code reviews.
 """
 
+import asyncio
 import math
+from pathlib import Path
 
 import pytest
 
@@ -78,3 +80,91 @@ def test_json_safe():
 
 def test_pool_size_bound():
     assert MAX_PROBE_THREADS == 64
+
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def test_lint_tools_are_pinned_to_the_versions_ci_uses():
+    ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    pins = ("black==26.5.1", "isort==6.0.1", "flake8==7.3.0", "mypy==1.18.1")
+    for name in ("requirements-dev.txt", "pyproject.toml"):
+        text = (ROOT / name).read_text(encoding="utf-8")
+        for pin in pins:
+            assert pin in ci and pin in text, f"{pin} in {name}"
+
+
+def test_pytest_is_configured_once_with_a_time_limit():
+    assert "timeout = 120" in (ROOT / "pytest.ini").read_text(encoding="utf-8")
+    assert "[tool.pytest.ini_options]" not in (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert "pytest-timeout" in (ROOT / "requirements-dev.txt").read_text(encoding="utf-8")
+
+
+def test_every_ci_job_has_a_time_limit():
+    lines = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8").splitlines()
+    jobs = [i for i, line in enumerate(lines) if line.strip() == "runs-on: ubuntu-latest"]
+    assert len(jobs) >= 6
+    for index in jobs:
+        assert any("timeout-minutes:" in line for line in lines[index + 1 : index + 4]), lines[index - 1]
+
+
+def test_wait_for_keeps_a_cancellation_that_arrives_as_the_result_does():
+    from plc_discovery.utils import wait_for
+
+    async def body():
+        future = asyncio.get_running_loop().create_future()
+        asyncio.get_running_loop().call_soon(future.set_result, "answer")
+        await wait_for(future, 2)
+        return "went on"  # asyncio.wait_for of Python 3.10 / 3.11 returned here: the stop was ignored
+
+    async def run():
+        task = asyncio.ensure_future(body())
+        await asyncio.sleep(0)  # body is waiting
+        await asyncio.sleep(0)  # the result is there, body's wake-up is scheduled
+        task.cancel()
+        try:
+            return await task
+        except asyncio.CancelledError:
+            return "stopped"
+
+    assert asyncio.run(run()) == "stopped"
+
+
+def test_wait_for_times_out_and_returns_results_like_asyncio():
+    from plc_discovery.utils import wait_for
+
+    async def run():
+        cleaned = []
+
+        async def slow():
+            try:
+                await asyncio.sleep(10)
+            finally:
+                cleaned.append(True)
+
+        async def quick():
+            return 7
+
+        async def failing():
+            raise ValueError("bad frame")
+
+        with pytest.raises(asyncio.TimeoutError):
+            await wait_for(slow(), 0.05)
+        with pytest.raises(ValueError, match="bad frame"):
+            await wait_for(failing(), 1)
+        return await wait_for(quick(), 1), cleaned
+
+    assert asyncio.run(run()) == (7, [True])  # the timed-out coroutine was cancelled and ran its cleanup
+
+
+def test_check_bat_does_not_run_the_checks_again_after_a_failure():
+    lines = (ROOT / "scripts" / "check.bat").read_text(encoding="utf-8").splitlines()
+    commands = [line for line in lines if "check.py" in line and not line.lower().startswith("rem")]
+    assert len(commands) == 3  # .venv, py, python: one each
+    for line in commands:
+        # "a && (run) || (run)" runs the second one when the first run fails
+        assert "||" not in line and "&&" not in line
+    # Each run is followed by the exit with its result
+    for i, line in enumerate(lines):
+        if line in commands:
+            assert lines[i + 1].strip().lower() == "exit /b %errorlevel%"

@@ -6,9 +6,10 @@ import math
 import sqlite3
 import subprocess
 import sys
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -16,6 +17,7 @@ import plc_scanner
 from plc_discovery import database
 from plc_discovery.config import DataPoint, PLCInfo, Protocol, StatusCode
 from plc_discovery.database import SCHEMA_VERSION, DatabaseConfig, DatabaseExporter
+from plc_discovery.discovery import target_instances, target_labels
 from plc_discovery.output import CSVExporter
 from plc_discovery.scan_runner import ResultWriter
 from plc_discovery.utils import get_timestamp
@@ -380,4 +382,129 @@ def test_database_stores_nan_as_null(tmp_path):
     db.export_plc_data([DataPoint("D0", 0xFFFF, "0xFFFF", StatusCode.OK, converted_value=math.inf)], "10.0.0.1")
     (stored,) = db._connection.execute("SELECT converted_value FROM data_points").fetchone()
     assert stored == "null"
+    db.close()
+
+
+def test_unsigned_64_bit_value_is_stored_without_the_number(tmp_path):
+    db = DatabaseExporter(DatabaseConfig(enabled=True, path=str(tmp_path / "plc.db")))
+    try:
+        big = DataPoint(address="Big", value=2**64 - 1, raw_hex="0xFFFFFFFFFFFFFFFF")
+        small = DataPoint(address="Small", value=-(2**63), raw_hex="0x8000000000000000")
+        assert db.export_plc_data([big, small], "10.0.0.1", protocol="ETHERNET_IP", port=44818) == 2  # was 1
+        rows = {r["address"]: (r["value"], r["raw_hex"]) for r in db._db.execute("SELECT * FROM data_points")}
+        indexes = {r[0] for r in db._db.execute("SELECT name FROM sqlite_master WHERE type = 'index'")}
+    finally:
+        db.close()
+    assert rows == {"Big": (None, "0xFFFFFFFFFFFFFFFF"), "Small": (-(2**63), "0x8000000000000000")}
+    # The indexes scripts/setup_database.sh creates (retention deletes by changed_at)
+    assert {"idx_history_plc_ip", "idx_history_address", "idx_history_changed_at"} <= indexes
+
+
+def _unit(unit_id=None, ip="10.0.0.5"):
+    options = {} if unit_id is None else {"unit_id": unit_id}
+    return PLCInfo(ip, protocol=Protocol.MODBUS_TCP, port=502, options=options)
+
+
+def test_two_units_behind_a_gateway_keep_separate_files_and_history(tmp_path):
+    plcs = [_unit(1), _unit(2)]
+    exporter = CSVExporter(str(tmp_path), "utf-8-sig")
+    db = DatabaseExporter(DatabaseConfig(enabled=True, path=str(tmp_path / "plc.db")))
+    try:
+        writers = [
+            ResultWriter(plc, exporter, db_exporter=db, label=label, daily=True, instance=instance)
+            for plc, label, instance in zip(plcs, target_labels(plcs), target_instances(plcs))
+        ]
+        for _ in range(3):  # three cycles; the values never change
+            for writer, value in zip(writers, (100, 200)):
+                point = DataPoint(address="HR0", value=value, raw_hex=f"{value:04X}", timestamp=get_timestamp())
+                assert writer.export_points([point]) is not None
+                assert writer.error_count == 0
+    finally:
+        db.close()
+
+    files = sorted(p.name for p in tmp_path.glob("plc_data_*.csv"))
+    assert len(files) == 2 and "unit_id1" in files[0] and "unit_id2" in files[1]
+    for name, value in zip(files, ("100", "200")):
+        rows = (tmp_path / name).read_text(encoding="utf-8-sig").splitlines()[1:]
+        assert len(rows) == 3 and all(f"HR0,{value}," in row for row in rows)
+
+    with sqlite3.connect(tmp_path / "plc.db") as connection:
+        stored = connection.execute("SELECT protocol, value, COUNT(*) FROM data_points GROUP BY 1, 2").fetchall()
+        changes = connection.execute("SELECT COUNT(*) FROM data_history").fetchone()[0]
+    assert sorted(stored) == [("MODBUS_TCP/unit_id1", 100, 3), ("MODBUS_TCP/unit_id2", 200, 3)]
+    assert changes == 0  # was one false change per cycle: unit 1 compared with unit 2
+
+
+def _points_2(count):
+    return [DataPoint(address=f"D{i}", value=i, status=StatusCode.OK, timestamp=get_timestamp()) for i in range(count)]
+
+
+def test_session_counts_targets_sharing_an_ip_separately(tmp_path):
+    db = DatabaseExporter.create(str(tmp_path / "plc.db"))
+    try:
+        db.begin_session("range")
+        db.export_plc_data(_points_2(2), "10.0.0.1", protocol="SLMP", port=5001)
+        db.export_plc_data(_points_2(2), "10.0.0.1", protocol="MODBUS_TCP/1", port=502)
+        db.export_plc_data(_points_2(2), "10.0.0.1", protocol="MODBUS_TCP/unit_id2", port=502)
+        db.export_plc_data(_points_2(2), "10.0.0.2", protocol="SLMP", port=5001)
+        db.export_plc_data(_points_2(2), "10.0.0.3")  # protocol not detected
+        db.export_plc_data(_points_2(2), "10.0.0.1", protocol="SLMP", port=5001)  # a second cycle
+        db.end_session()
+        session = db.get_scan_sessions()[0]
+    finally:
+        db.close()
+    assert session["plc_count"] == 5  # was 3: one per IP
+    assert (session["success_count"], session["error_count"]) == (12, 0)
+
+
+def test_session_without_data_counts_no_plc(tmp_path):
+    db = DatabaseExporter.create(str(tmp_path / "plc.db"))
+    try:
+        db.begin_session("discover")
+        db.end_session()
+        session = db.get_scan_sessions()[0]
+    finally:
+        db.close()
+    assert (session["plc_count"], session["success_count"], session["error_count"]) == (0, 0, 0)
+
+
+def test_locked_database_fails_the_export_at_once_and_is_reported(tmp_path):
+    path = str(tmp_path / "plc.db")
+    db = DatabaseExporter.create(path)
+    db._db.execute("PRAGMA busy_timeout = 100")
+    blocker = sqlite3.connect(path)
+    blocker.execute("BEGIN EXCLUSIVE")
+    points = [DataPoint(address=f"D{i}", value=i, status=StatusCode.OK) for i in range(20)]
+    try:
+        started = time.monotonic()
+        with pytest.raises(sqlite3.OperationalError):
+            db.export_plc_data(points, "10.0.0.1", protocol="SLMP", port=5001)
+        assert time.monotonic() - started < 2  # one busy timeout, not one per row
+
+        writer = ResultWriter(PLCInfo("10.0.0.1", protocol=Protocol.SLMP, port=5001), MagicMock(), None, db)
+        writer.export_points(points)
+        assert writer.error_count == 1 and "database" in (writer.first_error or "")
+    finally:
+        blocker.rollback()
+        blocker.close()
+
+    # Usable again once the lock is gone; nothing of the failed exports was kept
+    assert db.export_plc_data(points, "10.0.0.1", protocol="SLMP", port=5001) == 20
+    assert db._db.execute("SELECT COUNT(*) FROM data_points").fetchone()[0] == 20
+    db.close()
+
+
+def test_size_limit_deletes_data_points_before_history(tmp_path):
+    db = DatabaseExporter.create(str(tmp_path / "plc.db"))
+    for cycle in range(30):
+        points = [DataPoint(address=f"D{i}", value=cycle * 1000 + i, status=StatusCode.OK) for i in range(200)]
+        db.export_plc_data(points, "10.0.0.1", protocol="SLMP", port=5001)
+    count = lambda table: db._db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]  # noqa: E731
+    history_before, points_before = count("data_history"), count("data_points")
+    assert history_before > 0
+
+    db.config.max_size_mb = db.used_bytes() * 0.8 / (1024 * 1024)
+    assert db._enforce_size_limit() > 0
+    assert count("data_points") < points_before
+    assert count("data_history") == history_before  # untouched while data points could go
     db.close()

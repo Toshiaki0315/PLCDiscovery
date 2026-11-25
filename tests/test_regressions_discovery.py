@@ -17,15 +17,23 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from plc_discovery import broadcast_discovery as broadcast_module
+from plc_discovery import discovery
 from plc_discovery import discovery as discovery_module
 from plc_discovery import utils
 from plc_discovery.broadcast_discovery import BroadcastDiscovery
 from plc_discovery.config import MANUFACTURER_OUI, DeviceRange, DeviceType, NetworkConfig, PLCInfo, Protocol, StatusCode
 from plc_discovery.config_loader import ConfigLoader
-from plc_discovery.discovery import MAX_AUTO_SCAN_PREFIX, PLCDiscovery, merge_discovery_results
+from plc_discovery.discovery import (
+    LARGE_SCAN_WARNING_HOSTS,
+    MAX_AUTO_SCAN_PREFIX,
+    PLCDiscovery,
+    merge_discovery_results,
+    plc_key,
+    target_instances,
+)
 from plc_discovery.probes import probe_ethernet_ip, probe_fins_udp, probe_modbus, probe_s7, probe_slmp, verify_protocol
 from plc_discovery.protocols.slmp import SLMPHandler
-from plc_discovery.utils import get_manufacturer_from_mac
+from plc_discovery.utils import get_manufacturer_from_mac, ip_range_error, parse_ip_range, target_address_error
 
 
 def list_identity(vendor_id, product_name, device_type=0x0E):
@@ -808,3 +816,145 @@ async def test_single_host_probe_works_without_batch_pool():
     ):
         assert await discovery._probe_host("192.0.2.1") is None
     assert discovery._probe_executor is None
+
+
+def test_large_scan_estimate_includes_the_packet_interval(caplog):
+    hosts = [f"10.0.{i // 250}.{i % 250 + 1}" for i in range(LARGE_SCAN_WARNING_HOSTS + 500)]
+    config = NetworkConfig(discovery_timeout_ms=1000, packet_interval_ms=1000, max_concurrent=1)
+    scanner = PLCDiscovery(config)
+
+    async def run():
+        with (
+            patch.object(scanner, "_probe_host_all", AsyncMock(return_value=[])),
+            patch.object(discovery.asyncio, "sleep", AsyncMock()),
+        ):
+            await scanner._probe_hosts(hosts, {})
+
+    with caplog.at_level("WARNING"):
+        asyncio.run(run())
+    batches = len(hosts) / 10
+    expected_minutes = batches * (2 * 1.0 + 1.0) / 60  # two timeouts and one interval per batch
+    assert f"~{expected_minutes:.0f} minutes" in caplog.text
+
+
+def test_broadcast_network_is_not_a_range_of_devices():
+    assert "broadcast" in ip_range_error("255.255.255.255/32")
+    assert "broadcast" in ip_range_error("255.255.255.0/24")
+    assert ip_range_error("192.168.1.0/24") is None
+
+
+def _unit(unit_id=None, ip="10.0.0.5"):
+    options = {} if unit_id is None else {"unit_id": unit_id}
+    return PLCInfo(ip, protocol=Protocol.MODBUS_TCP, port=502, options=options)
+
+
+def test_target_instances_tell_targets_on_one_endpoint_apart():
+    assert target_instances([_unit(1), _unit(2), _unit(ip="10.0.0.9")]) == ["unit_id1", "unit_id2", None]
+    assert target_instances([_unit(), _unit(), _unit(7)]) == ["1", "2", "unit_id7"]
+    assert target_instances([_unit(3), _unit(3)]) == ["unit_id3", "unit_id3_2"]
+    # Another protocol or port on the same IP is told apart by those already
+    slmp = PLCInfo("10.0.0.5", protocol=Protocol.SLMP, port=5001)
+    assert target_instances([_unit(1), slmp]) == [None, None]
+
+
+def test_arp_sweep_is_paced_and_uses_the_interface_of_the_network(monkeypatch):
+    sent = {}
+
+    def srp(packet, **options):
+        sent.update(options)
+        return [], []
+
+    route = MagicMock()
+    route.route.side_effect = lambda address: ("eth-control", "192.168.10.5", "0.0.0.0")
+    monkeypatch.setattr(discovery, "SCAPY_AVAILABLE", True)
+    monkeypatch.setattr(discovery, "srp", srp, raising=False)
+    monkeypatch.setattr(discovery, "Ether", MagicMock(), raising=False)
+    monkeypatch.setattr(discovery, "ARP", MagicMock(), raising=False)
+    monkeypatch.setattr(discovery, "conf", MagicMock(route=route), raising=False)
+
+    scanner = PLCDiscovery(NetworkConfig(packet_interval_ms=50, discovery_timeout_ms=1000))
+    assert asyncio.run(scanner._arp_scan("192.168.10.5", "255.255.255.0")) == {}
+    assert sent["inter"] == pytest.approx(0.05)  # was one burst of 254 broadcasts
+    assert sent["iface"] == "eth-control"  # was scapy's default-route interface
+    # Looked up for a neighbour: the PC's own address is routed through loopback
+    assert route.route.call_args.args[0] != "192.168.10.5"
+
+
+FAST = NetworkConfig(packet_interval_ms=0, retry_interval_ms=1, request_timeout_ms=200)
+
+
+def test_broadcast_only_for_requested_protocols():
+    async def run(protocols):
+        discovery = BroadcastDiscovery(FAST)
+        with patch.object(discovery, "_send_broadcast", AsyncMock(return_value={})) as send:
+            await discovery.discover_all_broadcast(protocols=protocols)
+        return sorted(call.kwargs["port"] for call in send.await_args_list)
+
+    assert asyncio.run(run([Protocol.MODBUS_TCP])) == []
+    assert asyncio.run(run([Protocol.ETHERNET_IP])) == [44818]
+    assert len(asyncio.run(run(None))) == 2
+
+
+def test_given_port_is_probed_for_every_protocol_one_at_a_time():
+    probed = []
+    active = [0]
+    overlaps = []  # checked after the probe: an assert in here would be swallowed by the prober
+
+    def port_open(ip, port, timeout):
+        return True
+
+    def verify(ip, port, protocol, timeout):
+        active[0] += 1
+        if active[0] != 1:
+            overlaps.append(protocol)
+        time.sleep(0.01)
+        probed.append((protocol, port))
+        active[0] -= 1
+        return protocol == Protocol.MODBUS_TCP
+
+    async def run():
+        with (
+            patch("plc_discovery.discovery.is_port_open", port_open),
+            patch("plc_discovery.discovery.verify_protocol", verify),
+            patch.object(PLCDiscovery, "_get_detailed_info", AsyncMock(side_effect=lambda info: info)),
+        ):
+            return await PLCDiscovery(FAST, port=5007)._probe_host("192.168.1.10")
+
+    detected = asyncio.run(run())
+    assert overlaps == [], "protocols must not share the port at the same time"
+    assert detected is not None and (detected.protocol, detected.port) == (Protocol.MODBUS_TCP, 5007)
+    assert len(probed) > 1  # another protocol was tried on the port before Modbus answered
+    assert {port for _, port in probed} == {5007}
+    assert probed[-1][0] == Protocol.MODBUS_TCP  # stops at the first protocol that answers
+
+
+def test_broadcast_only_slmp_result_says_the_tcp_port_is_unverified():
+    plc = BroadcastDiscovery()._parse_slmp_response("10.0.0.5", b"\xd0\x00" + b"\x00" * 12)
+    assert plc is not None and "未確認" in (plc.model or "")
+
+
+def test_mac_maker_replaces_the_name_the_protocol_implies(monkeypatch):
+    discovery = PLCDiscovery(NetworkConfig())
+    implied = PLCInfo("10.0.0.1", protocol=Protocol.SLMP, port=5001, manufacturer="三菱電機/キーエンス")
+    identified = PLCInfo("10.0.0.2", protocol=Protocol.MODBUS_TCP, port=502, manufacturer="Yokogawa")
+    for plc in (implied, identified):
+        discovery.discovered_plcs[plc_key(plc)] = plc
+    monkeypatch.setattr(
+        "plc_discovery.discovery.read_arp_cache",
+        lambda: {"10.0.0.1": "00:01:FC:00:00:01", "10.0.0.2": "00:01:FC:00:00:02"},  # Keyence OUI
+    )
+    asyncio.run(discovery._fill_macs_from_arp_cache())
+    assert implied.manufacturer == "キーエンス"
+    assert identified.manufacturer == "Yokogawa"  # what the device itself reported stays
+
+
+@pytest.mark.parametrize("text", ["224.0.0.0/30", "0.0.0.0/24", "255.255.255.255", "224.0.0.1-5", "0.0.0.0"])
+def test_ranges_that_are_not_device_addresses_are_rejected(text):
+    assert ip_range_error(text)  # what --ip-range and the config file report
+    assert parse_ip_range(text) == []
+    assert ip_range_error("192.168.1.0/24") is None and len(parse_ip_range("192.168.1.0/24")) == 254
+
+
+def test_target_must_be_a_device_address():
+    assert target_address_error("224.0.0.1") and target_address_error("255.255.255.255")
+    assert target_address_error("192.168.1.10") is None and target_address_error("simulators") is None

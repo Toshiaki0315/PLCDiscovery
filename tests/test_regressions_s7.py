@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from plc_discovery.config import DeviceType, NetworkConfig, StatusCode
+from plc_discovery.config import SAFE_READ_WORDS, DeviceType, NetworkConfig, Protocol, StatusCode
 from plc_discovery.protocols.s7 import S7Handler, classify_s7_error
 
 
@@ -70,3 +70,9 @@ async def test_u2_s7_address_error_keeps_connection():
     handler._client, handler._connected = client, True
     assert (await handler.read_device_raw(DeviceType.DB, 0, 2))[1] == StatusCode.NG_ILLEGAL_ADDR
     assert handler._needs_reconnect is False
+
+
+def test_one_s7_chunk_fits_the_smallest_pdu():
+    # python-snap7 splits a read at PDU - 18 bytes into several requests,
+    # sent back to back outside the packet interval
+    assert SAFE_READ_WORDS[Protocol.S7] * 2 <= 240 - 18

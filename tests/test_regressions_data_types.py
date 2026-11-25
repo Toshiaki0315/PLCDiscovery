@@ -11,7 +11,9 @@ import pytest
 import plc_scanner
 from plc_discovery.config import DataPoint, StatusCode
 from plc_discovery.config_loader import ConfigLoader
+from plc_discovery.conversion import apply_data_type_conversion
 from plc_discovery.data_types import ByteOrder, DataType, DataTypeConverter, DataTypeManager, DataTypeMapping
+from plc_discovery.protocols.ethernet_ip import _tag_point
 
 WORDS = [0x4142, 0x4344]  # bytes 41 42 43 44 as Siemens/Omron store "ABCD"
 
@@ -281,3 +283,110 @@ class TestStrings:
         )
         (mapping,) = [m for m in manager.mappings if m.data_type == DataType.STRING]
         assert mapping.words_per_value() == 10
+
+
+def _ok(address, value):
+    return DataPoint(address=address, status=StatusCode.OK, value=value)
+
+
+def test_unmapped_value_does_not_take_a_word_of_a_mapping():
+    manager = DataTypeManager.from_config(
+        {"default_type": "DWORD", "mappings": [{"start": 11, "end": 20, "type": "INT16"}]}
+    )
+    points = [_ok(f"D{a}", 0xFFFF) for a in range(8, 13)]  # D8-D12: D8+D9, then D10 alone before the mapping
+    converted = {p.address: p for p in apply_data_type_conversion(points, None, ByteOrder.LITTLE_ENDIAN, manager)}
+    assert converted["D8"].converted_value == 0xFFFFFFFF
+    assert converted["D10"].converted_value is None and "incomplete" in converted["D10"].display_value
+    assert (converted["D11"].data_type, converted["D11"].converted_value) == ("INT16", -1)
+    assert (converted["D12"].data_type, converted["D12"].converted_value) == ("INT16", -1)
+
+
+def test_tag_named_like_a_device_address_is_not_converted():
+    tags = [_tag_point("D1", StatusCode.OK, 70000, "DINT"), _tag_point("D2", StatusCode.OK, 5, "DINT")]
+    assert all(point.is_tag for point in tags)
+    converted = apply_data_type_conversion(tags, DataType.DWORD, ByteOrder.LITTLE_ENDIAN, None)
+    assert [(p.address, p.value, p.converted_value, p.display_value) for p in converted] == [
+        ("D1", 70000, None, None),
+        ("D2", 5, None, None),
+    ]
+    # The device addresses D1 / D2 are still combined
+    words = apply_data_type_conversion([_ok("D1", 1), _ok("D2", 2)], DataType.DWORD, ByteOrder.LITTLE_ENDIAN, None)
+    assert words[0].converted_value == 0x00020001
+
+
+def test_default_type_is_aligned_again_behind_a_mapping():
+    manager = DataTypeManager.from_config(
+        {"default_type": "DWORD", "mappings": [{"start": 3, "end": 4, "type": "FLOAT"}]}
+    )
+    points = [DataPoint(address=f"D{a}", status=StatusCode.OK, value=a) for a in range(10)]
+    converted = {p.address: p for p in apply_data_type_conversion(points, None, ByteOrder.LITTLE_ENDIAN, manager)}
+    assert converted["D0"].converted_value == 0x00010000
+    assert "incomplete" in converted["D2"].display_value  # one word left before the mapping
+    assert converted["D3"].data_type == "FLOAT"
+    # Was "(part of D4, incomplete)": D4 belongs to the FLOAT, and D5 was never converted
+    assert converted["D5"].converted_value == 0x00060005
+    assert converted["D7"].converted_value == 0x00080007
+    assert "incomplete" in converted["D9"].display_value
+
+
+def test_string_default_type_before_a_mapping_is_converted():
+    manager = DataTypeManager.from_config(
+        {"default_type": "STRING", "mappings": [{"start": 4, "end": 5, "type": "DWORD"}]}
+    )
+    points = [DataPoint(address=f"D{a}", status=StatusCode.OK, value=0x4241) for a in range(10)]
+    converted = {p.address: p for p in apply_data_type_conversion(points, None, ByteOrder.LITTLE_ENDIAN, manager)}
+    # Was "(incomplete STRING: 4/10 words)": the length ran to the end of the range
+    assert converted["D0"].converted_value == "ABABABAB"
+    assert converted["D4"].data_type == "DWORD"
+    assert converted["D6"].converted_value == "ABABABAB"
+
+
+def test_conversion_never_combines_tags():
+    tags = [_ok("Count1", 100000), _ok("Count2", 7)]
+    converted = apply_data_type_conversion(tags, DataType.DWORD, ByteOrder.LITTLE_ENDIAN, None)
+    assert [(p.address, p.value, p.converted_value, p.display_value) for p in converted] == [
+        ("Count1", 100000, None, None),
+        ("Count2", 7, None, None),
+    ]
+    # Device addresses are still converted
+    words = apply_data_type_conversion([_ok("D0", 1), _ok("D1", 2)], DataType.DWORD, ByteOrder.LITTLE_ENDIAN, None)
+    assert words[0].converted_value == 0x00020001
+
+
+def test_values_never_take_words_from_beyond_their_mapping():
+    manager = DataTypeManager()
+    manager.add_mapping(DataTypeMapping(100, 102, DataType.FLOAT))  # 3 words: the last value is cut short
+    manager.add_mapping(DataTypeMapping(103, 103, DataType.INT16))
+    points = [_ok(f"D{a}", 0xFFFF) for a in range(100, 104)]
+    converted = apply_data_type_conversion(points, None, ByteOrder.LITTLE_ENDIAN, manager)
+    by_address = {p.address: p for p in converted}
+    assert by_address["D102"].converted_value is None and "incomplete" in by_address["D102"].display_value
+    assert by_address["D103"].data_type == "INT16" and by_address["D103"].converted_value == -1
+
+
+def test_mapping_config_rejects_cut_and_overlapping_ranges():
+    with pytest.raises(ValueError, match="not a multiple"):
+        DataTypeManager.from_config({"mappings": [{"start": 100, "end": 102, "type": "FLOAT"}]})
+    with pytest.raises(ValueError, match="overlaps"):
+        DataTypeManager.from_config(
+            {
+                "mappings": [
+                    {"start": 100, "end": 199, "type": "WORD"},
+                    {"start": 110, "end": 111, "type": "FLOAT"},
+                ]
+            }
+        )
+    # Different devices may use the same numbers
+    DataTypeManager.from_config(
+        {
+            "mappings": [
+                {"start": 100, "end": 101, "type": "FLOAT", "device": "D"},
+                {"start": 100, "end": 101, "type": "DWORD", "device": "W"},
+            ]
+        }
+    )
+
+
+def test_int16_of_a_wider_value_is_masked():
+    point = apply_data_type_conversion([_ok("D0", 100000)], DataType.INT16, ByteOrder.LITTLE_ENDIAN, None)[0]
+    assert point.converted_value == -31072  # low 16 bits 0x86A0, signed

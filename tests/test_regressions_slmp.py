@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 
 import pytest
+from pymcprotocol.mcprotocolerror import MCProtocolError
 
 from plc_discovery.config import DeviceType, NetworkConfig, StatusCode
 from plc_discovery.protocols.slmp import SLMPHandler, slmp_head_device
@@ -179,3 +180,11 @@ def test_u5_socket_timeout_handled_explicitly():
     must catch the builtin TimeoutError as well"""
     source = (ROOT / "plc_discovery" / "protocols" / "slmp.py").read_text(encoding="utf-8")
     assert "except (asyncio.TimeoutError, TimeoutError)" in source
+
+
+def test_slmp_cpu_device_range_end_codes_are_address_errors():
+    for code in (0x4030, 0x4031, 0xC056):
+        status = SLMPHandler._classify_error(MCProtocolError(code), DeviceType.D, 12000)
+        assert status == StatusCode.NG_ILLEGAL_ADDR, hex(code)
+    # Not about the address: CPU busy / other errors stay communication errors
+    assert SLMPHandler._classify_error(MCProtocolError(0x4001), DeviceType.D, 0) == StatusCode.NG_COMM_ERROR

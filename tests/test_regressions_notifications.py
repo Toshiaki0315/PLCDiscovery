@@ -13,15 +13,22 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 import plc_scanner
-from plc_discovery import notifications
+from plc_discovery import notifications, scan_runner
+from plc_discovery.config import DataPoint, StatusCode
+from plc_discovery.conversion import apply_data_type_conversion
+from plc_discovery.data_types import ByteOrder, DataType
 from plc_discovery.notifications import (
     NotificationConfig,
     NotificationEvent,
+    NotificationManager,
     NotificationPriority,
     NotificationType,
     SlackHandler,
     TeamsHandler,
 )
+from plc_discovery.scan_runner import CycleRunner
+from plc_discovery.thresholds import Threshold, ThresholdMonitor, numeric_value, parse_thresholds
+from plc_discovery.utils import number_text
 
 
 @pytest.fixture
@@ -138,3 +145,163 @@ class TestNotifications:
         assert manager.notify_error.await_args.kwargs["failed_targets"] == ["127.0.0.1"]
         args = manager.notify_scan_complete.await_args.args
         assert args[:3] == (1, 0, 1)  # plc_count, success, errors
+
+
+def _manager(send_ok):
+    manager = NotificationManager()
+    manager.min_interval_seconds = 3600
+    manager.add_custom("test", lambda event: None)
+    handler = manager._handlers["test"]
+    handler.send = AsyncMock(side_effect=lambda event: send_ok[0])
+    return manager, handler
+
+
+def test_failed_send_does_not_throttle_the_next_one():
+    send_ok = [False]
+    manager, handler = _manager(send_ok)
+    event = NotificationEvent(type=NotificationType.PLC_UNREACHABLE, title="t", message="m", throttle_key="PLC1")
+
+    async def run():
+        assert not NotificationManager.delivered(await manager.notify(event))
+        assert not manager.is_suppressed(NotificationType.PLC_UNREACHABLE, "PLC1")
+        send_ok[0] = True
+        assert NotificationManager.delivered(await manager.notify(event))
+        assert manager.is_suppressed(NotificationType.PLC_UNREACHABLE, "PLC1")
+
+    asyncio.run(run())
+    assert handler.send.await_count == 2
+
+
+def test_undelivered_threshold_notifications_are_offered_again(monkeypatch):
+    monkeypatch.setattr("plc_discovery.scan_runner.NOTIFY_RETRY_SECONDS", 0.0)
+    notifier = MagicMock()
+    exceeded = [{"hook": False}, {"hook": True}]
+    cleared = [{"hook": False}, {"hook": True}]
+    notifier.notify_threshold = AsyncMock(side_effect=lambda *a, **k: exceeded.pop(0))
+    notifier.notify_threshold_cleared = AsyncMock(side_effect=lambda *a, **k: cleared.pop(0))
+
+    async def notify(send):
+        return NotificationManager.delivered(await send(notifier))
+
+    def point(value):
+        return [DataPoint(address="D1", status=StatusCode.OK, value=value)]
+
+    async def run():
+        runner = CycleRunner(None, notify=notify, thresholds=ThresholdMonitor([Threshold("D1", ">", 10)]))
+        for value in (20, 20, 20, 5, 5, 5):
+            await runner.check_thresholds("PLC1", point(value), "10.0.0.1")
+
+    asyncio.run(run())
+    assert notifier.notify_threshold.await_count == 2  # failed, then delivered; not sent a third time
+    assert notifier.notify_threshold_cleared.await_count == 2
+
+
+def test_threshold_ignores_raw_word_of_incomplete_float():
+    # D100-D101 hold a FLOAT; D101 timed out, D100's raw word is 0xC000 = 49152
+    points = apply_data_type_conversion(
+        [
+            DataPoint(address="D100", status=StatusCode.OK, value=0xC000),
+            DataPoint(address="D101", status=StatusCode.NG_TIMEOUT),
+        ],
+        DataType.FLOAT,
+        ByteOrder.LITTLE_ENDIAN,
+        None,
+    )
+    assert numeric_value(points[0]) is None
+    monitor = ThresholdMonitor([Threshold("D100", ">", 80)])
+    assert monitor.evaluate("PLC1", points).crossed == []
+
+
+def test_threshold_ignores_nan_infinity_and_later_words():
+    # 0x7FC0 0x1234 (NaN), +inf, and the second word of a complete FLOAT
+    nan = DataPoint(address="D0", status=StatusCode.OK, value=0x1234, data_type="FLOAT", converted_value=float("nan"))
+    inf = DataPoint(address="D2", status=StatusCode.OK, value=0, data_type="FLOAT", converted_value=float("inf"))
+    part = DataPoint(address="D5", status=StatusCode.OK, value=0x42C8, data_type="FLOAT", display_value="(part of D4)")
+    assert [numeric_value(p) for p in (nan, inf, part)] == [None, None, None]
+
+
+def test_threshold_still_uses_raw_and_converted_values():
+    raw = DataPoint(address="D1", status=StatusCode.OK, value=90)
+    converted = DataPoint(address="D2", status=StatusCode.OK, value=0, data_type="FLOAT", converted_value=81.5)
+    tag = DataPoint(address="Speed", status=StatusCode.OK, data_type="REAL", converted_value=12.5)
+    assert [numeric_value(p) for p in (raw, converted, tag)] == [90.0, 81.5, 12.5]
+
+
+def test_cleared_waits_for_the_exceeded_notification_still_being_sent(monkeypatch):
+    monkeypatch.setattr(scan_runner, "NOTIFY_WAIT_SECONDS", 0.01)
+    received = []
+    release = asyncio.Event
+
+    notifier = MagicMock()
+
+    async def run():
+        gate = release()
+
+        async def slow_exceeded(*args, **kwargs):
+            await gate.wait()  # the webhook is slow for "exceeded"
+            received.append("exceeded")
+            return {"hook": True}
+
+        async def cleared(*args, **kwargs):
+            received.append("cleared")
+            return {"hook": True}
+
+        notifier.notify_threshold = slow_exceeded
+        notifier.notify_threshold_cleared = cleared
+
+        async def notify(send):
+            return scan_runner.NotificationManager.delivered(await send(notifier))
+
+        runner = CycleRunner(None, notify=notify, thresholds=ThresholdMonitor([Threshold("D1", ">", 10)]))
+
+        def point(value):
+            return [DataPoint(address="D1", status=StatusCode.OK, value=value)]
+
+        await runner.check_thresholds("PLC1", point(90), "10.0.0.1")  # exceeded: send starts
+        await runner.check_thresholds("PLC1", point(5), "10.0.0.1")  # back inside while it is in flight
+        assert received == []  # "cleared" must not overtake it
+        gate.set()
+        await runner.drain()
+        await runner.check_thresholds("PLC1", point(5), "10.0.0.1")
+        await runner.drain()
+
+    asyncio.run(run())
+    assert received == ["exceeded", "cleared"]
+
+
+def test_numbers_are_shown_in_full():
+    assert [number_text(v) for v in (1234567, 81.5, 0.1 + 0.2, 80, -3.0)] == ["1234567", "81.5", "0.3", "80", "-3"]
+    first, second = parse_thresholds(["D100>1234567", "D100>1234568"])
+    # Both were "D100 > 1.23457e+06": one label, one notification key
+    assert (first.label, second.label) == ("D100 > 1234567", "D100 > 1234568")
+
+
+def test_a_limit_listed_twice_counts_its_cycles_once():
+    limit = Threshold("D1", ">", 5, for_cycles=2)
+    monitor = ThresholdMonitor([limit, limit])
+    assert monitor.thresholds == [limit]
+    point = [DataPoint(address="D1", status=StatusCode.OK, value=9)]
+    assert monitor.evaluate("PLC1", point).crossed == []  # first cycle outside: not yet (was exceeded)
+    assert len(monitor.evaluate("PLC1", point).crossed) == 1
+
+
+def test_thresholds_on_array_elements_and_large_numbers():
+    limits = parse_thresholds(["Matrix[0,0]>5, D1>=2", "D100>1234567890123", "D100>1234567890124"])
+    assert [t.address for t in limits] == ["Matrix[0,0]", "D1", "D100", "D100"]  # was "invalid threshold 'Matrix[0'"
+    assert (limits[2].label, limits[3].label) == ("D100 > 1234567890123", "D100 > 1234567890124")
+    assert number_text(0.1 + 0.2) == "0.3" and number_text(2**62) == str(2**62)
+
+
+def test_waiting_threshold_notification_goes_out_while_the_value_is_not_read():
+    monitor = ThresholdMonitor([Threshold("D1", ">", 10)])
+    ok = [DataPoint(address="D1", status=StatusCode.OK, value=20)]
+    ng = [DataPoint(address="D1", status=StatusCode.NG_TIMEOUT)]
+
+    # Exceeded, but the notification is throttled
+    assert monitor.evaluate("PLC1", ok, lambda t, kind: False).exceeded == []
+    # Next cycles: the address times out; the notification may go out now
+    check = monitor.evaluate("PLC1", ng, lambda t, kind: True)
+    assert [(e.threshold.address, e.value) for e in check.exceeded] == [("D1", 20.0)]
+    assert monitor.evaluate("PLC1", ng, lambda t, kind: True).exceeded == []  # once
+    # An address never read has nothing to report
+    assert ThresholdMonitor([Threshold("D1", ">", 10)]).evaluate("PLC1", ng).exceeded == []

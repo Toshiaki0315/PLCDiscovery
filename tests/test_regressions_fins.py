@@ -2,6 +2,7 @@
 Regression tests for FINS (Omron), found and fixed in code reviews.
 """
 
+import asyncio
 import collections
 import json
 import socket
@@ -262,3 +263,53 @@ async def test_collector_bad_option_value_returns_false():
     collector = PLCDataCollector(plc)
     assert await collector.connect() is False  # previously raised ValueError
     assert "dest_node must be 0-254" in collector.connect_error
+
+
+def _fins_tcp(readexactly):
+    handler = FINSHandler("127.0.0.1", use_tcp=True, config=NetworkConfig(request_timeout_ms=100))
+    handler._connected = True
+    handler._reader = MagicMock()
+    handler._reader.readexactly = readexactly
+    handler._writer = MagicMock()
+    handler._writer.drain = AsyncMock()
+    return handler
+
+
+def test_fins_tcp_connection_reset_is_a_communication_error():
+    handler = _fins_tcp(AsyncMock(side_effect=ConnectionResetError("reset by peer")))
+    data, status = asyncio.run(handler.read_device_raw(DeviceType.DM, 0, 1))
+    assert (data, status) == (None, StatusCode.NG_COMM_ERROR)  # was NG_TIMEOUT
+    assert handler._needs_reconnect
+
+
+def test_fins_tcp_without_an_answer_is_a_timeout():
+    async def never(_size):
+        await asyncio.sleep(10)
+
+    handler = _fins_tcp(never)
+    data, status = asyncio.run(handler.read_device_raw(DeviceType.DM, 0, 1))
+    assert (data, status) == (None, StatusCode.NG_TIMEOUT)
+
+
+def test_fins_udp_timeout_and_send_failure_have_their_own_status(caplog):
+    async def never():
+        await asyncio.sleep(10)
+
+    handler = FINSHandler("127.0.0.1", config=NetworkConfig(request_timeout_ms=100))
+    handler._connected = True
+    handler._transport = MagicMock()
+    handler._protocol_instance = MagicMock()
+    handler._protocol_instance.receive = never
+    with caplog.at_level("ERROR"):
+        assert asyncio.run(handler.read_device_raw(DeviceType.DM, 0, 1))[1] == StatusCode.NG_TIMEOUT
+    assert caplog.records == []  # one ERROR line per unanswered request before
+
+    handler._transport.sendto.side_effect = OSError("network is unreachable")
+    assert asyncio.run(handler.read_device_raw(DeviceType.DM, 0, 1))[1] == StatusCode.NG_COMM_ERROR
+
+
+def test_fins_does_not_read_index_registers_as_words():
+    handler = FINSHandler("192.168.1.10", config=NetworkConfig(packet_interval_ms=0))
+    handler._connected = True
+    data, status = asyncio.run(handler.read_device_raw(DeviceType.IR, 0, 4))
+    assert (data, status) == (None, StatusCode.NG_UNSUPPORTED)
