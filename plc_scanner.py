@@ -626,6 +626,10 @@ async def run_periodic_scan(
         interrupted = False
         # Targets not answering in their latest cycle
         down: Set[str] = set()
+        # Targets with a cycle written, and the one being read: a target
+        # stopped during its first read keeps what it had read so far
+        written: Set[str] = set()
+        reading: Optional[str] = None
         try:
             iteration = 0
             cycle_started: Optional[float] = None
@@ -637,7 +641,9 @@ async def run_periodic_scan(
                 for key, collector in collectors.items():
                     read_failed = False
                     try:
+                        reading = key
                         points = (await runner.read(collector, writers[key])).points
+                        written.add(key)
                     except Exception as e:
                         # Never ends the monitoring (of every target): this
                         # cycle of this target is lost and it counts as down
@@ -677,6 +683,17 @@ async def run_periodic_scan(
             display.print_warning("Scan interrupted by user")
             interrupted = True
             _uncancel_current_task()
+            if reading is not None and reading not in written:
+                # Stopped during the first read of this target (a long range
+                # can take minutes): saved like an interrupted single scan,
+                # instead of leaving no data at all. Later cycles are not:
+                # the completed ones are already written.
+                partial = runner.save_partial(collectors[reading], writers[reading])
+                if partial.points:
+                    outcomes[reading].data_points = partial.points
+                    display.print_warning(
+                        f"{reading}: saving the {len(partial.points)} data points of the first cycle read so far"
+                    )
         # Release the PLCs before waiting for notifications a slow webhook
         # is still receiving (the collectors keep their data and statistics)
         for key, collector in collectors.items():

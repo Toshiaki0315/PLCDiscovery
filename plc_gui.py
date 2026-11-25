@@ -1111,6 +1111,9 @@ class PLCScannerApp(SettingsTabsMixin):
         audit = get_audit_logger()
         audit.log_scan_start(ip, mode, ["ALL"] if items is None else [str(item) for item in items])
         started: Optional[float] = None
+        # Cycles whose result was written: a periodic run stopped before
+        # the first of them keeps what that cycle had read so far
+        cycles_written = 0
         try:
             while True:
                 iteration += 1
@@ -1120,6 +1123,7 @@ class PLCScannerApp(SettingsTabsMixin):
                 read_failed = False
                 try:
                     points, path, denied_path = await runner.read(collector, writer)
+                    cycles_written += 1
                 except Exception as e:
                     if not interval:
                         raise
@@ -1151,10 +1155,12 @@ class PLCScannerApp(SettingsTabsMixin):
             # Stopped by the user: release the PLC first - a webhook that is
             # slow to answer must not keep the session open - then report
             # what was collected
-            if not interval:
+            if not interval or not cycles_written:
                 # A single scan (a full scan can take hours) stopped half-way:
                 # what was read so far is saved and shown, as the CLI does on
-                # Ctrl+C. A periodic run keeps its completed cycles instead.
+                # Ctrl+C. A periodic run keeps its completed cycles instead -
+                # unless none was completed yet (stopped during the first
+                # read of a long range): then it is saved like a single scan.
                 # Before the disconnect, which can wait seconds for a PLC
                 # that stopped answering: a second Stop (or closing the
                 # window) during that wait must not lose the data.
