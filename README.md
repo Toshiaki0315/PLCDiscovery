@@ -486,6 +486,21 @@ pytest -m "not integration"
 pytest --cov=plc_discovery --cov-report=html
 ```
 
+### プッシュ前の確認（CI と同じチェック）
+
+CI（`.github/workflows/ci.yml`）と同じチェックを手元でまとめて実行し、最後にどれが通り、どれが失敗したかを一覧で表示します。どれかが失敗しても残りは実行し、すべて通ったときだけ終了コード 0 で終わります。
+
+```bash
+./scripts/check.sh                   # Windows: scripts\check.bat
+./scripts/check.sh --lint            # ツールと lint だけ（数秒）
+./scripts/check.sh --no-integration  # 統合テストを除く
+```
+
+- 実行する内容: 開発ツールの確認（`requirements-dev.txt` で固定したバージョンか、`pytest-timeout` などがあるか）、flake8・black・isort・mypy（CI と同じ対象と引数）、ユニットテスト（カバレッジ 60% 以上）、統合テスト
+- `.venv` に開発ツールが入っていればそれを、なければ `python3`（Windows は `py` / `python`）を使います。起動スクリプトが作る `.venv` には実行用のパッケージしか入っていません
+- black などのバージョンが CI と違うと、手元では通っても CI で失敗します。バージョン違いや不足は最初の「tools」で失敗として表示し、インストールのコマンドを示します
+- コマンドが CI と食い違わないことは `tests/test_check_script.py` で確認しています
+
 ### 統合テスト
 
 統合テストは、テスト用のシミュレータを自動で起動・停止します。事前にシミュレータを起動する必要はありません。

@@ -9,6 +9,7 @@
 | `setup_database.sh` | データベース作成（シェルスクリプト版） |
 | `setup_database.py` | データベース作成（Python版） |
 | `manage_database.sh` | データベース管理ツール |
+| `check.py`（`check.sh` / `check.bat`） | CI と同じチェック（lint・ユニットテスト・統合テスト）を手元で実行し、結果を一覧表示 |
 
 ## セットアップスクリプト
 
