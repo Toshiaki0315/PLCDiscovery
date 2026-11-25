@@ -729,7 +729,7 @@ class PLCScannerApp(SettingsTabsMixin):
 
     def _exporter(self) -> CSVExporter:
         out = self.var_output_dir.get().strip() or DEFAULT_OUTPUT_DIR
-        exporter = CSVExporter(out, self.var_encoding.get(), hex_addresses=self.var_hex_addresses.get())
+        exporter = CSVExporter(out, self._csv_encoding(), hex_addresses=self.var_hex_addresses.get())
         exporter.periodic_csv = self.var_periodic_csv.get()
         return exporter
 
@@ -1134,14 +1134,17 @@ class PLCScannerApp(SettingsTabsMixin):
             # Stopped by the user: release the PLC first - a webhook that is
             # slow to answer must not keep the session open - then report
             # what was collected
-            await collector.disconnect()
             if not interval:
                 # A single scan (a full scan can take hours) stopped half-way:
                 # what was read so far is saved and shown, as the CLI does on
                 # Ctrl+C. A periodic run keeps its completed cycles instead.
+                # Before the disconnect, which can wait seconds for a PLC
+                # that stopped answering: a second Stop (or closing the
+                # window) during that wait must not lose the data.
                 points, path, denied_path = runner.save_partial(collector, writer)
                 if points:
                     self._post("data", points, collector.get_statistics(), path, denied_path, iteration)
+            await collector.disconnect()
             await runner.drain()  # notifications a slow webhook is still receiving
             await PLCScannerApp._notify_collect_done(
                 outputs, ip, points, iteration, loop.time() - job_started, interrupted=True
@@ -1294,7 +1297,7 @@ class PLCScannerApp(SettingsTabsMixin):
         current = self.var_status.get()
         self._set_busy(False)
         if isinstance(exc, asyncio.CancelledError):
-            self.var_status.set("停止しました（読み取り済みの分はCSVに保存されています）")
+            self.var_status.set("停止しました（読み取り済みのデータがあれば、CSVに保存されています）")
             logging.info("ユーザー操作により停止しました")
         elif exc is not None:
             self.var_status.set("エラーで終了しました")

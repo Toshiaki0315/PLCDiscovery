@@ -90,8 +90,7 @@ jobs:
     # tests/integration/conftest.py starts and stops the simulators itself
     # (with the denied ranges the tests expect). Starting run_all.py here as
     # well took the same ports, so the tests talked to differently configured
-    # simulators. "--timeout" needs pytest-timeout, which is not installed:
-    # the step failed at once, hidden by continue-on-error.
+    # simulators. (A per-test time limit comes from pytest.ini / pytest-timeout.)
     - name: Run integration tests
       run: |
         pytest tests/integration/ -v -m integration --tb=short

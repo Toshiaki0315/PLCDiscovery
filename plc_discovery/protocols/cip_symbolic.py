@@ -164,33 +164,57 @@ def read_symbolic(client: Any, tag: str, fragment_interval: float = 0.0) -> Tupl
     Raises SymbolicReadError for CIP error replies and undecodable data;
     transport failures propagate as pycomm3 CommError (the caller reconnects).
     """
-    name, elements = split_element_count(tag)
-    path = encode_tag_path(name)
-
-    type_code: Optional[int] = None
-    payload = b""
-    for fragment in range(MAX_FRAGMENTS):
-        if fragment and fragment_interval > 0:
+    reading = FragmentedRead(tag)
+    while not reading.step(client):
+        if fragment_interval > 0:
             time.sleep(fragment_interval)  # called in a worker thread
-        data = struct.pack("<HI", elements, len(payload))
-        status, reply, error = _send(client, SERVICE_READ_TAG_FRAGMENTED, path, data)
+    return reading.result()
+
+
+class FragmentedRead:
+    """
+    One tag read, one request (fragment) per step(). The caller decides what
+    happens between the requests - EtherNetIPHandler waits for the packet
+    interval and gives every request its own timeout, so a large array does
+    not have to fit, waits included, into the time allowed for one request.
+    """
+
+    def __init__(self, tag: str):
+        self.tag = tag
+        self.name, self.elements = split_element_count(tag)
+        self.path = encode_tag_path(self.name)  # SymbolicReadError for an invalid name
+        self.type_code: Optional[int] = None
+        self.payload = b""
+        self.fragments = 0
+
+    def step(self, client: Any) -> bool:
+        """Send the next request; True when the value is complete"""
+        tag = self.tag
+        if self.fragments >= MAX_FRAGMENTS:
+            raise SymbolicReadError(StatusCode.NG_COMM_ERROR, f"{tag}: too many fragments")
+        self.fragments += 1
+        data = struct.pack("<HI", self.elements, len(self.payload))
+        status, reply, error = _send(client, SERVICE_READ_TAG_FRAGMENTED, self.path, data)
         if status not in (STATUS_OK, STATUS_PARTIAL):
             raise SymbolicReadError(status_for_cip_error(status), f"{tag}: CIP status 0x{status:02X} ({error})")
         if len(reply) < 2:
             raise SymbolicReadError(StatusCode.NG_COMM_ERROR, f"{tag}: short reply")
         code = struct.unpack("<H", reply[:2])[0]
         header = 4 if code == STRUCTURE_TYPE else 2
-        if type_code is None:
-            type_code = code
-        payload += reply[header:]
+        if self.type_code is None:
+            self.type_code = code
+        self.payload += reply[header:]
         if status == STATUS_OK:
-            break
+            return True
         if len(reply) <= header:
             raise SymbolicReadError(StatusCode.NG_COMM_ERROR, f"{tag}: empty partial reply")
-    else:
-        raise SymbolicReadError(StatusCode.NG_COMM_ERROR, f"{tag}: too many fragments")
+        return False
 
-    return decode_values(tag, type_code, payload, elements)
+    def result(self) -> Tuple[Any, str]:
+        """(value, type name) of the completed read"""
+        if self.type_code is None:
+            raise SymbolicReadError(StatusCode.NG_COMM_ERROR, f"{self.tag}: nothing was read")
+        return decode_values(self.tag, self.type_code, self.payload, self.elements)
 
 
 # Outcome of a batched tag that must be read on its own (reply too large,

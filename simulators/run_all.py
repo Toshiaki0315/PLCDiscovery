@@ -198,11 +198,16 @@ class SimulatorManager:
         logger.info("Stopping all simulators...")
         for server in self.servers:
             server.close()
-            # wait_closed() waits for connected clients (Python 3.12+)
-            try:
-                await asyncio.wait_for(server.wait_closed(), timeout=2)
-            except asyncio.TimeoutError:
-                logger.info("A simulator stopped with clients still connected")
+        if self.servers:
+            # wait_closed() waits for connected clients (Python 3.12+): all
+            # servers together, 2 s in all (it was 2 s for each of them)
+            _, pending = await asyncio.wait(
+                [asyncio.ensure_future(server.wait_closed()) for server in self.servers], timeout=2
+            )
+            for waiting in pending:
+                waiting.cancel()
+            if pending:
+                logger.info("Simulators stopped with clients still connected")
         for transport in self.udp_transports:
             transport.close()
         logger.info("All simulators stopped.")
@@ -258,7 +263,10 @@ def run():
 
     try:
         started = asyncio.run(main(args.host))
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        # (CancelledError: a second Ctrl+C while the simulators were stopping
+        # ended in a traceback and exit code 1, which the launchers report
+        # as "could not be started")
         return
     if not started:
         # The launchers (start_simulators.*) report the failure on this

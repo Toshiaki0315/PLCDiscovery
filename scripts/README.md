@@ -159,11 +159,14 @@ python plc_scanner.py --mode full --target 192.168.1.10 --database ./plc_data.db
 パフォーマンス最適化のため、以下のインデックスが自動作成されます：
 
 - `idx_data_points_plc_ip` - data_points.plc_ip
+- `idx_data_points_plc_addr_id` - data_points(plc_ip, address, id)
+- `idx_data_points_target` - data_points(plc_ip, protocol, port, address, id)
 - `idx_data_points_address` - data_points.address
 - `idx_data_points_timestamp` - data_points.timestamp
 - `idx_data_points_session` - data_points.session_id
 - `idx_denied_plc_ip` - denied_addresses.plc_ip
 - `idx_plcs_ip` - plcs.ip_address
+- `idx_plcs_identity` - plcs(ip_address, protocol, port)（一意）
 - `idx_history_plc_ip` - data_history.plc_ip
 - `idx_history_address` - data_history.address
 - `idx_history_changed_at` - data_history.changed_at

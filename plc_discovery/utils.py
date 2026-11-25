@@ -453,7 +453,11 @@ def number_text(value: float) -> str:
     which "%g" gives from the seventh digit on - a DWORD counter or a limit
     on one was shown wrong, and two limits could look the same).
     """
-    return f"{value:.12g}"
+    if isinstance(value, float) and value.is_integer() and abs(value) < 2**63:
+        return str(int(value))  # every digit of a 64-bit counter or limit
+    if isinstance(value, int):
+        return str(value)
+    return f"{value:.15g}"
 
 
 def value_to_hex(value: int, word_size: int = 1) -> str:

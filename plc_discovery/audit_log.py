@@ -139,7 +139,7 @@ class AuditLogger:
         if not self.log_file:
             return
         try:
-            path = Path(self.log_file)
+            path = Path(self.log_file).expanduser()
             path.parent.mkdir(parents=True, exist_ok=True)
             self._file_handle = open(path, "a", encoding="utf-8")
             logger.info(f"Audit log opened: {self.log_file}")

@@ -438,6 +438,15 @@ class PLCDiscovery:
                     logger.debug(f"ARP scan: no interface found for {ip} ({e}); using scapy's default")
                 return srp(arp_request, **options)
 
+            # One request per address, a packet interval apart, then the wait
+            # for the last answers: say how long, it is not part of the
+            # host scan's estimate
+            seconds = network.num_addresses * self.config.packet_interval_ms / 1000 + (
+                self.config.discovery_timeout_ms / 1000
+            )
+            if seconds >= 5:
+                logger.info(f"ARP scan of {network} ({network.num_addresses} addresses): about {seconds:.0f} s")
+
             # Run ARP scan with timeout
             loop = asyncio.get_running_loop()
             answered, _ = await loop.run_in_executor(None, sweep)

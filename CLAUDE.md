@@ -129,7 +129,10 @@ NG_TIMEOUT. Each unanswered request costs a full timeout, so the search is
 bounded: `UNANSWERED_SEARCH_BUDGET` (16) unanswered requests per
 read_device_range() call and `UNANSWERED_SESSION_BUDGET` (96) per session;
 what is left is reported with its status, not learned, and read with a
-single request per scan from then on.
+single request per scan from then on. An unanswered chunk is never split
+like an address error, and once a chunk of a call went unanswered the
+chunks after it are asked once, without retries: a wide range the device
+drops requests for costs one timeout per chunk and scan, not five to eight.
 
 While nothing has been read at all, an unanswered range cannot be told from
 a dead link. The first chunk of every later range is then asked once (also
@@ -149,6 +152,8 @@ not count either way.
 - A lost link costs about 7 unanswered requests (the chunk with its
   retries, its two halves, and one read of the address the PLC answered
   last); the rest of the range is then reported without further requests.
+  Lost while a range is being split for address errors: 3 unanswered
+  requests, then nothing more is sent for the parts still waiting.
   Every request that is not answered costs one request timeout (default 5 s).
 
 ### Data Output Files

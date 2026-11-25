@@ -125,6 +125,31 @@ def normalize_csv_encoding(encoding: Any) -> str:
     return _CODEC_NAMES.get(codec, codec)
 
 
+_BOMS = (
+    (codecs.BOM_UTF32_LE, "utf-32"),
+    (codecs.BOM_UTF32_BE, "utf-32"),
+    (codecs.BOM_UTF8, "utf-8"),
+    (codecs.BOM_UTF16_LE, "utf-16"),
+    (codecs.BOM_UTF16_BE, "utf-16"),
+)
+
+
+def _file_bom(path: Path) -> Optional[str]:
+    """Which Unicode byte order mark a file starts with: "utf-8", "utf-16", "utf-32" or None"""
+    with open(path, "rb") as f:
+        start = f.read(4)
+    return next((name for bom, name in _BOMS if start.startswith(bom)), None)
+
+
+def _encoding_bom(encoding: str) -> Optional[str]:
+    """Which byte order mark a file written in this encoding starts with (see _file_bom)"""
+    try:
+        start = "a".encode(encoding)
+    except (LookupError, ValueError):
+        return None
+    return next((name for bom, name in _BOMS if start.startswith(bom)), None)
+
+
 def _unique_path(path: Path) -> Path:
     """Return path, or path with _1, _2, ... appended if it already exists
     (file names have one-second resolution)"""
@@ -147,7 +172,7 @@ class CSVExporter:
     """
 
     def __init__(self, output_dir: str = DEFAULT_OUTPUT_DIR, encoding: str = "utf-8", hex_addresses: bool = False):
-        self.output_dir = Path(output_dir)
+        self.output_dir = Path(output_dir).expanduser()
         self.encoding = normalize_csv_encoding(encoding)
         # Add MELSEC hex addresses to data files of SLMP targets (callers
         # pass hex_addresses=True to export_plc_data for those)
@@ -304,14 +329,27 @@ class CSVExporter:
         headers = list(DATA_HEADERS_EXTENDED)
         if hex_addresses:
             headers.insert(1, "address_hex")
-        new_file = not filepath.exists() or filepath.stat().st_size == 0
-        if not new_file:
-            # Columns of an existing file win (e.g. address_hex switched later)
-            with open(filepath, encoding=self.encoding, errors="replace", newline="") as f:
-                first = f.readline().lstrip("\ufeff").strip()
-            if first:
-                headers = next(csv.reader([first]))
         try:
+            new_file = not filepath.exists() or filepath.stat().st_size == 0
+            if not new_file and _file_bom(filepath) != _encoding_bom(self.encoding):
+                # Today's file was started in another encoding (the setting
+                # was changed during the day). Its header, read in the new
+                # encoding, no longer said "address" - every later row was
+                # written without its address - and appending would mix two
+                # encodings in one file. The rest of the day gets its own.
+                name = self.encoding.replace("-", "").replace("_", "")
+                filepath = filepath.with_name(f"{filepath.stem}_{name}{filepath.suffix}")
+                new_file = not filepath.exists() or filepath.stat().st_size == 0
+                if new_file:
+                    logger.warning(
+                        f"The CSV encoding was changed: today's data continues in {filepath.name} ({self.encoding})"
+                    )
+            if not new_file:
+                # Columns of an existing file win (e.g. address_hex switched later)
+                with open(filepath, encoding=self.encoding, errors="replace", newline="") as f:
+                    first = f.readline().lstrip("\ufeff").strip()
+                if first:
+                    headers = next(csv.reader([first]))
             with self._open_csv(filepath, "a") as f:
                 writer = _SafeDictWriter(f, fieldnames=headers, extrasaction="ignore")
                 if new_file:

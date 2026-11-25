@@ -21,6 +21,7 @@ from .cip_symbolic import (
     MAX_BATCH_REQUEST_BYTES,
     MAX_BATCH_TAGS,
     READ_SINGLY,
+    FragmentedRead,
     SymbolicReadError,
     read_symbolic,
     read_symbolic_batch,
@@ -88,6 +89,8 @@ class EtherNetIPHandler(BaseProtocolHandler):
         # Logix tag list and data types read on the first connection, reused
         # when reconnecting (see _connect_logix_first)
         self._logix_definitions: Optional[Tuple[Dict[str, Any], Dict[str, Any]]] = None
+        # Which controller and program they were read from (see _logix_identity)
+        self._logix_identity: Optional[Tuple[Any, ...]] = None
 
     def _connection_path(self, include_slot: bool) -> str:
         """
@@ -136,13 +139,26 @@ class EtherNetIPHandler(BaseProtocolHandler):
                     # Reconnect (e.g. after a timeout): pycomm3 would upload
                     # the whole tag list and every UDT again - hundreds of
                     # requests it sends without the packet interval. Reuse
-                    # what the first connection read.
+                    # what the first connection read - if this is still the
+                    # controller it was read from.
                     client = LogixDriver(path, init_tags=False)
                     client.open()
-                    if hasattr(client, "_tags") and hasattr(client, "_data_types"):
+                    same = _logix_identity(client) == self._logix_identity
+                    if same and hasattr(client, "_tags") and hasattr(client, "_data_types"):
                         client._tags, client._data_types = dict(definitions[0]), dict(definitions[1])
+                        # Tags are requested by name, not by the instance ID
+                        # in the reused list: after a program download the
+                        # IDs may belong to other tags, and another tag's
+                        # value would be recorded under the old name
+                        if isinstance(getattr(client, "_cfg", None), dict):
+                            client._cfg["use_instance_ids"] = False
                         return client
                     client.close()
+                    if not same:
+                        logger.warning(
+                            f"EtherNet/IP (Logix): {self.ip_address} answers as another controller or program "
+                            "than before; its tag list is read again"
+                        )
                 client = LogixDriver(path)
                 client.open()
                 return client
@@ -151,7 +167,8 @@ class EtherNetIPHandler(BaseProtocolHandler):
             self._client = await loop.run_in_executor(None, _connect)
             self._connected = True
             self._plc_type = "logix"
-            if definitions is None:
+            if definitions is None or _logix_identity(self._client) != self._logix_identity:
+                self._logix_identity = _logix_identity(self._client)
                 tags = getattr(self._client, "_tags", None)
                 data_types = getattr(self._client, "_data_types", None)
                 if isinstance(tags, dict) and isinstance(data_types, dict):
@@ -426,20 +443,26 @@ class EtherNetIPHandler(BaseProtocolHandler):
         # What has been read so far, for a caller that is interrupted (Ctrl+C,
         # the GUI's stop button) in the middle of a long tag list
         self.partial_points = results
+        link_lost = False
         for batch in _logix_batches(tags):
             if self._plc_type == "slc":
                 # Data-file controllers have no tags
                 results += [_tag_point(split_element_count(t)[0], StatusCode.NG_UNSUPPORTED) for t in batch]
                 continue
             if (
-                not await self._ensure_fresh_connection()
+                link_lost
+                or not await self._ensure_fresh_connection()
                 or not self._connected
                 or self._client is None
                 or self._plc_type != "logix"
             ):
                 # The link is down (the client is gone after a reconnect that
                 # failed): a communication error, not "unsupported" - that
-                # would be learned as denied and taken for an answer
+                # would be learned as denied and taken for an answer.
+                # One reconnect attempt per call: a PLC that is off cost a
+                # connection timeout for every remaining batch, and one that
+                # is restarting got a burst of connection attempts.
+                link_lost = True
                 results += [_tag_point(split_element_count(t)[0], StatusCode.NG_COMM_ERROR) for t in batch]
                 continue
             await self._rate_limiter.wait()
@@ -487,18 +510,30 @@ class EtherNetIPHandler(BaseProtocolHandler):
             self.partial_points = [point for index in sorted(outcomes) for point in outcomes[index]]
             raise
 
+    async def _read_fragments(self, client: Any, tag: str) -> Any:
+        """(value, type name) of an array read, or the SymbolicReadError that ended it"""
+        try:
+            reading = FragmentedRead(tag)
+            while not await self._run_blocking(lambda: reading.step(client)):
+                await self._rate_limiter.wait()
+            return reading.result()
+        except SymbolicReadError as e:
+            return e
+
     async def _read_tag_groups(self, tags: List[str], outcomes: Dict[int, List[DataPoint]]) -> List[DataPoint]:
         """The requests of _read_tags_generic; ``outcomes`` is filled as the tags are read"""
         queue: Deque[List[Tuple[int, str]]] = deque(
             [[(index, tag) for index, tag in group] for group in _generic_request_groups(list(enumerate(tags)))]
         )
+        link_lost = False
         while queue:
             group = queue.popleft()
             if len(group) > 1 and not self._multiple_service_ok:
                 queue.extendleft(reversed([[item] for item in group]))
                 continue
             names = [tag for _, tag in group]
-            if not await self._ensure_fresh_connection() or not self._connected or not self._client:
+            if link_lost or not await self._ensure_fresh_connection() or not self._connected or not self._client:
+                link_lost = True  # one reconnect attempt per call (see _read_tags_logix)
                 for index, tag in group:
                     outcomes[index] = [_tag_point(split_element_count(tag)[0], StatusCode.NG_COMM_ERROR)]
                 continue
@@ -514,7 +549,12 @@ class EtherNetIPHandler(BaseProtocolHandler):
 
             started = time.monotonic()
             try:
-                results, supported = await self._run_blocking(read)
+                if len(names) == 1 and split_element_count(names[0])[1] > 1:
+                    # An array: one request per fragment, each after the
+                    # packet interval and with its own timeout
+                    results, supported = [await self._read_fragments(client, names[0])], True
+                else:
+                    results, supported = await self._run_blocking(read)
             except asyncio.TimeoutError:
                 self._audit_tag_read(names, StatusCode.NG_TIMEOUT, started)
                 for index, tag in group:
@@ -546,36 +586,65 @@ class EtherNetIPHandler(BaseProtocolHandler):
         return [point for index in sorted(outcomes) for point in outcomes[index]]
 
 
+def _logix_identity(client: Any) -> Tuple[Any, ...]:
+    """Serial number, product, revision and program name LogixDriver read when it connected"""
+    info = getattr(client, "info", None)
+    if not isinstance(info, dict):
+        return ()
+    return tuple(str(info.get(key)) for key in ("serial", "product_code", "revision", "name"))
+
+
 class _RefusedForNow(Exception):
     """The controller answered with a status that is not about the address"""
 
 
 # Error texts of pycomm3 that are about the state of the controller or the
 # link, not about the address: the next scan may well read the same address
+# Whole phrases as pycomm3 words them (its PCCC and CIP status tables and
+# its own messages), never single words: pycomm3 puts the tag name into
+# some messages ("Tag doesn't exist - Pump1_Busy"), and a missing tag
+# called ConnectionStatus or Cycle_Timeout was taken for a busy controller.
 _TRANSIENT_ERROR_TEXTS = (
-    "program mode",
-    "cannot buffer",
-    "will not communicate",
-    "disconnected",
-    "hardware fault",
-    "unknown status",
-    "no reponse",  # (sic) pycomm3
-    "no response",
+    # PCCC (SLC / PLC-5 / MicroLogix)
+    "processor is in program mode",
+    "remote node cannot buffer command",
+    "plc has a problem and will not communicate",
+    "remote node host is missing, disconnected, or shut down",
+    "host could not complete function due to hardware fault",
+    "not acknowledged (nak)",
+    "no reponse, check com settings",  # (sic)
     "no data returned",
-    "not acknowledged",
-    "resource unavailable",
+    "unknown status",
+    # CIP (Logix)
+    "insufficient resource",
     "device state conflict",
-    "connection",
-    "timeout",
-    "timed out",
-    "busy",
+    "object state conflict",
+    "no buffer memory",
+    "connection in use",
+    "connection not found",
+    "connection timeout",
+    "unconnected message timeout",
+    "application out of connections",
+    "controller in upload or download mode",
+    "controller in faulted mode",
+    "module not in run state",
+    # pycomm3 could not make sense of the reply
+    "failed to parse reply",
+    "failed parsing tag read reply",
+    "one or more fragment responses failed",
+    "unknown error",
 )
+# pycomm3's messages for a tag that is not in the controller (they carry the
+# tag name): always about the address, whatever the tag is called
+_MISSING_TAG_TEXTS = ("tag doesn't exist", "failed to get tag data for")
 
 
 def _is_address_error(error: Any) -> bool:
     """False for an error reply that says nothing about the address (see _TRANSIENT_ERROR_TEXTS)"""
     text = str(error).lower()
-    return not any(marker in text for marker in _TRANSIENT_ERROR_TEXTS)
+    if text.startswith(_MISSING_TAG_TEXTS):
+        return True
+    return not any(phrase in text for phrase in _TRANSIENT_ERROR_TEXTS)
 
 
 def _logix_batches(tags: List[str]) -> List[List[str]]:

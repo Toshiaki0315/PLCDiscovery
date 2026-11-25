@@ -204,8 +204,14 @@ class PLCDataCollector:
         # read with --tags.
         tag_handler: Any = self._handler  # EtherNetIPHandler offers the tag API
         tags: List[str] = []
-        if getattr(tag_handler, "supports_tags", False) is True and await self._ensure_link():
-            tags = tag_handler.tag_scan_list()
+        linked: Optional[bool] = None
+        if hasattr(tag_handler, "tag_scan_list"):
+            # The link first: after an outage a Logix handler has no client
+            # until it reconnects, and "no tags" then sent the scan to the
+            # data-file ranges - 512 rows of NG_UNSUPPORTED, learned as denied
+            linked = await self._ensure_link()
+            if linked and getattr(tag_handler, "supports_tags", False) is True:
+                tags = tag_handler.tag_scan_list()
         if tags:
             self._report_progress(f"Full scan of {len(tags)} tags on {self.plc_info.ip_address}", 0, 1)
             self._collected_data = []
@@ -226,7 +232,7 @@ class PLCDataCollector:
         self._collected_data = []
         total_ranges = len(device_ranges)
 
-        if not await self._ensure_link():
+        if not (await self._ensure_link() if linked is None else linked):
             # Report every address as a communication error instead of
             # returning nothing, so the output shows the PLC was unreachable.
             # EtherNet/IP data-file ranges only apply to SLC-style devices;

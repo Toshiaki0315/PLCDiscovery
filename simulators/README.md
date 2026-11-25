@@ -151,7 +151,7 @@ python plc_scanner.py --mode range --target 127.0.0.1 --protocol slmp --device D
 |-----------|------|-----------|
 | `--host` | バインドするホストアドレス | 127.0.0.1 |
 | `--port` | リッスンポート | プロトコル依存 |
-| `--denied` | アクセス拒否範囲（カンマ区切り） | シミュレーター依存 |
+| `--denied` | アクセス拒否範囲（カンマ区切り）。FINS シミュレーターにはありません（拒否範囲は固定） | シミュレーター依存 |
 | `--writable` | 書き込みを受け付ける（SLMP のみ） | なし（読み取り専用） |
 
 ### 例
@@ -335,6 +335,9 @@ simulators/
 ├── __init__.py              # パッケージ初期化
 ├── README.md               # このファイル
 ├── run_all.py              # 全シミュレーター一括起動
+├── simulator_gui.py        # シミュレーターの GUI（起動・停止、値の書き換え・自動変化）
+├── control.py              # GUI から使う起動・停止と値の操作
+├── common.py               # 各シミュレーター共通の引数と起動・停止
 ├── slmp_simulator.py       # SLMP シミュレーター
 ├── modbus_simulator.py     # Modbus/TCP シミュレーター
 ├── ethernet_ip_simulator.py # EtherNet/IP シミュレーター

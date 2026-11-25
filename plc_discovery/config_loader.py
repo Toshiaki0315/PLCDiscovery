@@ -163,15 +163,28 @@ KNOWN_TOP_LEVEL_KEYS = (
 )
 
 
+# Keys of one entry of targets / scan.device_ranges. "name", "description"
+# and "comment" are the user's own notes.
+TARGET_KEYS = {"ip", "protocol", "port", "manufacturer", "model", "options", "name", "description", "comment"}
+DEVICE_RANGE_KEYS = {"device", "start", "end", "name", "description", "comment"}
+
+
 def is_known_encoding(name: Any) -> bool:
     """True if Python has a codec of this name (the CSV writer's aliases included)"""
     try:
         # encode(), not codecs.lookup(): "base64" or "rot13" are codecs too,
         # but not text encodings a CSV file can be written in
-        "".encode(normalize_csv_encoding(name))
+        encoding = normalize_csv_encoding(name)
+        if encoding.replace("-", "_").startswith(("utf_8", "utf_16", "utf_32")):
+            "".encode(encoding)
+            return True
+        # Any other one must write plain ASCII as it is (what every CSV
+        # reader expects) and replace what it lacks: not EBCDIC, not
+        # punycode or idna, which scramble a row or fail on every write
+        encoded = "addr,\u2460,D0\r\n".encode(encoding, errors="replace")
+        return encoded.startswith(b"addr,") and encoded.endswith(b",D0\r\n") and b"+" not in encoded
     except (LookupError, TypeError, ValueError):
         return False
-    return True
 
 
 def log_level_number(name: Any) -> Optional[int]:
@@ -374,8 +387,10 @@ class ConfigLoader:
                 ip_address=target.get("ip", ""),
                 protocol=protocol,
                 port=target.get("port"),
-                manufacturer=target.get("manufacturer"),
-                model=target.get("model"),
+                # Text, also when YAML read a bare number ("model: 1500"):
+                # the HTML report failed on it
+                manufacturer=None if target.get("manufacturer") is None else str(target["manufacturer"]),
+                model=None if target.get("model") is None else str(target["model"]),
                 options=dict(target.get("options") or {}),
             )
             targets.append(plc)
@@ -601,6 +616,17 @@ class ConfigLoader:
 
         # Validate targets
         for i, target in enumerate(self.config.get("targets") or []):
+            unknown_keys = sorted(str(key) for key in set(target) - TARGET_KEYS)
+            if unknown_keys:
+                # An error, not a warning: "unit_id: 2" beside "ip" instead
+                # of under "options" was ignored, and unit 1 was read and
+                # reported as this target
+                option_names = {name for names in TARGET_OPTIONS.values() for name in names}
+                hint = " (protocol-specific settings go under 'options:')" if set(unknown_keys) & option_names else ""
+                errors.append(
+                    f"targets[{i}]: unknown key(s) {', '.join(unknown_keys)}{hint}; "
+                    f"allowed: {', '.join(sorted(TARGET_KEYS))}"
+                )
             port = target.get("port")
             if port is not None and (isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535):
                 errors.append(f"targets[{i}].port must be an integer 1-65535, got {port!r}")
@@ -685,6 +711,14 @@ class ConfigLoader:
             if not isinstance(range_def, dict):
                 errors.append(f"{where} must be a mapping")
                 continue
+            unknown_keys = sorted(str(key) for key in set(range_def) - DEVICE_RANGE_KEYS)
+            if unknown_keys:
+                # An error: with "stop: 200" for "end: 200" the end was the
+                # default 999 - more of a production PLC was read than asked
+                errors.append(
+                    f"{where}: unknown key(s) {', '.join(unknown_keys)}; "
+                    f"allowed: {', '.join(sorted(DEVICE_RANGE_KEYS))}"
+                )
             start, end = range_def.get("start", 0), range_def.get("end", 999)
             bounds_ok = True
             for key, value in (("start", start), ("end", end)):
@@ -774,6 +808,9 @@ def generate_config_template(path: str = "plc_config.yaml", overwrite: bool = Fa
         FileExistsError: if the file exists and overwrite is False, so an
             edited configuration is never replaced by accident
     """
+    if Path(path).suffix.lower() not in (".yaml", ".yml", ".json"):
+        # Any other name was written as JSON, which --config then refused
+        raise ValueError(f"{path}: the file name must end in .yaml, .yml or .json")
     if Path(path).exists() and not overwrite:
         raise FileExistsError(
             f"{path} already exists; not overwriting it. "

@@ -99,7 +99,7 @@ python plc_gui.py
 | ① PLC探索 | 同じネットワーク、または指定IP範囲のPLCを探して一覧表示（メーカー・機種・型式・ファームウェア・読み方）。行をダブルクリックすると「データ収集」タブに接続先が入ります |
 | ② データ収集 | 範囲指定（生産中でも可・周期実行対応）またはフルスキャン（工場停止時）でデータを読み取り。EtherNet/IP（Logix・オムロン NJ/NX）は「タグ」欄にタグ名を入れると、アドレスの代わりにタグを読みます。Logix は「一覧…」でコントローラのタグ一覧から選べます。NGのアドレスは赤色で表示され、「NGのみ表示」で絞り込めます |
 | ③ 通信・出力設定 | パケット間隔・リトライ待機・タイムアウト、CSVの保存先と文字コード（UTF-8 / Shift-JIS）を設定。③〜⑤タブの設定を設定ファイルに保存・読み込み |
-| ④ 通知 | Teams / Slack / Webhook の通知先を追加・編集・削除し、通知する出来事（スキャン完了・エラー・探索完了・定期報告）を選択。テスト送信、定期報告の間隔、同じ通知の最小間隔も設定 |
+| ④ 通知 | Teams / Slack / Webhook の通知先を追加・編集・削除し、通知する出来事（スキャン完了・エラー・探索完了・定期報告・通信断と復旧・しきい値の超過と復帰）を選択。テスト送信、定期報告の間隔、同じ通知の最小間隔も設定 |
 | ⑤ データベース | 収集データを SQLite にも保存。保存期間（日）、サイズの上限（MB）、整理の間隔（時間）を設定し、「今すぐ整理」も可能 |
 
 - 結果はCLIと同じ形式のCSV（`discovery_result_*.csv`、`plc_data_*.csv`、`access_denied_log.csv`）で保存されます。画面下の「出力フォルダを開く」で保存先を開けます
@@ -149,7 +149,7 @@ python plc_scanner.py --mode full --target 192.168.1.10
 | プロトコル | 範囲 |
 |---|---|
 | SLMP | D0-8191, M0-8191, W0-2047, R0-32767 |
-| EtherNet/IP | D0-255 (N7), M0-255 (B3)。PLC-5/SLC/MicroLogix のみ（Logix 等はタグ方式のため NG_UNSUPPORTED） |
+| EtherNet/IP | D0-255 (N7), M0-255 (B3)。PLC-5/SLC/MicroLogix の場合。Logix はコントローラーのタグ一覧のタグをすべて読みます。タグ一覧のないオムロン NJ/NX は NG_UNSUPPORTED（`--tags` で変数を指定） |
 | Modbus/TCP | HR0-9999, IR0-9999 |
 | S7 | DB1 のワード 0-32767 |
 | FINS (UDP/TCP) | DM0-999, HR0-499, W0-199 |
@@ -332,7 +332,7 @@ python plc_scanner.py --mode full --target 192.168.1.10 --no-database
 | `--type-mapping` | 型マッピングファイルパス | - |
 | `--tags` | EtherNet/IP（Logix・オムロン NJ/NX）で読むタグ（カンマ区切り。`配列[0]{10}` で10要素）。設定ファイルでは `scan.tags` | - |
 | `--hex-addresses` | 三菱（SLMP）の X/Y/B/W を16進数表記でも出力（CSV に `address_hex` 列。例: X31 → X1F）。設定ファイルでは `output.hex_addresses` | オフ |
-| `--periodic-csv` | 周期実行の CSV：`per_cycle`（周期ごとに1ファイル）／`daily`（1日1ファイルに追記）。設定ファイルでは `output.periodic_csv` | per_cycle |
+| `--periodic-csv` | 周期実行の CSV：`per_cycle`（周期ごとに1ファイル）／`daily`（1日1ファイルに追記。途中で文字コードを変えると、その日の残りは `…_YYYYMMDD_cp932.csv` のような別ファイルに続きます）。設定ファイルでは `output.periodic_csv` | per_cycle |
 
 ## 設定ファイル
 
@@ -372,7 +372,9 @@ logging:
 設定ファイルの検証:
 
 - `network` に知らないキーがあるとエラーになります（`packet_interval` のような書き間違いで、通信負荷の設定が
-  既定値のままになるのを防ぐため）。ほかのセクションの知らないキーは警告を出して無視します
+  既定値のままになるのを防ぐため）。`targets` と `scan.device_ranges` の各項目の知らないキーもエラーです
+  （`unit_id` を `options` の外に書くと別のユニットを読み、`end` の書き間違いは既定の 999 まで読むため。
+  メモ用に `name`・`description`・`comment` は使えます）。ほかのセクションの知らないキーは警告を出して無視します
 - `--protocol` / `--port` は、設定ファイルの `targets` にも適用されます（コマンドラインが優先）
 - `--port` だけを指定した場合、そのポートで各プロトコルを順に試して自動検出します
 - `--device` を `--range` なしで指定すると、そのデバイスの 0-999 を読みます（設定ファイルの `scan.device_ranges` より優先）

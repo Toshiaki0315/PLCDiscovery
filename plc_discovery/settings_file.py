@@ -37,7 +37,7 @@ def read_file(path: str) -> Dict[str, Any]:
     file = Path(path)
     if not file.is_file():
         return {}
-    with open(file, encoding="utf-8") as f:
+    with open(file, encoding="utf-8-sig") as f:  # with or without a BOM, as ConfigLoader reads it
         if file.suffix.lower() == ".json":
             import json
 
