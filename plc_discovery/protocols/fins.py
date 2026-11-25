@@ -179,6 +179,10 @@ class FINSHandler(BaseProtocolHandler):
         self._reader: Optional[asyncio.StreamReader] = None
         self._writer: Optional[asyncio.StreamWriter] = None
         self._sid = 0  # Service ID counter
+        # Why the last request got no usable response: NG_TIMEOUT when the
+        # PLC did not answer in time, NG_COMM_ERROR for a transport failure
+        # (connection reset, unexpected frame). Set by _send_tcp / _send_udp.
+        self._send_failure: Optional[StatusCode] = None
 
     async def connect(self) -> bool:
         """Establish connection to PLC"""
@@ -333,7 +337,7 @@ class FINSHandler(BaseProtocolHandler):
                 response = await self._send_udp(frame, sid)
 
             if response is None:
-                return None, StatusCode.NG_TIMEOUT
+                return None, self._send_failure or StatusCode.NG_TIMEOUT
 
             # Parse response
             return self._parse_read_response(response)
@@ -499,6 +503,7 @@ class FINSHandler(BaseProtocolHandler):
         next request.
         """
         timeout = self.config.request_timeout_ms / 1000
+        self._send_failure = None
         try:
             reader, writer = self._reader, self._writer
             if reader is None or writer is None:
@@ -528,9 +533,13 @@ class FINSHandler(BaseProtocolHandler):
             return fins_data
 
         except asyncio.TimeoutError:
-            logger.error("FINS/TCP read timeout")
+            # Expected while unanswered ranges are narrowed down: the status
+            # of the data point reports it, not an error line per request
+            logger.debug("FINS/TCP read timeout")
+            self._send_failure = StatusCode.NG_TIMEOUT
         except Exception as e:
             logger.error(f"FINS/TCP send error: {e}")
+            self._send_failure = StatusCode.NG_COMM_ERROR
         self._needs_reconnect = True
         return None
 
@@ -544,7 +553,9 @@ class FINSHandler(BaseProtocolHandler):
         so they can never be taken as data for the current request.
         """
         if not self._protocol_instance or not self._transport:
+            self._send_failure = StatusCode.NG_COMM_ERROR
             return None
+        self._send_failure = None
 
         loop = asyncio.get_running_loop()
         timeout = self.config.request_timeout_ms / 1000
@@ -567,10 +578,12 @@ class FINSHandler(BaseProtocolHandler):
                 logger.debug("FINS/UDP: discarded unmatched/stale response")
 
         except asyncio.TimeoutError:
-            logger.error("FINS/UDP read timeout")
+            logger.debug("FINS/UDP read timeout")
+            self._send_failure = StatusCode.NG_TIMEOUT
             return None
         except Exception as e:
             logger.error(f"FINS/UDP send error: {e}")
+            self._send_failure = StatusCode.NG_COMM_ERROR
             return None
 
     def _parse_read_response(self, response: bytes) -> Tuple[Optional[List[int]], StatusCode]:

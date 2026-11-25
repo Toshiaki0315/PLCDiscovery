@@ -1049,7 +1049,17 @@ async def _run_scans(
     data_type, byte_order, type_manager = data_types
 
     plc_infos, undetected = await _resolve_targets(args, config_loader, config, display)
+    # Names already used in the results: a detected target that is alone on
+    # its IP is named by the IP, as is an undetected one. Two targets on one
+    # IP (other ports) of which only one answered shared that name, and the
+    # NG_COMM_ERROR rows of the other were replaced in the report.
+    used_labels = set(target_labels(plc_infos))
     for ip in undetected:
+        label, repeat = ip, 0
+        while label in used_labels:
+            repeat += 1
+            label = f"{ip} (protocol not detected)" + (f" #{repeat}" if repeat > 1 else "")
+        used_labels.add(label)
         # No protocol answered (PLC off): still write what was asked for as
         # NG_COMM_ERROR, like a target whose protocol was given. A full
         # scan has no ranges without a protocol: one row for the whole scan.
@@ -1059,7 +1069,7 @@ async def _run_scans(
         filepath = ResultWriter(PLCInfo(ip_address=ip), exporter, display, db_exporter).export_points(unread)
         if filepath:
             display.print_info(f"Unreachable addresses saved to: {filepath}")
-        results.add(ip, False, UNDETECTED_PROTOCOL, unread, set())
+        results.add(label, False, UNDETECTED_PROTOCOL, unread, set())
 
     if mode == ScanMode.FULL and interval > 0:
         display.print_warning("--interval is ignored in full scan mode")

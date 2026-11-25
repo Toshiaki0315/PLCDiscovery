@@ -173,6 +173,18 @@ class PLCDataCollector:
             self._handler.mark_needs_reconnect()
         return comm_error_points(device_range)
 
+    def _tag_error_points(self, tags: List[str], error: Exception) -> List[DataPoint]:
+        """
+        NG_COMM_ERROR points for tags whose read raised an unexpected
+        exception (as _read_error_points for address ranges): every
+        requested tag still appears in the output and the scan continues.
+        """
+        logger.error(f"Error reading {len(tags)} tag(s): {error or type(error).__name__}; reported as NG_COMM_ERROR")
+        if self._handler is not None:
+            self._handler.partial_points = []
+            self._handler.mark_needs_reconnect()
+        return comm_error_points(TagRange(list(tags)))
+
     def _keep_partial_points(self) -> None:
         """
         Interrupted (Ctrl+C) in the middle of a range: keep the points of
@@ -220,6 +232,8 @@ class PLCDataCollector:
             except asyncio.CancelledError:
                 self._keep_partial_points()  # thousands of tags: keep those already read
                 raise
+            except Exception as e:
+                self._collected_data = self._tag_error_points(tags, e)
             self._report_progress(f"Full scan complete. Collected {len(self._collected_data)} data points.", 1, 1)
             return self._collected_data
 
@@ -331,6 +345,8 @@ class PLCDataCollector:
             except asyncio.CancelledError:
                 self._keep_partial_points()
                 raise
+            except Exception as e:
+                points = self._tag_error_points(tags, e)
         else:
             points = [
                 DataPoint(address=t, status=StatusCode.NG_UNSUPPORTED, timestamp=get_timestamp(), is_tag=True)
