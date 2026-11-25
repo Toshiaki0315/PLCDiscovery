@@ -681,7 +681,11 @@ class PLCScannerApp(SettingsTabsMixin):
             self.var_output_dir.set(path)
 
     def _open_output_dir(self) -> None:
-        path = Path(self.var_output_dir.get())
+        # The folder the CSV files are written to (see _exporter): "~" is
+        # the home folder and an empty field the default folder. Without
+        # this, a folder named "~" was created where the GUI was started
+        # and that empty folder was opened.
+        path = Path(self.var_output_dir.get().strip() or DEFAULT_OUTPUT_DIR).expanduser()
         path.mkdir(parents=True, exist_ok=True)
         try:
             if sys.platform.startswith("win"):

@@ -1309,6 +1309,17 @@ async def run_cli() -> Optional[int]:
     data_types = _resolve_data_types_or_exit(args, config_loader, display)
     try:
         thresholds = resolve_thresholds(args, config_loader)
+        # What the run will read, checked here as well: a mistyped --range,
+        # --target or --discover-protocols was found only after the audit
+        # and database sessions had started, and was then sent to the
+        # notification destinations as a scan error of a PLC
+        if mode_name == "discover":
+            resolve_discovery_protocols(args, config_loader)
+        else:
+            if args.target:
+                parse_targets(args.target)
+            if mode_name == "range":
+                resolve_device_ranges(args, config_loader)
     except ValueError as e:
         display.print_error(str(e))
         sys.exit(1)
