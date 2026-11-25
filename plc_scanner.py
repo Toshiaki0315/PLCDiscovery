@@ -108,7 +108,7 @@ from plc_discovery.scan_runner import (  # noqa: F401  (status_report_message re
     status_report_message,
 )
 from plc_discovery.thresholds import Threshold, ThresholdMonitor
-from plc_discovery.utils import get_timestamp, ip_range_error, sorted_addresses
+from plc_discovery.utils import get_timestamp, ip_range_error, sorted_addresses, wait_for
 
 logger = logging.getLogger(__name__)
 
@@ -502,7 +502,7 @@ async def run_single_scan(
         outcome.interrupted = True
         _uncancel_current_task()
         try:
-            await asyncio.wait_for(collector.disconnect(), timeout=2)
+            await wait_for(collector.disconnect(), timeout=2)
         except (Exception, asyncio.CancelledError) as e:
             logger.debug(f"{ip}: disconnect after interruption: {e!r}")
         if stats is None:

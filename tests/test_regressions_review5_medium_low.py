@@ -686,3 +686,90 @@ def test_run_all_second_ctrl_c_is_not_a_failure(monkeypatch):
     monkeypatch.setattr(run_all.asyncio, "run", interrupted)
     monkeypatch.setattr(sys, "argv", ["run_all.py"])
     assert run_all.run() is None  # was a traceback and exit code 1: "could not be started"
+
+
+# ----------------------------------------------------------------------
+# A request to stop is never lost (Python 3.10 / 3.11)
+# ----------------------------------------------------------------------
+
+
+def test_wait_for_keeps_a_cancellation_that_arrives_as_the_result_does():
+    from plc_discovery.utils import wait_for
+
+    async def body():
+        future = asyncio.get_running_loop().create_future()
+        asyncio.get_running_loop().call_soon(future.set_result, "answer")
+        await wait_for(future, 2)
+        return "went on"  # asyncio.wait_for of Python 3.10 / 3.11 returned here: the stop was ignored
+
+    async def run():
+        task = asyncio.ensure_future(body())
+        await asyncio.sleep(0)  # body is waiting
+        await asyncio.sleep(0)  # the result is there, body's wake-up is scheduled
+        task.cancel()
+        try:
+            return await task
+        except asyncio.CancelledError:
+            return "stopped"
+
+    assert asyncio.run(run()) == "stopped"
+
+
+def test_wait_for_times_out_and_returns_results_like_asyncio():
+    from plc_discovery.utils import wait_for
+
+    async def run():
+        cleaned = []
+
+        async def slow():
+            try:
+                await asyncio.sleep(10)
+            finally:
+                cleaned.append(True)
+
+        async def quick():
+            return 7
+
+        async def failing():
+            raise ValueError("bad frame")
+
+        with pytest.raises(asyncio.TimeoutError):
+            await wait_for(slow(), 0.05)
+        with pytest.raises(ValueError, match="bad frame"):
+            await wait_for(failing(), 1)
+        return await wait_for(quick(), 1), cleaned
+
+    assert asyncio.run(run()) == (7, [True])  # the timed-out coroutine was cancelled and ran its cleanup
+
+
+def test_blocking_read_is_stopped_by_a_cancellation_that_arrives_with_its_result():
+    class Handler(BaseProtocolHandler):
+        protocol = Protocol.SLMP
+
+        async def connect(self):
+            return True
+
+        async def disconnect(self):
+            pass
+
+        async def read_device_raw(self, device_type, start_address, count):
+            return [1] * count, StatusCode.OK
+
+    async def run():
+        handler = Handler("10.0.0.1", 5001, FAST)
+        stopped = 0
+        for ticks in range(12):  # whatever the moment of the request to stop
+            task = asyncio.ensure_future(handler._run_blocking(lambda: 1))
+            for _ in range(ticks):
+                await asyncio.sleep(0)
+            if task.done():
+                break
+            task.cancel()
+            try:
+                await asyncio.wait_for(task, timeout=5)
+            except asyncio.CancelledError:
+                stopped += 1
+        return stopped, ticks
+
+    stopped, tried = asyncio.run(run())
+    assert stopped == tried and tried > 0

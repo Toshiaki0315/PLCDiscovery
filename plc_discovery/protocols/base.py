@@ -19,7 +19,7 @@ from ..retry import (
     RetryError,
     RetryHandler,
 )
-from ..utils import RateLimiter, SessionCache, get_timestamp, value_to_hex
+from ..utils import RateLimiter, SessionCache, get_timestamp, value_to_hex, wait_for
 
 logger = logging.getLogger(__name__)
 
@@ -757,7 +757,7 @@ class BaseProtocolHandler(ABC):
             timeout = self.config.request_timeout_ms / 1000
         loop = asyncio.get_running_loop()
         try:
-            return await asyncio.wait_for(loop.run_in_executor(None, func), timeout=timeout)
+            return await wait_for(loop.run_in_executor(None, func), timeout=timeout)
         except asyncio.TimeoutError:
             self._needs_reconnect = True
             raise

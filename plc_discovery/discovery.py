@@ -22,6 +22,7 @@ from .utils import (
     logger,
     parse_ip_range,
     read_arp_cache,
+    wait_for,
 )
 
 # Try to import optional dependencies
@@ -728,7 +729,7 @@ class PLCDiscovery:
             # snap7 has no overall timeout: bound the identity query (two
             # connect attempts and one SZL read) so a slow host cannot stall
             # discovery; the protocol itself is already verified by the probe
-            fields = await asyncio.wait_for(
+            fields = await wait_for(
                 loop.run_in_executor(None, _query),
                 timeout=3 * self.config.discovery_timeout_ms / 1000,
             )

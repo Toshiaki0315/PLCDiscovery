@@ -12,6 +12,7 @@ import struct
 from typing import Dict, List, Optional, Tuple
 
 from ..config import DeviceType, NetworkConfig, Protocol, StatusCode
+from ..utils import wait_for
 from .base import BaseProtocolHandler
 
 logger = logging.getLogger(__name__)
@@ -193,7 +194,7 @@ class FINSHandler(BaseProtocolHandler):
     async def _connect_tcp(self) -> bool:
         """Establish TCP connection"""
         try:
-            reader, writer = await asyncio.wait_for(
+            reader, writer = await wait_for(
                 asyncio.open_connection(self.ip_address, self.port), timeout=self.config.request_timeout_ms / 1000
             )
             self._reader, self._writer = reader, writer
@@ -205,7 +206,7 @@ class FINSHandler(BaseProtocolHandler):
 
             # Wait for response (16-byte header + client node + server node)
             try:
-                response = await asyncio.wait_for(reader.readexactly(24), timeout=self.config.request_timeout_ms / 1000)
+                response = await wait_for(reader.readexactly(24), timeout=self.config.request_timeout_ms / 1000)
             except asyncio.IncompleteReadError:
                 logger.error("Invalid FINS/TCP handshake response")
                 await self._close_tcp()
@@ -506,7 +507,7 @@ class FINSHandler(BaseProtocolHandler):
             await writer.drain()
 
             # FINS/TCP header: "FINS" + length + command + error code
-            header = await asyncio.wait_for(reader.readexactly(16), timeout=timeout)
+            header = await wait_for(reader.readexactly(16), timeout=timeout)
             if header[:4] != b"FINS":
                 raise ValueError("FINS/TCP header magic mismatch")
 
@@ -515,7 +516,7 @@ class FINSHandler(BaseProtocolHandler):
                 raise ValueError(f"FINS/TCP invalid length: {length}")
 
             # Read FINS frame (length counts command + error code + frame)
-            fins_data = await asyncio.wait_for(reader.readexactly(length - 8), timeout=timeout)
+            fins_data = await wait_for(reader.readexactly(length - 8), timeout=timeout)
 
             tcp_error = struct.unpack(">I", header[12:16])[0]
             if tcp_error != 0:
@@ -560,7 +561,7 @@ class FINSHandler(BaseProtocolHandler):
                 remaining = deadline - loop.time()
                 if remaining <= 0:
                     raise asyncio.TimeoutError()
-                response = await asyncio.wait_for(self._protocol_instance.receive(), timeout=remaining)
+                response = await wait_for(self._protocol_instance.receive(), timeout=remaining)
                 if self._response_matches(response, sid, command):
                     return response
                 logger.debug("FINS/UDP: discarded unmatched/stale response")
