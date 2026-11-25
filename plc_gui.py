@@ -1114,6 +1114,8 @@ class PLCScannerApp(SettingsTabsMixin):
         # Cycles whose result was written: a periodic run stopped before
         # the first of them keeps what that cycle had read so far
         cycles_written = 0
+        # A read is under way (not waiting for the next cycle)
+        reading = False
         try:
             while True:
                 iteration += 1
@@ -1122,11 +1124,14 @@ class PLCScannerApp(SettingsTabsMixin):
                     self._post("status", f"周期実行 {iteration} 回目: 読み取り中...")
                 read_failed = False
                 try:
+                    reading = True
                     points, path, denied_path = await runner.read(collector, writer)
                     cycles_written += 1
+                    reading = False
                 except Exception as e:
                     if not interval:
                         raise
+                    reading = False
                     # Never ends the monitoring (as in the CLI): this cycle
                     # is lost and the target counts as not answering
                     logging.error(
@@ -1155,12 +1160,14 @@ class PLCScannerApp(SettingsTabsMixin):
             # Stopped by the user: release the PLC first - a webhook that is
             # slow to answer must not keep the session open - then report
             # what was collected
-            if not interval or not cycles_written:
+            if not interval or (reading and not cycles_written):
                 # A single scan (a full scan can take hours) stopped half-way:
                 # what was read so far is saved and shown, as the CLI does on
                 # Ctrl+C. A periodic run keeps its completed cycles instead -
                 # unless none was completed yet (stopped during the first
                 # read of a long range): then it is saved like a single scan.
+                # Not while waiting after a cycle that failed: nothing is
+                # being read then.
                 # Before the disconnect, which can wait seconds for a PLC
                 # that stopped answering: a second Stop (or closing the
                 # window) during that wait must not lose the data.
