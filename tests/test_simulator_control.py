@@ -93,6 +93,8 @@ def test_memory_layout_matches_what_the_simulators_serve():
         ("slmp", SLMPDevice(), "D", -1, 1, "0 or more"),
         ("slmp", SLMPDevice(), "D", 0, float("nan"), "finite"),
         ("slmp", SLMPDevice(), "D", 12288, 1, "beyond D0-D12287"),  # no such D on the simulated CPU
+        ("fins", FINSSimulator(), "HR", 512, 1, "beyond HR0-HR511"),  # past the 512-word HR area
+        ("fins", FINSSimulator(), "DM", 32768, 1, "beyond DM0-DM32767"),
         ("logix", EtherNetIPDevice(mode="logix"), "TAG", "Nope", 1, "unknown tag"),
         ("logix", EtherNetIPDevice(mode="logix"), "TAG", "Recipe", 1, "not a number"),
         ("s7", S7Device(), "I", 0, 1, "unknown area"),

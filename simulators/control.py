@@ -32,14 +32,30 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 try:
     from .common import parse_denied_ranges, peer_text
     from .ethernet_ip_simulator import EtherNetIPDevice, EtherNetIPProtocol
-    from .fins_simulator import FINSSimulator, FINSTCPServerProtocol, FINSUDPServerProtocol
+    from .fins_simulator import (
+        FINS_AREA_DM,
+        FINS_AREA_HR,
+        FINS_AREA_SIZES,
+        FINS_AREA_W,
+        FINSSimulator,
+        FINSTCPServerProtocol,
+        FINSUDPServerProtocol,
+    )
     from .modbus_simulator import ModbusDevice, ModbusProtocol
     from .s7_simulator import COTPProtocol, S7Device
     from .slmp_simulator import SLMPDevice, SLMPError, SLMPProtocol
 except ImportError:
     from common import parse_denied_ranges, peer_text  # type: ignore[no-redef]
     from ethernet_ip_simulator import EtherNetIPDevice, EtherNetIPProtocol  # type: ignore[no-redef]
-    from fins_simulator import FINSSimulator, FINSTCPServerProtocol, FINSUDPServerProtocol  # type: ignore[no-redef]
+    from fins_simulator import (  # type: ignore[no-redef]
+        FINS_AREA_DM,
+        FINS_AREA_HR,
+        FINS_AREA_SIZES,
+        FINS_AREA_W,
+        FINSSimulator,
+        FINSTCPServerProtocol,
+        FINSUDPServerProtocol,
+    )
     from modbus_simulator import ModbusDevice, ModbusProtocol  # type: ignore[no-redef]
     from s7_simulator import COTPProtocol, S7Device  # type: ignore[no-redef]
     from slmp_simulator import SLMPDevice, SLMPError, SLMPProtocol  # type: ignore[no-redef]
@@ -139,6 +155,10 @@ def scanner_command(kind: SimulatorKind, host: str, port: int) -> str:
 
 
 # --- Memory access per simulator kind ------------------------------------
+
+
+# FINS area names of the GUI -> memory area codes (sizes in FINS_AREA_SIZES)
+FINS_AREA_CODES = {"DM": FINS_AREA_DM, "HR": FINS_AREA_HR, "W": FINS_AREA_W}
 
 
 def _area_dict(kind: str, device: Any, area: str) -> Dict[int, Any]:
@@ -244,6 +264,11 @@ def write_value(kind: str, device: Any, area: str, address: Address, value: floa
         block[index * 2], block[index * 2 + 1] = word >> 8, word & 0xFF
         return
     memory = _area_dict(kind, device, area)
+    if kind == "fins":
+        size = FINS_AREA_SIZES[FINS_AREA_CODES[area]]
+        if index >= size:
+            # Read past the area, a client gets end code 1104: not a value
+            raise ValueError(f"{area}{index} beyond {area}0-{area}{size - 1} (FINS {area} area)")
     if kind == "slmp":
         try:
             device.check_range(area, index)  # e.g. D12288 does not exist on the simulated CPU
