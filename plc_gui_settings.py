@@ -605,8 +605,13 @@ class SettingsTabsMixin:
         if path:
             self.var_settings_path.set(path)
 
+    def _settings_path(self) -> str:
+        """The settings file named on screen ("~" is the home folder, as for the output folder)"""
+        text = self.var_settings_path.get().strip()
+        return str(Path(text).expanduser()) if text else ""
+
     def _save_settings(self) -> None:
-        path = self.var_settings_path.get().strip()
+        path = self._settings_path()
         if self._settings_not_applied == path and not messagebox.askokcancel(
             "設定の保存",
             "この設定ファイルは画面に読み込めていません。\n"
@@ -632,7 +637,7 @@ class SettingsTabsMixin:
         self.var_status.set(f"設定を保存しました → {path}")
 
     def _load_settings(self, quiet: bool = False) -> None:
-        path = self.var_settings_path.get().strip()
+        path = self._settings_path()
         if not Path(path).is_file():
             if not quiet:
                 messagebox.showinfo("設定の読み込み", f"設定ファイルがありません:\n{path}")
