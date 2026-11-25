@@ -2,10 +2,25 @@
 Pytest Configuration and Shared Fixtures
 """
 
+import sys
 import tempfile
 from unittest.mock import MagicMock
 
 import pytest
+
+# Python without Tk (pyenv / Homebrew builds without tcl-tk, slim Docker
+# images): the GUI modules (plc_gui, plc_gui_settings, simulator_gui) import
+# tkinter at the top, so a test module importing them failed to load and
+# pytest stopped before running any test ("errors during collection").
+# Their tests call the GUI's logic, not real windows: a stand-in module is
+# enough. Installed before the test modules are collected.
+try:
+    import tkinter  # noqa: F401
+except ImportError:
+    _tk = MagicMock()
+    sys.modules["tkinter"] = _tk
+    for _name in ("filedialog", "messagebox", "scrolledtext", "simpledialog", "ttk"):
+        sys.modules[f"tkinter.{_name}"] = getattr(_tk, _name)
 
 from plc_discovery.config import DataPoint, DeviceRange, DeviceType, NetworkConfig, PLCInfo, Protocol, StatusCode
 
