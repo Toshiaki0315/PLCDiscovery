@@ -516,7 +516,7 @@ class CSVExporter:
                             "ip_address": plc.ip_address,
                             "manufacturer": plc.manufacturer or "",
                             "model": plc.model or "",
-                            "protocol": plc.protocol.name if plc.protocol else "",
+                            "protocol": plc.protocol_label or "",
                             "total_points": stats.get("total_points", 0),
                             "success_count": stats.get("success_count", 0),
                             "error_count": stats.get("error_count", 0),

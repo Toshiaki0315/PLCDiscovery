@@ -497,7 +497,7 @@ class DatabaseExporter:
                         plc.mac_address,
                         plc.manufacturer,
                         plc.model,
-                        plc.protocol.name if plc.protocol else None,
+                        plc.protocol_label,
                         plc.port,
                         plc.cpu_type,
                         plc.firmware_version,

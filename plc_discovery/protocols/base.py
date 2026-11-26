@@ -177,6 +177,11 @@ class BaseProtocolHandler(ABC):
         return SAFE_READ_WORDS.get(self.protocol, 100) if self.protocol else 100
 
     @property
+    def protocol_label(self) -> str:
+        """The protocol name in the audit log (see config.protocol_label)"""
+        return self.protocol.name if self.protocol else "UNKNOWN"
+
+    @property
     def is_connected(self) -> bool:
         """Check if connected to PLC"""
         return self._connected
@@ -462,7 +467,7 @@ class BaseProtocolHandler(ABC):
             return
         audit.log_read(
             self.ip_address,
-            self.protocol.name if self.protocol else "UNKNOWN",
+            self.protocol_label,
             device,
             start_address,
             count,
@@ -477,7 +482,7 @@ class BaseProtocolHandler(ABC):
             return
         audit.log_tag_read(
             self.ip_address,
-            self.protocol.name if self.protocol else "UNKNOWN",
+            self.protocol_label,
             tags,
             status.value,
             round((time.monotonic() - started) * 1000, 1),

@@ -79,7 +79,8 @@ class ResultWriter:
         instance: Optional[str] = None,
     ):
         self.ip = plc_info.ip_address
-        self.protocol = plc_info.protocol.name if plc_info.protocol else None
+        # MODBUS_RTU_OVER_TCP for a Modbus target read as RTU over TCP
+        self.protocol = plc_info.protocol_label
         self.port = plc_info.port
         # Set when another target has the same IP, protocol and port (two
         # Modbus units behind one gateway; see target_instances): part of

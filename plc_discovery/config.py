@@ -346,6 +346,25 @@ def expand_tag_members(tags: List[str], members: Dict[str, List[str]]) -> List[s
 _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 
 
+# Name of a Modbus target read as RTU over TCP (targets[].options.rtu) in
+# what is written out - files, database, labels, audit log, reports -
+# where MODBUS_TCP would not tell it from a Modbus/TCP device
+MODBUS_RTU_OVER_TCP = "MODBUS_RTU_OVER_TCP"
+
+
+def protocol_label(protocol: Optional[Protocol], options: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    """
+    The protocol name written out for a target: the enum name, except
+    MODBUS_RTU_OVER_TCP for a Modbus target with ``rtu: 1``. None without a
+    protocol. (Protocols are still parsed and selected by their enum.)
+    """
+    if protocol is None:
+        return None
+    if protocol == Protocol.MODBUS_TCP and (options or {}).get("rtu"):
+        return MODBUS_RTU_OVER_TCP
+    return protocol.name
+
+
 def clean_device_text(value: Any) -> Any:
     """Remove control characters from device-reported text (None/non-str unchanged)"""
     if not isinstance(value, str):
@@ -405,6 +424,11 @@ class PLCInfo:
             value = clean_device_text(value)
         super().__setattr__(name, value)
 
+    @property
+    def protocol_label(self) -> Optional[str]:
+        """The protocol name written out (MODBUS_RTU_OVER_TCP for RTU over TCP)"""
+        return protocol_label(self.protocol, self.options)
+
     def to_dict(self) -> Dict[str, Any]:
         """
         辞書形式に変換
@@ -417,7 +441,7 @@ class PLCInfo:
             "mac_address": self.mac_address or "",
             "manufacturer": self.manufacturer or "",
             "model": self.model or "",
-            "protocol": self.protocol.name if self.protocol else "",
+            "protocol": self.protocol_label or "",
             "port": self.port or "",
             "cpu_type": self.cpu_type or "",
             "firmware_version": self.firmware_version or "",

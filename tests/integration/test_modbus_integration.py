@@ -178,7 +178,7 @@ class TestModbusRTUOverTCP:
             sys,
             "argv",
             ["plc_scanner.py", "--config", str(config), "--mode", "range", "--device", "HR", "--range", "10-14"]
-            + ["-q", "--output-dir", str(tmp_path)],
+            + ["-q", "--output-dir", str(tmp_path), "--database", str(tmp_path / "plc.db")],
         )
         plc_scanner.cli()  # returns normally on success (no SystemExit)
 
@@ -187,3 +187,10 @@ class TestModbusRTUOverTCP:
         assert [(r["address"], r["value"], r["status"]) for r in rows] == [
             (f"HR{i}", str(i * 5), "OK") for i in range(10, 15)
         ]
+        # Recorded apart from Modbus/TCP devices
+        import sqlite3
+        from contextlib import closing
+
+        with closing(sqlite3.connect(tmp_path / "plc.db")) as db:
+            protocols = {row[0] for row in db.execute("SELECT protocol FROM data_points")}
+        assert protocols == {"MODBUS_RTU_OVER_TCP"}

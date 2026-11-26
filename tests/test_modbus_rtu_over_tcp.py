@@ -11,9 +11,22 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from plc_discovery.collector import PLCDataCollector
-from plc_discovery.config import DeviceRange, DeviceType, NetworkConfig, PLCInfo, Protocol, StatusCode
+from plc_discovery.config import (
+    DataPoint,
+    DeviceRange,
+    DeviceType,
+    NetworkConfig,
+    PLCInfo,
+    Protocol,
+    StatusCode,
+    protocol_label,
+)
 from plc_discovery.config_loader import ConfigLoader
+from plc_discovery.database import DatabaseConfig, DatabaseExporter
+from plc_discovery.discovery import target_labels
+from plc_discovery.output import CSVExporter
 from plc_discovery.protocols.modbus import ModbusHandler, modbus_framer_kwargs
+from plc_discovery.scan_runner import ResultWriter
 from simulators.modbus_simulator import ModbusDevice, ModbusProtocol, ModbusRTUProtocol, crc16_modbus
 
 FAST_500MS = NetworkConfig(packet_interval_ms=0, retry_interval_ms=0, request_timeout_ms=500)
@@ -190,3 +203,57 @@ def test_simulator_command_line_has_the_rtu_switch(monkeypatch):
     monkeypatch.setattr("sys.argv", ["modbus_simulator.py", "--port", "1503", "--rtu"])
     simulator.main()
     started.assert_called_once_with(("run", 1503, True))
+
+
+# The name written out -------------------------------------------------------
+
+
+def _rtu_target(rtu=1, port=502):
+    return PLCInfo("192.168.1.50", protocol=Protocol.MODBUS_TCP, port=port, options={"unit_id": 3, "rtu": rtu})
+
+
+@pytest.mark.parametrize(
+    "protocol, options, label",
+    [
+        (Protocol.MODBUS_TCP, {"rtu": 1}, "MODBUS_RTU_OVER_TCP"),
+        (Protocol.MODBUS_TCP, {"rtu": 0}, "MODBUS_TCP"),
+        (Protocol.MODBUS_TCP, {}, "MODBUS_TCP"),
+        (Protocol.MODBUS_TCP, None, "MODBUS_TCP"),
+        (Protocol.SLMP, {"rtu": 1}, "SLMP"),  # a Modbus option only
+        (None, {"rtu": 1}, None),
+    ],
+)
+def test_protocol_label(protocol, options, label):
+    assert protocol_label(protocol, options) == label
+
+
+def test_rtu_target_is_named_apart_in_the_labels_and_the_discovery_row():
+    rtu, tcp = _rtu_target(rtu=1), _rtu_target(rtu=0, port=503)
+    assert target_labels([rtu, tcp]) == ["192.168.1.50 (MODBUS_RTU_OVER_TCP:502)", "192.168.1.50 (MODBUS_TCP:503)"]
+    assert rtu.to_dict()["protocol"] == "MODBUS_RTU_OVER_TCP"
+    assert tcp.to_dict()["protocol"] == "MODBUS_TCP"
+
+
+def test_rtu_target_is_named_apart_in_the_file_name_and_the_database(tmp_path):
+    rtu, tcp = _rtu_target(rtu=1), _rtu_target(rtu=0, port=503)
+    db = DatabaseExporter(DatabaseConfig(enabled=True, path=str(tmp_path / "plc.db"), track_history=False))
+    db.export_discovery_results([rtu, tcp])
+    point = DataPoint(address="HR0", value=1, raw_hex="0x0001", status=StatusCode.OK, timestamp="2026-11-26 10:00:00")
+    for plc, label in zip([rtu, tcp], target_labels([rtu, tcp])):
+        writer = ResultWriter(plc, CSVExporter(str(tmp_path)), db_exporter=db, label=label)
+        assert writer.export_points([point])
+    names = sorted(path.name for path in tmp_path.glob("plc_data_*.csv"))
+    assert [name.split("_2026")[0].rsplit("_", 1)[0] for name in names] == [
+        "plc_data_192_168_1_50_MODBUS_RTU_OVER_TCP",
+        "plc_data_192_168_1_50_MODBUS_TCP",
+    ]
+    rows = db._connection.execute("SELECT protocol, port FROM data_points ORDER BY port").fetchall()
+    assert [tuple(row) for row in rows] == [("MODBUS_RTU_OVER_TCP", 502), ("MODBUS_TCP", 503)]
+    plcs = db._connection.execute("SELECT protocol, port FROM plcs ORDER BY port").fetchall()
+    assert [tuple(row) for row in plcs] == [("MODBUS_RTU_OVER_TCP", 502), ("MODBUS_TCP", 503)]
+    db.close()
+
+
+def test_audit_log_names_the_rtu_framing():
+    assert ModbusHandler("192.168.1.50", rtu=1, config=FAST_500MS).protocol_label == "MODBUS_RTU_OVER_TCP"
+    assert ModbusHandler("192.168.1.50", config=FAST_500MS).protocol_label == "MODBUS_TCP"

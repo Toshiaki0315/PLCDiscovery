@@ -15,7 +15,7 @@ import inspect
 import logging
 from typing import Any, List, Mapping, Optional, Tuple
 
-from ..config import PROTOCOL_PORTS, DeviceType, Protocol, StatusCode
+from ..config import MODBUS_RTU_OVER_TCP, PROTOCOL_PORTS, DeviceType, Protocol, StatusCode
 from .base import BaseProtocolHandler
 
 logger = logging.getLogger(__name__)
@@ -136,6 +136,10 @@ class ModbusHandler(BaseProtocolHandler):
         self._unit_id = unit_id
         self.EDGE_PROBE_SHORTCUT = bool(contiguous)
         self._rtu = bool(rtu)
+
+    @property
+    def protocol_label(self) -> str:
+        return MODBUS_RTU_OVER_TCP if self._rtu else super().protocol_label
 
     async def connect(self) -> bool:
         """Establish the Modbus/TCP (or RTU over TCP) connection"""

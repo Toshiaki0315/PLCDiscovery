@@ -238,7 +238,7 @@ class ReportGenerator:
                     "ip_address": plc.ip_address,
                     "manufacturer": plc.manufacturer,
                     "model": plc.model,
-                    "protocol": plc.protocol.name if plc.protocol else None,
+                    "protocol": plc.protocol_label,
                     "port": plc.port,
                 }
                 for plc in data.plcs
@@ -388,7 +388,7 @@ class ReportGenerator:
 
         rows = ""
         for i, plc in enumerate(data.plcs, 1):
-            protocol = plc.protocol.name if plc.protocol else "不明"
+            protocol = plc.protocol_label or "不明"
             rows += f"""
             <tr>
                 <td>{i}</td>

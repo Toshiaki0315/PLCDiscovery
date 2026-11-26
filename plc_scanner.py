@@ -392,7 +392,7 @@ def _unreached_points(plc_info: PLCInfo, mode: ScanMode, device_ranges: Optional
 
 
 def _protocol_name(plc_info: PLCInfo) -> str:
-    return plc_info.protocol.name if plc_info.protocol else "UNKNOWN"
+    return plc_info.protocol_label or "UNKNOWN"
 
 
 def _check_connected(

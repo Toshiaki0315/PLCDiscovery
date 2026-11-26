@@ -97,7 +97,7 @@ def target_labels(plcs: List[PLCInfo]) -> List[str]:
     for plc in plcs:
         label = plc.ip_address
         if counts[plc.ip_address] > 1:
-            protocol = plc.protocol.name if plc.protocol else "UNKNOWN"
+            protocol = plc.protocol_label or "UNKNOWN"
             label = f"{plc.ip_address} ({protocol}:{plc.port})"
         labels.append(label)
     # Same IP, protocol and port twice (e.g. two Modbus unit IDs behind one

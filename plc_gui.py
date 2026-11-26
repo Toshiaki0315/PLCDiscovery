@@ -1059,7 +1059,7 @@ class PLCScannerApp(SettingsTabsMixin):
         items: Optional[List[ScanItem]] = (
             None if mode == "full" else ([TagRange(tags)] if tags else [DeviceRange(device_type, start, end)])
         )
-        protocol_name = plc.protocol.name if plc.protocol else "UNKNOWN"
+        protocol_name = plc.protocol_label or "UNKNOWN"
         collector = PLCDataCollector(plc, config)
         collector.set_progress_callback(self._progress_cb)
         connected = await collector.connect()
