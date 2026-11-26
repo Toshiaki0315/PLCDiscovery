@@ -7,6 +7,7 @@ import math
 from pathlib import Path
 
 import pytest
+import yaml
 
 from plc_discovery import audit_log
 from plc_discovery.config import MAX_RANGE_POINTS, clean_device_text, range_size_error
@@ -168,3 +169,16 @@ def test_check_bat_does_not_run_the_checks_again_after_a_failure():
     for i, line in enumerate(lines):
         if line in commands:
             assert lines[i + 1].strip().lower() == "exit /b %errorlevel%"
+
+
+def test_codecov_upload_runs_only_with_its_token():
+    """Without CODECOV_TOKEN the upload failed in every run ("Token required")"""
+    workflow = yaml.safe_load((ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8"))
+    steps = workflow["jobs"]["unit-test"]["steps"]
+    (upload,) = [s for s in steps if "codecov/codecov-action" in s.get("uses", "")]
+    (check,) = [s for s in steps if s.get("id") == "codecov"]
+    assert steps.index(check) < steps.index(upload)
+    assert upload["if"] == "steps.codecov.outputs.enabled == 'true'"
+    assert upload["with"]["token"] == "${{ secrets.CODECOV_TOKEN }}"
+    assert check["env"]["CODECOV_TOKEN"] == "${{ secrets.CODECOV_TOKEN }}"
+    assert 'echo "enabled=true" >> "$GITHUB_OUTPUT"' in check["run"]

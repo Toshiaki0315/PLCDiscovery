@@ -60,9 +60,22 @@ jobs:
         name: coverage-report
         path: htmlcov/
     
+    # Codecov takes uploads with a token only: without the repository
+    # secret CODECOV_TOKEN (or on a fork's pull request, which gets no
+    # secrets) the upload is skipped instead of failing in every run.
+    # The coverage minimum above and the HTML report do not need it.
+    - name: Check for the Codecov token
+      id: codecov
+      env:
+        CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+      run: |
+        if [ -n "$CODECOV_TOKEN" ]; then echo "enabled=true" >> "$GITHUB_OUTPUT"; fi
+
     - name: Upload coverage to Codecov
+      if: steps.codecov.outputs.enabled == 'true'
       uses: codecov/codecov-action@v7
       with:
+        token: ${{ secrets.CODECOV_TOKEN }}
         files: ./coverage.xml   # "file" was renamed to "files" in v5
         flags: unittests
         name: codecov-umbrella-${{ matrix.python-version }}
