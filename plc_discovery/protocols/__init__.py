@@ -15,7 +15,7 @@ Supported Protocols:
 from .base import BaseProtocolHandler
 from .ethernet_ip import EtherNetIPHandler
 from .fins import FINSHandler
-from .modbus import ModbusHandler, ModbusRTUOverTCPHandler
+from .modbus import ModbusHandler
 from .s7 import S7Handler
 from .slmp import SLMPBinaryHandler, SLMPHandler
 
@@ -24,7 +24,6 @@ __all__ = [
     "SLMPHandler",
     "SLMPBinaryHandler",
     "ModbusHandler",
-    "ModbusRTUOverTCPHandler",
     "EtherNetIPHandler",
     "S7Handler",
     "FINSHandler",

@@ -234,18 +234,3 @@ class ModbusHandler(BaseProtocolHandler):
             self._needs_reconnect = True
             logger.debug(f"Modbus read error: {e}")
             return None, StatusCode.NG_COMM_ERROR
-
-
-class ModbusRTUOverTCPHandler(ModbusHandler):
-    """
-    Modbus RTU over TCP Handler
-
-    For devices that use Modbus RTU framing over TCP
-    (common in serial-to-Ethernet converters).
-    """
-
-    def __init__(self, ip_address: str, port: Optional[int] = None, **kwargs: Any):
-        super().__init__(ip_address, port or 502, **kwargs)
-
-    # Note: RTU over TCP uses the same client as standard Modbus TCP
-    # The framing is handled by some serial gateways transparently
