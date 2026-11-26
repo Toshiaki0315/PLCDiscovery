@@ -154,6 +154,29 @@ def test_simulator_does_not_answer_a_frame_with_a_wrong_crc():
     assert protocol.transport.written == [_rtu("010302" "0000")]
 
 
+def test_simulator_answers_the_request_sent_after_a_frame_with_a_wrong_crc():
+    """As a device on the line finds the next frame after the pause"""
+    protocol = _simulator()
+    frame = bytearray(_rtu("01030000" "0001"))
+    frame[-1] ^= 0xFF
+    protocol.data_received(bytes(frame))  # not answered
+    protocol.data_received(_rtu("01030001" "0001"))  # the next request
+    assert protocol.transport.written == [_rtu("010302" "0005")]
+    assert protocol.buffer == b""
+    # And the one after it, as usual
+    protocol.data_received(_rtu("01030002" "0001"))
+    assert protocol.transport.written[-1] == _rtu("010302" "000A")
+
+
+def test_simulator_still_joins_a_frame_whose_first_part_came_before():
+    """A frame sent in pieces is found from the start, not from the newest piece"""
+    protocol = _simulator()
+    frame = _rtu("01030000" "0002")
+    for i in range(len(frame)):
+        protocol.data_received(frame[i : i + 1])
+    assert protocol.transport.written == [_rtu("010304" "0000" "0005")]
+
+
 # Handler and simulator over TCP --------------------------------------------
 
 

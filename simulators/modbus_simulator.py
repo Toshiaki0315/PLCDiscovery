@@ -427,20 +427,30 @@ class ModbusRTUProtocol(ModbusProtocol):
     RTU marks the end of a frame by a pause on the serial line, which TCP
     does not carry: a frame ends at the first length whose last two bytes
     are the CRC of the bytes before them. A frame with a wrong CRC is not
-    answered (as on a serial line); the buffer is dropped once it is longer
-    than any frame without containing one.
+    answered (as on a serial line). A device on the line finds the next
+    frame after the pause; here a request that arrives after such bytes is
+    looked for where the newly received data starts (the scanner sends one
+    request and waits for its answer), and the bytes before it are dropped.
+    Without a frame the buffer is dropped once it is longer than any frame.
     """
 
     def data_received(self, data: bytes) -> None:
+        # Where the data received now starts in the buffer
+        fresh = len(self.buffer)
         self.buffer += data
         while len(self.buffer) >= 4:
-            size = self._frame_size()
+            start, size = 0, self._frame_size(0)
+            if size is None and 0 < fresh < len(self.buffer):
+                start, size = fresh, self._frame_size(fresh)
             if size is None:
                 if len(self.buffer) > RTU_MAX_FRAME:
                     logger.warning("RTU: no valid frame (CRC error), input dropped")
                     self.buffer = b""
                 break
-            frame, self.buffer = self.buffer[:size], self.buffer[size:]
+            if start:
+                logger.warning(f"RTU: {start} byte(s) without a valid frame (CRC error) dropped")
+            frame, self.buffer = self.buffer[start : start + size], self.buffer[start + size :]
+            fresh = max(0, fresh - start - size)
             unit_id, pdu = frame[0], frame[1:-2]
             try:
                 response = bytes([unit_id]) + self._process_pdu(pdu)
@@ -449,10 +459,11 @@ class ModbusRTUProtocol(ModbusProtocol):
             except Exception as e:
                 logger.error(f"Error processing PDU: {e}")
 
-    def _frame_size(self) -> Optional[int]:
-        """Length of the first complete frame in the buffer, None if there is none yet"""
-        for size in range(4, min(len(self.buffer), RTU_MAX_FRAME) + 1):
-            if struct.unpack("<H", self.buffer[size - 2 : size])[0] == crc16_modbus(self.buffer[: size - 2]):
+    def _frame_size(self, start: int) -> Optional[int]:
+        """Length of the first complete frame from ``start`` in the buffer, None if there is none yet"""
+        data = self.buffer[start:]
+        for size in range(4, min(len(data), RTU_MAX_FRAME) + 1):
+            if struct.unpack("<H", data[size - 2 : size])[0] == crc16_modbus(data[: size - 2]):
                 return size
         return None
 
