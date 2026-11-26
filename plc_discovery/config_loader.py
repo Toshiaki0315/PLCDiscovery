@@ -117,8 +117,10 @@ TARGET_OPTION_RANGES: Dict[Optional[Protocol], Dict[str, tuple]] = {
     # contiguous: 1 = the registers form one block without gaps, so a failed
     # range whose two ends are invalid is reported as invalid without
     # reading every register in between (far fewer requests on a device
-    # with few registers); 0 (default) = sparse map, each one is confirmed
-    Protocol.MODBUS_TCP: {"unit_id": (0, 255), "contiguous": (0, 1)},
+    # with few registers); 0 (default) = sparse map, each one is confirmed.
+    # rtu: 1 = Modbus RTU over TCP (a serial-to-Ethernet converter passing
+    # RTU frames through), 0 (default) = Modbus/TCP
+    Protocol.MODBUS_TCP: {"unit_id": (0, 255), "contiguous": (0, 1), "rtu": (0, 1)},
 }
 TARGET_OPTIONS: Dict[Optional[Protocol], set] = {
     protocol: set(ranges) for protocol, ranges in TARGET_OPTION_RANGES.items()

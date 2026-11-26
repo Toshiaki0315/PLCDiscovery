@@ -9,11 +9,9 @@ import pytest
 from plc_discovery.collector import PLCDataCollector
 from plc_discovery.config import DeviceType, PLCInfo, Protocol, StatusCode
 
-# Mark all tests to require Modbus simulator
-pytestmark = [
-    pytest.mark.integration,
-    pytest.mark.asyncio,
-]
+# Mark all tests to require Modbus simulator (async tests run in
+# asyncio_mode = auto: no asyncio mark, which warns on the CLI test)
+pytestmark = pytest.mark.integration
 
 
 class TestModbusConnection:
@@ -146,3 +144,46 @@ class TestModbusCoils:
         for dp in data_points:
             if dp.status == StatusCode.OK:
                 assert dp.value in [0, 1]
+
+
+class TestModbusRTUOverTCP:
+    """RTU frames on TCP (targets[].options.rtu), read like a converter's RTU device"""
+
+    async def test_read_registers_and_denied_range(self, modbus_rtu_simulator, network_config):
+        plc = PLCInfo("127.0.0.1", protocol=Protocol.MODBUS_TCP, port=modbus_rtu_simulator.port, options={"rtu": 1})
+        async with PLCDataCollector(plc, network_config) as collector:
+            values = await collector.collect_range(DeviceType.HR, 0, 4)
+            points = await collector.collect_range(DeviceType.HR, 4995, 5004)
+        assert [(p.value, p.status) for p in values] == [(i * 5, StatusCode.OK) for i in range(5)]
+        # HR5000-5100 is denied: the binary search finds where it starts
+        assert [p.status for p in points] == [StatusCode.OK] * 5 + [StatusCode.NG_ILLEGAL_ADDR] * 5
+
+    def test_cli_reads_an_rtu_target_of_the_config_file(self, modbus_rtu_simulator, tmp_path, monkeypatch):
+        import csv
+        import sys
+
+        import plc_scanner
+
+        config = tmp_path / "plc_config.yaml"
+        config.write_text(
+            "targets:\n"
+            "  - ip: 127.0.0.1\n"
+            "    protocol: modbus\n"
+            f"    port: {modbus_rtu_simulator.port}\n"
+            "    options:\n"
+            "      rtu: 1\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["plc_scanner.py", "--config", str(config), "--mode", "range", "--device", "HR", "--range", "10-14"]
+            + ["-q", "--output-dir", str(tmp_path)],
+        )
+        plc_scanner.cli()  # returns normally on success (no SystemExit)
+
+        (data_file,) = tmp_path.glob("plc_data_127_0_0_1_*.csv")
+        rows = list(csv.DictReader(open(data_file, encoding="utf-8-sig")))
+        assert [(r["address"], r["value"], r["status"]) for r in rows] == [
+            (f"HR{i}", str(i * 5), "OK") for i in range(10, 15)
+        ]

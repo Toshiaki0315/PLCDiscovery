@@ -6,8 +6,12 @@ Simulates a Modbus/TCP device for testing PLC Discovery tool.
 Supports Function Codes: 01 (Read Coils), 02 (Read Discrete Inputs),
 03 (Read Holding Registers), 04 (Read Input Registers)
 
+With --rtu it answers Modbus RTU frames on the TCP connection instead
+(RTU over TCP: unit, PDU and CRC16, no MBAP header), like a device behind
+a serial-to-Ethernet converter that passes the bytes through.
+
 Usage:
-    python modbus_simulator.py [--host 127.0.0.1] [--port 502]
+    python modbus_simulator.py [--host 127.0.0.1] [--port 502] [--rtu]
 """
 
 import asyncio
@@ -42,6 +46,19 @@ EX_ILLEGAL_FUNCTION = 0x01
 EX_ILLEGAL_DATA_ADDRESS = 0x02
 EX_ILLEGAL_DATA_VALUE = 0x03
 EX_SERVER_DEVICE_FAILURE = 0x04
+
+# Longest RTU frame (unit + PDU of at most 253 bytes + CRC)
+RTU_MAX_FRAME = 256
+
+
+def crc16_modbus(data: bytes) -> int:
+    """CRC-16/MODBUS of an RTU frame (sent low byte first)"""
+    crc = 0xFFFF
+    for byte in data:
+        crc ^= byte
+        for _ in range(8):
+            crc = (crc >> 1) ^ 0xA001 if crc & 1 else crc >> 1
+    return crc
 
 
 class ModbusDevice:
@@ -402,15 +419,54 @@ class ModbusProtocol(asyncio.Protocol):
         return response
 
 
-async def run_server(host: str, port: int, denied_ranges: List[Tuple[int, int]]) -> None:
-    """Run Modbus/TCP simulator server"""
+class ModbusRTUProtocol(ModbusProtocol):
+    """
+    Modbus RTU over TCP: each frame is unit, PDU and CRC16 (low byte
+    first), without the MBAP header.
+
+    RTU marks the end of a frame by a pause on the serial line, which TCP
+    does not carry: a frame ends at the first length whose last two bytes
+    are the CRC of the bytes before them. A frame with a wrong CRC is not
+    answered (as on a serial line); the buffer is dropped once it is longer
+    than any frame without containing one.
+    """
+
+    def data_received(self, data: bytes) -> None:
+        self.buffer += data
+        while len(self.buffer) >= 4:
+            size = self._frame_size()
+            if size is None:
+                if len(self.buffer) > RTU_MAX_FRAME:
+                    logger.warning("RTU: no valid frame (CRC error), input dropped")
+                    self.buffer = b""
+                break
+            frame, self.buffer = self.buffer[:size], self.buffer[size:]
+            unit_id, pdu = frame[0], frame[1:-2]
+            try:
+                response = bytes([unit_id]) + self._process_pdu(pdu)
+                if self.transport is not None:
+                    self.transport.write(response + struct.pack("<H", crc16_modbus(response)))
+            except Exception as e:
+                logger.error(f"Error processing PDU: {e}")
+
+    def _frame_size(self) -> Optional[int]:
+        """Length of the first complete frame in the buffer, None if there is none yet"""
+        for size in range(4, min(len(self.buffer), RTU_MAX_FRAME) + 1):
+            if struct.unpack("<H", self.buffer[size - 2 : size])[0] == crc16_modbus(self.buffer[: size - 2]):
+                return size
+        return None
+
+
+async def run_server(host: str, port: int, denied_ranges: List[Tuple[int, int]], rtu: bool = False) -> None:
+    """Run the Modbus/TCP (or, with ``rtu``, Modbus RTU over TCP) simulator server"""
     device = ModbusDevice(denied_ranges)
 
     loop = asyncio.get_event_loop()
-    server = await loop.create_server(lambda: ModbusProtocol(device), host, port)
+    protocol = ModbusRTUProtocol if rtu else ModbusProtocol
+    server = await loop.create_server(lambda: protocol(device), host, port)
 
     addr = server.sockets[0].getsockname()
-    logger.info(f"Modbus/TCP Simulator running on {addr[0]}:{addr[1]}")
+    logger.info(f"Modbus{' RTU over TCP' if rtu else '/TCP'} Simulator running on {addr[0]}:{addr[1]}")
     logger.info(f"Denied address ranges: {denied_ranges}")
 
     await serve_until_stopped(server, logger)
@@ -418,9 +474,10 @@ async def run_server(host: str, port: int, denied_ranges: List[Tuple[int, int]])
 
 def main():
     parser = simulator_parser("Modbus/TCP PLC Simulator", 502, "5000-5100,8000-8050")
+    parser.add_argument("--rtu", action="store_true", help="Modbus RTU over TCP (RTU frames with CRC, no MBAP header)")
     args = parser.parse_args()
     denied_ranges = parse_denied_ranges(args.denied)
-    run_simulator(run_server(args.host, args.port, denied_ranges), logger)
+    run_simulator(run_server(args.host, args.port, denied_ranges, rtu=args.rtu), logger)
 
 
 if __name__ == "__main__":

@@ -74,6 +74,7 @@ def pick_port(preferred: int, udp: bool = False) -> int:
 SIMULATOR_PORTS = {
     "slmp": pick_port(5001),
     "modbus": pick_port(5502),
+    "modbus_rtu": pick_port(5503),
     "ethernet_ip": pick_port(44818),
     "logix": pick_port(44819),
     "omron": pick_port(44820),
@@ -142,6 +143,15 @@ def run_modbus_simulator(port: int):
     from simulators.modbus_simulator import run_server
 
     asyncio.run(run_server("127.0.0.1", port, [(5000, 5100), (8000, 8050)]))
+
+
+def run_modbus_rtu_simulator(port: int):
+    """Run the Modbus simulator answering RTU frames (RTU over TCP)"""
+    import asyncio
+
+    from simulators.modbus_simulator import run_server
+
+    asyncio.run(run_server("127.0.0.1", port, [(5000, 5100), (8000, 8050)], rtu=True))
 
 
 def run_ethernet_ip_simulator(port: int):
@@ -216,6 +226,18 @@ def modbus_simulator() -> Generator[SimulatorProcess, None, None]:
         SimulatorProcess: The running simulator
     """
     simulator = SimulatorProcess("Modbus", SIMULATOR_PORTS["modbus"], run_modbus_simulator)
+
+    try:
+        simulator.start()
+        yield simulator
+    finally:
+        simulator.stop()
+
+
+@pytest.fixture(scope="session")
+def modbus_rtu_simulator() -> Generator[SimulatorProcess, None, None]:
+    """The Modbus simulator answering RTU frames on TCP (RTU over TCP)"""
+    simulator = SimulatorProcess("Modbus RTU", SIMULATOR_PORTS["modbus_rtu"], run_modbus_rtu_simulator)
 
     try:
         simulator.start()

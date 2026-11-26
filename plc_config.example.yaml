@@ -71,7 +71,9 @@ targets:
   #   #   s7: rack, slot, db_number    ethernet_ip: slot
   #   #   modbus: unit_id, contiguous (1 = the registers form one block
   #   #     without gaps: invalid ranges are found with far fewer requests;
-  #   #     leave it out for devices whose register map has gaps)
+  #   #     leave it out for devices whose register map has gaps),
+  #   #     rtu (1 = Modbus RTU over TCP: a serial-to-Ethernet converter
+  #   #     passing RTU frames through; needs pymodbus 3.7+)
   #   options:
   #     dest_node: 40
 

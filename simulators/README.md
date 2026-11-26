@@ -93,6 +93,9 @@ python slmp_simulator.py --host 0.0.0.0 --port 5001
 # Modbus/TCP
 python modbus_simulator.py --host 0.0.0.0 --port 1502
 
+# Modbus RTU over TCP（RTU フレームで応答。設定ファイルの対象に rtu: 1 を指定して読む）
+python modbus_simulator.py --host 0.0.0.0 --port 1503 --rtu
+
 # EtherNet/IP（SLC 形式）
 python ethernet_ip_simulator.py --host 0.0.0.0 --port 44818
 

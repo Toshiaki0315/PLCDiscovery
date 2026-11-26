@@ -5,6 +5,9 @@ Supports:
 - Modbus/TCP compatible PLCs (Schneider, ABB, Siemens, etc.)
 - Function codes: 01 (Read Coils), 02 (Read Discrete Inputs),
                   03 (Read Holding Registers), 04 (Read Input Registers)
+- Modbus RTU over TCP (targets[].options.rtu): RTU frames (no MBAP header,
+  CRC16) on the TCP connection, for serial-to-Ethernet converters that
+  pass the bytes through to an RTU device
 """
 
 import asyncio
@@ -59,6 +62,20 @@ def modbus_unit_kwargs(method: Any, unit_id: int) -> dict:
     return {"device_id": unit_id}
 
 
+def modbus_framer_kwargs(rtu: bool) -> dict:
+    """
+    Keyword argument of ModbusTcpClient for RTU framing over TCP.
+
+    ``framer=FramerType.RTU`` exists in pymodbus 3.7 and later; an older
+    version cannot send RTU frames (ImportError, reported by connect()).
+    """
+    if not rtu:
+        return {}
+    from pymodbus import FramerType  # 3.7+
+
+    return {"framer": FramerType.RTU}
+
+
 # Exception codes about the requested range, answered by the device:
 #   02 Illegal Data Address - start or start + quantity not valid
 #   03 Illegal Data Value   - quantity not accepted (devices limited to fewer
@@ -89,7 +106,13 @@ class ModbusHandler(BaseProtocolHandler):
     EDGE_PROBE_SHORTCUT = False
 
     def __init__(
-        self, ip_address: str, port: Optional[int] = None, unit_id: int = 1, contiguous: int = 0, **kwargs: Any
+        self,
+        ip_address: str,
+        port: Optional[int] = None,
+        unit_id: int = 1,
+        contiguous: int = 0,
+        rtu: int = 0,
+        **kwargs: Any,
     ):
         """
         Args:
@@ -100,16 +123,33 @@ class ModbusHandler(BaseProtocolHandler):
                 invalid as a whole - about 3 requests per chunk instead of
                 2 per register. Leave 0 for sparse register maps: readable
                 registers between two invalid ones would be reported NG.
+            rtu: 1 for Modbus RTU over TCP (targets[].options.rtu): a
+                serial-to-Ethernet converter that passes RTU frames through
+                instead of translating Modbus/TCP. Such a device does not
+                answer Modbus/TCP frames, and the reverse. RTU has no
+                transaction id: a late answer cannot be told from the next
+                one, which is why a timeout re-establishes the connection
+                (as for Modbus/TCP).
         """
         super().__init__(ip_address, port or PROTOCOL_PORTS.get(Protocol.MODBUS_TCP, MODBUS_PORT), **kwargs)
         self._client: Any = None
         self._unit_id = unit_id
         self.EDGE_PROBE_SHORTCUT = bool(contiguous)
+        self._rtu = bool(rtu)
 
     async def connect(self) -> bool:
-        """Establish Modbus/TCP connection"""
+        """Establish the Modbus/TCP (or RTU over TCP) connection"""
         try:
             from pymodbus.client import ModbusTcpClient
+        except ImportError:
+            logger.error("pymodbus library not installed")
+            return False
+        try:
+            framer = modbus_framer_kwargs(self._rtu)
+        except ImportError:
+            logger.error("Modbus RTU over TCP (options rtu: 1) needs pymodbus 3.7 or later")
+            return False
+        try:
 
             def _connect():
                 client = ModbusTcpClient(
@@ -119,6 +159,7 @@ class ModbusHandler(BaseProtocolHandler):
                     # Retries are handled by BaseProtocolHandler; pymodbus'
                     # own retries (default 3) would multiply PLC requests
                     retries=0,
+                    **framer,
                 )
                 if client.connect():
                     return client
@@ -129,15 +170,12 @@ class ModbusHandler(BaseProtocolHandler):
 
             if self._client:
                 self._connected = True
-                logger.info(f"Modbus connected to {self.ip_address}:{self.port}")
+                logger.info(f"Modbus{' RTU over TCP' if self._rtu else ''} connected to {self.ip_address}:{self.port}")
                 return True
             else:
                 logger.error(f"Modbus connection failed: {self.ip_address}:{self.port}")
                 return False
 
-        except ImportError:
-            logger.error("pymodbus library not installed")
-            return False
         except Exception as e:
             logger.error(f"Modbus connection failed: {e}")
             self._connected = False
