@@ -101,8 +101,6 @@ def save(path: str, updates: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]
     if errors:
         return config, errors
     file.parent.mkdir(parents=True, exist_ok=True)
-    # Write to a temporary file first: a failure never leaves a truncated file
-    tmp = file.with_name(file.name + ".tmp")
     # The file holds notification webhook URLs, which work like passwords:
     # readable by the owner only, unless the existing file says otherwise
     # (its permissions are kept instead of being reset on every save)
@@ -110,20 +108,35 @@ def save(path: str, updates: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]
         mode = stat.S_IMODE(file.stat().st_mode)
     except OSError:
         mode = 0o600
-    descriptor = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+    # Write to a temporary file first: a failure never leaves a truncated
+    # file. Its name is random and it is created exclusively (mkstemp:
+    # O_CREAT | O_EXCL, mode 0600), so a file or symbolic link someone else
+    # placed in the directory is never opened. A fixed "<name>.tmp" opened
+    # with O_TRUNC followed such a link and overwrote its target.
+    descriptor, tmp = tempfile.mkstemp(prefix=f".{file.name}.", suffix=".tmp", dir=file.parent)
     try:
-        os.chmod(tmp, mode)  # a leftover .tmp keeps its old mode with O_CREAT
-    except OSError:
-        pass
-    with open(descriptor, "w", encoding="utf-8") as f:
-        if file.suffix.lower() == ".json":
-            import json
+        try:
+            if hasattr(os, "fchmod"):
+                os.fchmod(descriptor, mode)
+            else:  # pragma: no cover - Windows: only the read-only flag
+                os.chmod(tmp, mode)
+        except OSError:
+            pass
+        with open(descriptor, "w", encoding="utf-8") as f:
+            if file.suffix.lower() == ".json":
+                import json
 
-            json.dump(config, f, ensure_ascii=False, indent=2)
-        else:
-            f.write("# PLC Discovery settings (written by the GUI; also usable with plc_scanner.py -c)\n")
-            yaml.safe_dump(config, f, allow_unicode=True, sort_keys=False, default_flow_style=False)
-    os.replace(tmp, file)
+                json.dump(config, f, ensure_ascii=False, indent=2)
+            else:
+                f.write("# PLC Discovery settings (written by the GUI; also usable with plc_scanner.py -c)\n")
+                yaml.safe_dump(config, f, allow_unicode=True, sort_keys=False, default_flow_style=False)
+        os.replace(tmp, file)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
     return config, []
 
 

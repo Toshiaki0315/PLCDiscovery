@@ -432,6 +432,41 @@ def test_settings_file_is_private_and_keeps_its_permissions(tmp_path):
     assert "hooks.example.com" in path.read_text(encoding="utf-8")
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="symbolic links need privileges on Windows")
+def test_settings_save_does_not_follow_a_link_at_the_temporary_name(tmp_path):
+    # Another user could place "<name>.tmp" -> a file of the GUI user: the
+    # old fixed temporary name was opened with O_TRUNC through the link
+    victim = tmp_path / "victim.txt"
+    victim.write_text("keep me", encoding="utf-8")
+    path = tmp_path / "plc_config.yaml"
+    (tmp_path / "plc_config.yaml.tmp").symlink_to(victim)
+
+    _, errors = settings_file.save(str(path), {"network": {"packet_interval_ms": 80}})
+    assert errors == []
+    assert victim.read_text(encoding="utf-8") == "keep me"
+    assert "packet_interval_ms: 80" in path.read_text(encoding="utf-8")
+    assert not path.is_symlink()
+
+
+def test_settings_save_leaves_no_temporary_file(tmp_path):
+    path = tmp_path / "plc_config.yaml"
+    settings_file.save(str(path), {"network": {"packet_interval_ms": 80}})
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["plc_config.yaml"]
+
+
+def test_failed_settings_save_keeps_the_file_and_removes_the_temporary_one(tmp_path):
+    path = tmp_path / "plc_config.yaml"
+    settings_file.save(str(path), {"network": {"packet_interval_ms": 80}})
+    before = path.read_text(encoding="utf-8")
+
+    # After the temporary file is written (validate() also dumps YAML)
+    with patch.object(settings_file.os, "replace", side_effect=OSError("disk full")):
+        with pytest.raises(OSError):
+            settings_file.save(str(path), {"network": {"packet_interval_ms": 90}})
+    assert path.read_text(encoding="utf-8") == before
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["plc_config.yaml"]
+
+
 def test_unknown_log_level_is_a_config_error():
     loader = ConfigLoader()
     loader.config["logging"]["level"] = "LOUD"
