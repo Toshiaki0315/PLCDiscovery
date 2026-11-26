@@ -496,7 +496,7 @@ CI（`.github/workflows/ci.yml`）と同じチェックを手元でまとめて�
 ./scripts/check.sh --no-integration  # 統合テストを除く
 ```
 
-- 実行する内容: 開発ツールの確認（`requirements-dev.txt` で固定したバージョンか、`pytest-timeout` などがあるか）、flake8・black・isort・mypy（CI と同じ対象と引数）、ユニットテスト（カバレッジ 60% 以上）、統合テスト
+- 実行する内容: 開発ツールの確認（`requirements-dev.txt` で固定したバージョンか、`pytest-timeout` などがあるか）、flake8・black・isort・mypy（CI と同じ対象と引数）、ユニットテスト（カバレッジ 85% 以上）、統合テスト
 - `.venv` に開発ツールが入っていればそれを、なければ `python3`（Windows は `py` / `python`）を使います。起動スクリプトが作る `.venv` には実行用のパッケージしか入っていません
 - black などのバージョンが CI と違うと、手元では通っても CI で失敗します。バージョン違いや不足は最初の「tools」で失敗として表示し、インストールのコマンドを示します
 - コマンドが CI と食い違わないことは `tests/test_check_script.py` で確認しています

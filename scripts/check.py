@@ -57,7 +57,7 @@ UNIT_TESTS = [
     "not integration",
     "--cov=plc_discovery",
     "--cov-report=",
-    "--cov-fail-under=60",
+    "--cov-fail-under=85",
 ]
 INTEGRATION_TESTS = ["tests/integration/", "-q", "-m", "integration", "--tb=short"]
 

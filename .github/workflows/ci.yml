@@ -40,13 +40,16 @@ jobs:
         pip install -r requirements-dev.txt
     
     - name: Run unit tests with coverage
+      # Minimum a few points below the coverage reached (88% in Nov 2026):
+      # a change that brings much code without tests fails here.
+      # Keep scripts/check.py in step
       run: |
         pytest tests/ -v -m "not integration" \
           --cov=plc_discovery \
           --cov-report=xml \
           --cov-report=html \
           --cov-report=term-missing \
-          --cov-fail-under=60
+          --cov-fail-under=85
       # A test that never ends must fail the job, not hold it for 6 hours
       timeout-minutes: 15
     

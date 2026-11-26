@@ -47,9 +47,12 @@ def test_lint_tool_pins_match_the_ci_install_line():
 
 
 def test_test_steps_select_what_the_ci_jobs_run():
-    assert '-m "not integration"' in CI and "--cov-fail-under=60" in CI
+    assert '-m "not integration"' in CI
     assert check.UNIT_TESTS[check.UNIT_TESTS.index("-m") + 1] == "not integration"
-    assert "--cov-fail-under=60" in check.UNIT_TESTS
+    # The same coverage minimum: a lower one here passes what the CI fails
+    (minimum,) = re.findall(r"--cov-fail-under=(\d+)", CI)
+    assert f"--cov-fail-under={minimum}" in check.UNIT_TESTS
+    assert int(minimum) >= 85
     assert "pytest tests/integration/ -v -m integration" in CI
     assert check.INTEGRATION_TESTS[check.INTEGRATION_TESTS.index("-m") + 1] == "integration"
 
