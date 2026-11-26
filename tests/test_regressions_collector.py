@@ -892,19 +892,23 @@ def test_blocking_read_is_stopped_by_a_cancellation_that_arrives_with_its_result
 
     async def run():
         handler = Handler("10.0.0.1", 5001, FAST_500MS)
-        stopped = 0
+        # Requests to stop sent, and the ones that stopped the read. (The
+        # loop index was compared before: 11 after twelve stops on a slow
+        # runner whose read never finished first, so the test failed.)
+        tried = stopped = 0
         for ticks in range(12):  # whatever the moment of the request to stop
             task = asyncio.ensure_future(handler._run_blocking(lambda: 1))
             for _ in range(ticks):
                 await asyncio.sleep(0)
             if task.done():
                 break
+            tried += 1
             task.cancel()
             try:
                 await asyncio.wait_for(task, timeout=5)
             except asyncio.CancelledError:
                 stopped += 1
-        return stopped, ticks
+        return stopped, tried
 
     stopped, tried = asyncio.run(run())
     assert stopped == tried and tried > 0
