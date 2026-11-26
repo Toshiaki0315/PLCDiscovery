@@ -988,7 +988,7 @@ def test_plc_answered_tells_no_answer_from_address_errors():
     assert no_answer_error(_points(StatusCode.OK)) is None
 
 
-FAST = NetworkConfig(packet_interval_ms=0, retry_interval_ms=1, request_timeout_ms=200)
+FAST_200MS = NetworkConfig(packet_interval_ms=0, retry_interval_ms=1, request_timeout_ms=200)
 
 
 class _FakeCollector:
@@ -1030,7 +1030,7 @@ def _single_scan(collector_class):
         with patch.object(plc_scanner, "PLCDataCollector", collector_class):
             return await plc_scanner.run_single_scan(
                 PLCInfo("10.0.0.1", protocol=Protocol.SLMP, port=5001),
-                FAST,
+                FAST_200MS,
                 MagicMock(hex_addresses=False),
                 MagicMock(),
                 ScanMode.RANGE,
@@ -1111,7 +1111,7 @@ def test_interrupted_single_scan_writes_what_was_read():
             task = asyncio.ensure_future(
                 plc_scanner.run_single_scan(
                     PLCInfo("10.0.0.1", protocol=Protocol.SLMP, port=5001),
-                    FAST,
+                    FAST_200MS,
                     exporter,
                     MagicMock(),
                     ScanMode.RANGE,
@@ -1139,7 +1139,7 @@ def _resolve(protocol, port, target):
     loader.get_targets.return_value = [target]
     args = MagicMock(target=None, protocol=protocol, port=port)
     with patch.object(plc_scanner, "resolve_target", resolve_target):
-        asyncio.run(plc_scanner._resolve_targets(args, loader, FAST, MagicMock()))
+        asyncio.run(plc_scanner._resolve_targets(args, loader, FAST_200MS, MagicMock()))
     return seen
 
 
@@ -1265,7 +1265,7 @@ def test_audit_error_count_is_every_point_that_was_not_read(tmp_path):
             with patch.object(plc_scanner, "PLCDataCollector", Collector):
                 await plc_scanner.run_single_scan(
                     PLCInfo("10.0.0.1", protocol=Protocol.SLMP, port=5001),
-                    FAST,
+                    FAST_200MS,
                     MagicMock(hex_addresses=False),
                     MagicMock(),
                     ScanMode.RANGE,
@@ -1321,7 +1321,7 @@ class _Udp(BaseProtocolHandler):
     protocol = Protocol.FINS
 
     def __init__(self):
-        super().__init__("127.0.0.1", 9600, FAST)
+        super().__init__("127.0.0.1", 9600, FAST_200MS)
         self._connected = True
         self.power = True
         self.requests = 0
@@ -1416,7 +1416,7 @@ def test_periodic_scan_reports_the_outage_with_a_learned_address_in_the_range():
             task = asyncio.ensure_future(
                 plc_scanner.run_periodic_scan(
                     [PLCInfo("10.0.0.1", protocol=Protocol.FINS, port=9600)],
-                    FAST,
+                    FAST_200MS,
                     MagicMock(hex_addresses=False, periodic_csv="per_cycle"),
                     MagicMock(),
                     [DeviceRange(DeviceType.DM, 0, 5)],
@@ -1517,7 +1517,7 @@ def test_unusable_output_directory_is_an_error_message(monkeypatch, tmp_path, ca
     assert events[0] == "SESSION_START" and events[-1] == "SESSION_END"  # the session is closed
 
 
-FAST_2 = NetworkConfig(packet_interval_ms=0, retry_interval_ms=0, request_timeout_ms=100)
+FAST_100MS = NetworkConfig(packet_interval_ms=0, retry_interval_ms=0, request_timeout_ms=100)
 
 
 class _Device(BaseProtocolHandler):
@@ -1527,7 +1527,7 @@ class _Device(BaseProtocolHandler):
     EDGE_PROBE_SHORTCUT = False
 
     def __init__(self, answer):
-        super().__init__("10.0.0.1", 502, FAST_2)
+        super().__init__("10.0.0.1", 502, FAST_100MS)
         self._connected = True
         self.answer = answer
         self.requests: list = []
@@ -1568,9 +1568,6 @@ def test_other_ranges_are_still_read_after_the_first_one_went_unanswered():
     assert all(p.status == StatusCode.OK for p in ir)  # was never requested: 100 x NG_COMM_ERROR
     assert plc_answered(hr + ir)
     assert handler.circuit_breaker_state == "closed"
-
-
-FAST_3 = NetworkConfig(packet_interval_ms=0, retry_interval_ms=0, request_timeout_ms=100)
 
 
 def test_plc_that_never_answers_costs_a_bounded_number_of_requests():
@@ -1668,7 +1665,7 @@ def test_single_target_on_an_endpoint_keeps_its_file_name_and_protocol(tmp_path)
     assert db.export_plc_data.call_args.kwargs["protocol"] == "MODBUS_TCP"
 
 
-FAST_4 = NetworkConfig(packet_interval_ms=0, retry_interval_ms=0, request_timeout_ms=500)
+FAST_500MS = NetworkConfig(packet_interval_ms=0, retry_interval_ms=0, request_timeout_ms=500)
 
 
 class _Logix:
@@ -1717,7 +1714,7 @@ def logix(monkeypatch):
 
 def test_logix_full_scan_reads_tags_again_after_an_outage(logix):
     async def run():
-        collector = PLCDataCollector(PLCInfo("10.0.0.2", port=44818, protocol=Protocol.ETHERNET_IP), FAST_4)
+        collector = PLCDataCollector(PLCInfo("10.0.0.2", port=44818, protocol=Protocol.ETHERNET_IP), FAST_500MS)
         assert await collector.connect()
         cycles = [await collector.collect_full_scan()]
         for up in (False, False, True, True):
@@ -1731,9 +1728,6 @@ def test_logix_full_scan_reads_tags_again_after_an_outage(logix):
     assert all(p.is_tag and p.status == StatusCode.OK for p in cycles[3])
     assert denied == set()
     assert not plc_answered(cycles[1]) and not plc_answered(cycles[2])
-
-
-FAST_5 = NetworkConfig(packet_interval_ms=0, retry_interval_ms=0, request_timeout_ms=500)
 
 
 def _collector_class(connect_seconds=0.0, disconnect_seconds=0.0, read_seconds=0.0):
@@ -1787,7 +1781,7 @@ def _interrupted_scan(collector_class, cancel_after):
             task = asyncio.ensure_future(
                 plc_scanner.run_single_scan(
                     PLCInfo("10.0.0.1", protocol=Protocol.SLMP, port=5001),
-                    FAST_5,
+                    FAST_500MS,
                     exporter,
                     MagicMock(),
                     ScanMode.RANGE,
@@ -1808,9 +1802,6 @@ def test_complete_scan_is_written_although_interrupted_while_disconnecting():
     assert exporter.export_plc_data.call_count == 1
 
 
-FAST_6 = NetworkConfig(packet_interval_ms=0, retry_interval_ms=0, request_timeout_ms=500)
-
-
 def test_interruption_while_connecting_is_reported_not_raised():
     outcome, exporter = _interrupted_scan(_collector_class(connect_seconds=5), cancel_after=0.2)
     # The run goes on to its report with the targets already scanned
@@ -1819,16 +1810,13 @@ def test_interruption_while_connecting_is_reported_not_raised():
     assert exporter.export_plc_data.call_count == 0
 
 
-FAST_7 = NetworkConfig(packet_interval_ms=0, retry_interval_ms=0, request_timeout_ms=500)
-
-
 class _Modbus(BaseProtocolHandler):
     protocol = Protocol.MODBUS_TCP
     EDGE_PROBE_SHORTCUT = False
     MAX_ADDRESS = 0xFFFF
 
     def __init__(self, status):
-        super().__init__("10.0.0.1", 502, FAST_7)
+        super().__init__("10.0.0.1", 502, FAST_500MS)
         self._connected = True
         self.status = status
 
@@ -1854,9 +1842,6 @@ def test_addresses_beyond_the_protocol_limit_are_no_answer_of_the_plc():
     assert plc_answered(answering)
 
 
-FAST_8 = NetworkConfig(packet_interval_ms=0, retry_interval_ms=0, request_timeout_ms=500)
-
-
 def test_unexpected_error_of_one_target_is_its_own_failure():
     async def run_single_scan(plc_info, *args, **kwargs):
         raise RuntimeError("driver bug")
@@ -1867,7 +1852,7 @@ def test_unexpected_error_of_one_target_is_its_own_failure():
         with patch.object(plc_scanner, "run_single_scan", run_single_scan):
             return await plc_scanner.scan_target(
                 PLCInfo("10.0.0.1", protocol=Protocol.SLMP, port=5001),
-                FAST_8,
+                FAST_500MS,
                 exporter,
                 MagicMock(),
                 ScanMode.RANGE,
@@ -1884,9 +1869,6 @@ def test_unexpected_error_of_one_target_is_its_own_failure():
     assert not outcome.success and outcome.error == "driver bug"
     assert [p.status for p in outcome.data_points] == [StatusCode.NG_COMM_ERROR] * 4
     assert exporter.export_plc_data.call_count == 1
-
-
-FAST_9 = NetworkConfig(packet_interval_ms=0, retry_interval_ms=0, request_timeout_ms=500)
 
 
 def test_periodic_scan_goes_on_after_an_unexpected_error_of_a_read():
@@ -1915,7 +1897,7 @@ def test_periodic_scan_goes_on_after_an_unexpected_error_of_a_read():
             task = asyncio.ensure_future(
                 plc_scanner.run_periodic_scan(
                     [PLCInfo("10.0.0.1", protocol=Protocol.SLMP, port=5001)],
-                    FAST_9,
+                    FAST_500MS,
                     MagicMock(hex_addresses=False, periodic_csv="per_cycle"),
                     MagicMock(),
                     [DeviceRange(DeviceType.D, 0, 2)],
@@ -2211,7 +2193,7 @@ def test_no_broadcast_when_the_search_is_limited_to_ip_ranges():
             patch.object(BroadcastDiscovery, "discover_all_broadcast", AsyncMock(return_value=[])) as broadcast,
             patch.object(plc_scanner, "discover_plcs", AsyncMock(return_value=[])),
         ):
-            await plc_scanner.run_discovery(ip_ranges, FAST, MagicMock(), MagicMock())
+            await plc_scanner.run_discovery(ip_ranges, FAST_200MS, MagicMock(), MagicMock())
         return broadcast.await_count
 
     assert asyncio.run(run(["192.168.10.0/24"])) == 0
@@ -2230,7 +2212,7 @@ def test_resolve_target_detects_on_the_given_port():
 
     async def run():
         with patch.object(plc_scanner, "PLCDiscovery", Discovery):
-            return await plc_scanner.resolve_target("10.0.0.1", None, 5007, FAST, MagicMock())
+            return await plc_scanner.resolve_target("10.0.0.1", None, 5007, FAST_200MS, MagicMock())
 
     resolved = asyncio.run(run())
     assert seen["port"] == 5007 and resolved.port == 5007
@@ -2242,7 +2224,7 @@ def test_command_line_protocol_and_port_win_over_config_targets():
     loader.get_targets.return_value = [PLCInfo("10.0.0.1", protocol=Protocol.SLMP, port=5001)]
 
     async def run():
-        return await plc_scanner._resolve_targets(args, loader, FAST, MagicMock())
+        return await plc_scanner._resolve_targets(args, loader, FAST_200MS, MagicMock())
 
     plc_infos, undetected = asyncio.run(run())
     assert undetected == []

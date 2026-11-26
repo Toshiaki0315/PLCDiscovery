@@ -880,12 +880,12 @@ def test_arp_sweep_is_paced_and_uses_the_interface_of_the_network(monkeypatch):
     assert route.route.call_args.args[0] != "192.168.10.5"
 
 
-FAST = NetworkConfig(packet_interval_ms=0, retry_interval_ms=1, request_timeout_ms=200)
+FAST_200MS = NetworkConfig(packet_interval_ms=0, retry_interval_ms=1, request_timeout_ms=200)
 
 
 def test_broadcast_only_for_requested_protocols():
     async def run(protocols):
-        discovery = BroadcastDiscovery(FAST)
+        discovery = BroadcastDiscovery(FAST_200MS)
         with patch.object(discovery, "_send_broadcast", AsyncMock(return_value={})) as send:
             await discovery.discover_all_broadcast(protocols=protocols)
         return sorted(call.kwargs["port"] for call in send.await_args_list)
@@ -918,7 +918,7 @@ def test_given_port_is_probed_for_every_protocol_one_at_a_time():
             patch("plc_discovery.discovery.verify_protocol", verify),
             patch.object(PLCDiscovery, "_get_detailed_info", AsyncMock(side_effect=lambda info: info)),
         ):
-            return await PLCDiscovery(FAST, port=5007)._probe_host("192.168.1.10")
+            return await PLCDiscovery(FAST_200MS, port=5007)._probe_host("192.168.1.10")
 
     detected = asyncio.run(run())
     assert overlaps == [], "protocols must not share the port at the same time"

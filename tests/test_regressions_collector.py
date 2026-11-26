@@ -390,13 +390,13 @@ async def test_reconnect_uses_detected_driver(plc_type, expected):
     assert sum(m.await_count for m in mocks.values()) == 1
 
 
-FAST = NetworkConfig(packet_interval_ms=0, retry_interval_ms=1, request_timeout_ms=200)
+FAST_200MS = NetworkConfig(packet_interval_ms=0, retry_interval_ms=1, request_timeout_ms=200)
 
 
 def _fake_handler(base, valid):
     class Fake(base):
         def __init__(self):
-            BaseProtocolHandler.__init__(self, "127.0.0.1", 1, FAST)
+            BaseProtocolHandler.__init__(self, "127.0.0.1", 1, FAST_200MS)
             self._connected = True
             self.requests = 0
 
@@ -432,7 +432,7 @@ class _Silent(BaseProtocolHandler):
     protocol = Protocol.MODBUS_TCP
 
     def __init__(self, valid):
-        super().__init__("127.0.0.1", 1, FAST)
+        super().__init__("127.0.0.1", 1, FAST_200MS)
         self._connected = True
         self.valid = set(valid)
         self.unanswered = 0
@@ -515,7 +515,7 @@ def test_interrupted_range_keeps_the_chunks_already_read():
             return await super().read_device_raw(device_type, start_address, count)
 
     async def run():
-        collector = PLCDataCollector(PLCInfo("127.0.0.1", protocol=Protocol.MODBUS_TCP, port=1), FAST)
+        collector = PLCDataCollector(PLCInfo("127.0.0.1", protocol=Protocol.MODBUS_TCP, port=1), FAST_200MS)
         collector._handler = Slow(range(1000))
         task = asyncio.ensure_future(collector.collect_range(DeviceType.HR, 0, 499))
         await asyncio.sleep(0.05)
@@ -545,8 +545,8 @@ def test_plc_that_is_off_costs_one_reconnect_per_scan():
             raise AssertionError("nothing is read from a PLC that is off")
 
     async def run():
-        collector = PLCDataCollector(PLCInfo("10.0.0.1", protocol=Protocol.SLMP, port=5001), FAST)
-        collector._handler = Off("10.0.0.1", 5001, FAST)
+        collector = PLCDataCollector(PLCInfo("10.0.0.1", protocol=Protocol.SLMP, port=5001), FAST_200MS)
+        collector._handler = Off("10.0.0.1", 5001, FAST_200MS)
         ranges = [DeviceRange(DeviceType.D, start, start + 9) for start in (0, 100, 200, 300)]
         first = await collect_items(collector, ranges)
         after_first = Off.attempts
@@ -559,7 +559,7 @@ def test_plc_that_is_off_costs_one_reconnect_per_scan():
     assert after_second == 2  # the next scan tries again
 
 
-FAST_2 = NetworkConfig(packet_interval_ms=0, retry_interval_ms=0, request_timeout_ms=100)
+FAST_100MS = NetworkConfig(packet_interval_ms=0, retry_interval_ms=0, request_timeout_ms=100)
 
 
 class _Device(BaseProtocolHandler):
@@ -567,7 +567,7 @@ class _Device(BaseProtocolHandler):
 
     protocol = Protocol.SLMP
 
-    def __init__(self, answer, config=FAST_2):
+    def __init__(self, answer, config=FAST_100MS):
         super().__init__("10.0.0.1", 5001, config)
         self._connected = True
         self.answer = answer
@@ -601,9 +601,6 @@ def test_dead_link_is_found_without_probing_twice_or_trying_the_next_chunk():
     # was 9: that address a second time, and a request for the next chunk
     assert handler.requests == [(0, 900)] * 4 + [(0, 450), (450, 450), (0, 1)]
     assert handler.get_denied_addresses() == set()  # nothing is learned from a dead link
-
-
-FAST_3 = NetworkConfig(packet_interval_ms=0, retry_interval_ms=0, request_timeout_ms=100)
 
 
 def test_retries_wait_for_the_packet_interval():
@@ -646,9 +643,6 @@ def test_fragments_of_a_generic_array_read_wait_for_the_packet_interval(monkeypa
     assert sleeps == [0.05, 0.05]  # before the second and the third request
 
 
-FAST_4 = NetworkConfig(packet_interval_ms=0, retry_interval_ms=0, request_timeout_ms=100)
-
-
 class _Device_2(BaseProtocolHandler):
     """Stays "connected"; ``answer(device_type, start, count)`` decides each request"""
 
@@ -656,7 +650,7 @@ class _Device_2(BaseProtocolHandler):
     EDGE_PROBE_SHORTCUT = False
 
     def __init__(self, answer):
-        super().__init__("10.0.0.1", 502, FAST_4)
+        super().__init__("10.0.0.1", 502, FAST_100MS)
         self._connected = True
         self.answer = answer
         self.requests: list = []
@@ -696,9 +690,6 @@ def test_answered_half_is_split_although_the_other_half_was_not_answered():
     assert all(by_address[f"HR{a}"] in (StatusCode.NG_TIMEOUT, StatusCode.NG_COMM_ERROR) for a in range(50))
 
 
-FAST_5 = NetworkConfig(packet_interval_ms=0, retry_interval_ms=0, request_timeout_ms=100)
-
-
 class _Device_3(BaseProtocolHandler):
     """Stays "connected"; ``answer(start, count)`` decides each request"""
 
@@ -706,7 +697,7 @@ class _Device_3(BaseProtocolHandler):
     EDGE_PROBE_SHORTCUT = False
 
     def __init__(self, answer):
-        super().__init__("10.0.0.1", 502, FAST_5)
+        super().__init__("10.0.0.1", 502, FAST_100MS)
         self._connected = True
         self.answer = answer
         self.log: list = []
@@ -755,9 +746,6 @@ def test_wide_unanswered_range_costs_one_request_per_chunk_and_scan():
     assert all(int(address[2:]) >= 100 for address in handler.get_denied_addresses())
 
 
-FAST_6 = NetworkConfig(packet_interval_ms=0, retry_interval_ms=0, request_timeout_ms=100)
-
-
 class _Device_4(BaseProtocolHandler):
     """Stays "connected"; ``answer(start, count)`` decides each request"""
 
@@ -765,7 +753,7 @@ class _Device_4(BaseProtocolHandler):
     EDGE_PROBE_SHORTCUT = False
 
     def __init__(self, answer):
-        super().__init__("10.0.0.1", 502, FAST_6)
+        super().__init__("10.0.0.1", 502, FAST_100MS)
         self._connected = True
         self.answer = answer
         self.log: list = []
@@ -798,9 +786,6 @@ def test_chunks_after_an_unanswered_one_are_not_retried():
     assert all(whole_chunks.count(start) == 1 for start in range(200, 1000, 100))
 
 
-FAST_7 = NetworkConfig(packet_interval_ms=0, retry_interval_ms=0, request_timeout_ms=100)
-
-
 class _Device_5(BaseProtocolHandler):
     """Stays "connected"; ``answer(start, count)`` decides each request"""
 
@@ -808,7 +793,7 @@ class _Device_5(BaseProtocolHandler):
     EDGE_PROBE_SHORTCUT = False
 
     def __init__(self, answer):
-        super().__init__("10.0.0.1", 502, FAST_7)
+        super().__init__("10.0.0.1", 502, FAST_100MS)
         self._connected = True
         self.answer = answer
         self.log: list = []
@@ -889,7 +874,7 @@ def test_array_fragments_have_their_own_timeout(monkeypatch):
     assert not needs_reconnect  # was NG_TIMEOUT and a reconnect, in every cycle
 
 
-FAST_8 = NetworkConfig(packet_interval_ms=0, retry_interval_ms=0, request_timeout_ms=500)
+FAST_500MS = NetworkConfig(packet_interval_ms=0, retry_interval_ms=0, request_timeout_ms=500)
 
 
 def test_blocking_read_is_stopped_by_a_cancellation_that_arrives_with_its_result():
@@ -906,7 +891,7 @@ def test_blocking_read_is_stopped_by_a_cancellation_that_arrives_with_its_result
             return [1] * count, StatusCode.OK
 
     async def run():
-        handler = Handler("10.0.0.1", 5001, FAST_8)
+        handler = Handler("10.0.0.1", 5001, FAST_500MS)
         stopped = 0
         for ticks in range(12):  # whatever the moment of the request to stop
             task = asyncio.ensure_future(handler._run_blocking(lambda: 1))
@@ -974,7 +959,7 @@ class _Silent_2(BaseProtocolHandler):
     protocol = Protocol.MODBUS_TCP
 
     def __init__(self, bad=(), dead_after=None):
-        super().__init__("127.0.0.1", 1, FAST)
+        super().__init__("127.0.0.1", 1, FAST_200MS)
         self._connected = True
         self.bad = set(bad)
         self.dead_after = dead_after
@@ -1018,7 +1003,7 @@ class _Silent_3(BaseProtocolHandler):
     protocol = Protocol.MODBUS_TCP
 
     def __init__(self, bad=(), dead_after=None):
-        super().__init__("127.0.0.1", 1, FAST)
+        super().__init__("127.0.0.1", 1, FAST_200MS)
         self._connected = True
         self.bad = set(bad)
         self.dead_after = dead_after
@@ -1050,7 +1035,7 @@ class _Silent_4(BaseProtocolHandler):
     protocol = Protocol.MODBUS_TCP
 
     def __init__(self, bad=(), dead_after=None):
-        super().__init__("127.0.0.1", 1, FAST)
+        super().__init__("127.0.0.1", 1, FAST_200MS)
         self._connected = True
         self.bad = set(bad)
         self.dead_after = dead_after
@@ -1091,7 +1076,7 @@ class _Silent_5(BaseProtocolHandler):
     protocol = Protocol.MODBUS_TCP
 
     def __init__(self, bad=(), dead_after=None):
-        super().__init__("127.0.0.1", 1, FAST)
+        super().__init__("127.0.0.1", 1, FAST_200MS)
         self._connected = True
         self.bad = set(bad)
         self.dead_after = dead_after

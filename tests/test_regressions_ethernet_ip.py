@@ -409,7 +409,7 @@ def test_only_errors_about_the_address_are_address_errors():
         assert not _is_address_error(text), text
 
 
-FAST = NetworkConfig(packet_interval_ms=0, retry_interval_ms=0, request_timeout_ms=100)
+FAST_100MS = NetworkConfig(packet_interval_ms=0, retry_interval_ms=0, request_timeout_ms=100)
 
 
 def test_busy_slc_controller_is_not_learned_as_an_invalid_address():
@@ -420,7 +420,7 @@ def test_busy_slc_controller_is_not_learned_as_an_invalid_address():
             return Tag(name, None, None, replies.pop(0))
 
     async def run():
-        handler = EtherNetIPHandler("10.0.0.2", config=FAST)
+        handler = EtherNetIPHandler("10.0.0.2", config=FAST_100MS)
         handler._client, handler._connected, handler._plc_type = Client(), True, "slc"
         busy = await handler.read_device_raw(DeviceType.D, 0, 1)
         return busy, await handler.read_device_raw(DeviceType.D, 0, 1), handler._needs_reconnect
@@ -539,7 +539,7 @@ def test_link_lost_during_a_tag_scan_is_a_communication_error(logix):
     logix["off_at"] = "T020"
 
     async def run():
-        handler = EtherNetIPHandler("10.0.0.2", config=FAST)
+        handler = EtherNetIPHandler("10.0.0.2", config=FAST_100MS)
         assert await handler.connect()
         points = await handler.read_tags(handler.tag_scan_list())
         return handler, points, await handler.read_tags(["T000", "T001"])
@@ -553,7 +553,7 @@ def test_link_lost_during_a_tag_scan_is_a_communication_error(logix):
 
 def test_logix_controller_stays_logix_when_a_reconnect_fails(logix):
     async def run():
-        handler = EtherNetIPHandler("10.0.0.2", config=FAST)
+        handler = EtherNetIPHandler("10.0.0.2", config=FAST_100MS)
         assert await handler.connect() and handler._plc_type == "logix"
         logix["slow"] = True  # one slow request: timeout, reconnect before the next
         timed_out = await handler.read_tags(["T000"])
@@ -578,7 +578,7 @@ def test_a_device_that_was_never_logix_still_falls_back_to_generic_cip(logix):
     logix["cpu_ok"] = False
 
     async def run():
-        handler = EtherNetIPHandler("10.0.0.2", config=FAST)
+        handler = EtherNetIPHandler("10.0.0.2", config=FAST_100MS)
         return await handler.connect(), handler._plc_type
 
     assert asyncio.run(run()) == (True, "generic")
@@ -602,7 +602,7 @@ def test_transient_texts_are_the_ones_pycomm3_really_uses():
         assert _is_address_error(text), text
 
 
-FAST_2 = NetworkConfig(packet_interval_ms=0, retry_interval_ms=0, request_timeout_ms=500)
+FAST_500MS = NetworkConfig(packet_interval_ms=0, retry_interval_ms=0, request_timeout_ms=500)
 
 
 class _Logix_2:
@@ -653,7 +653,7 @@ def test_one_reconnect_attempt_per_tag_read_after_the_link_is_lost(logix_2):
     logix_2["off_at"] = "T100"
 
     async def run():
-        handler = EtherNetIPHandler("10.0.0.2", config=FAST_2)
+        handler = EtherNetIPHandler("10.0.0.2", config=FAST_500MS)
         assert await handler.connect()
         opens = logix_2["opens"]
         points = await handler.read_tags([f"T{i:03d}" for i in range(2000)])
@@ -662,9 +662,6 @@ def test_one_reconnect_attempt_per_tag_read_after_the_link_is_lost(logix_2):
     points, reconnects = asyncio.run(run())
     assert Counter(p.status for p in points) == {StatusCode.OK: 100, StatusCode.NG_COMM_ERROR: 1900}
     assert reconnects == 1  # was one for each of the 94 remaining batches, without the packet interval
-
-
-FAST_3 = NetworkConfig(packet_interval_ms=0, retry_interval_ms=0, request_timeout_ms=500)
 
 
 class _Logix_3:
@@ -713,7 +710,7 @@ def logix_3(monkeypatch):
 
 def test_reused_tag_definitions_are_requested_by_name(logix_3):
     async def run():
-        handler = EtherNetIPHandler("10.0.0.2", config=FAST_3)
+        handler = EtherNetIPHandler("10.0.0.2", config=FAST_500MS)
         assert await handler.connect()
         await handler.read_tags(["T000"])
         first = logix_3["instance_ids"]
@@ -728,9 +725,6 @@ def test_reused_tag_definitions_are_requested_by_name(logix_3):
     assert after_reconnect is False
     assert points[0].status == StatusCode.OK and tags == 100
     assert logix_3["created"] == [True, False]  # the tag list was not uploaded again
-
-
-FAST_4 = NetworkConfig(packet_interval_ms=0, retry_interval_ms=0, request_timeout_ms=500)
 
 
 class _Logix_4:
@@ -779,7 +773,7 @@ def logix_4(monkeypatch):
 
 def test_another_controller_on_the_address_gets_its_own_tag_list(logix_4):
     async def run():
-        handler = EtherNetIPHandler("10.0.0.2", config=FAST_4)
+        handler = EtherNetIPHandler("10.0.0.2", config=FAST_500MS)
         assert await handler.connect()
         logix_4["serial"] = "B2"  # the controller was replaced
         assert await handler.reconnect()
@@ -821,7 +815,7 @@ def test_tag_points_use_the_reply_type():
     assert [(p.address, p.raw_hex) for p in members] == [("Udt.A", "0xFFFF"), ("Udt.B", "0x00011170")]
 
 
-FAST_5 = NetworkConfig(packet_interval_ms=0, retry_interval_ms=1, request_timeout_ms=200)
+FAST_200MS = NetworkConfig(packet_interval_ms=0, retry_interval_ms=1, request_timeout_ms=200)
 
 
 def test_logix_reconnect_reuses_the_tag_list():
@@ -847,7 +841,7 @@ def test_logix_reconnect_reuses_the_tag_list():
             return self._tags
 
     async def run():
-        handler = EtherNetIPHandler("127.0.0.1", config=FAST_5)
+        handler = EtherNetIPHandler("127.0.0.1", config=FAST_200MS)
         with patch("pycomm3.LogixDriver", FakeLogixDriver):
             assert await handler.connect()
             await handler.disconnect()

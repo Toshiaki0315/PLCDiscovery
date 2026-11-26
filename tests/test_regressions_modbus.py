@@ -88,13 +88,13 @@ async def test_r4_modbus_client_without_internal_retries():
     assert client_cls.call_args.kwargs["retries"] == 0
 
 
-FAST = NetworkConfig(packet_interval_ms=0, retry_interval_ms=1, request_timeout_ms=200)
+FAST_200MS = NetworkConfig(packet_interval_ms=0, retry_interval_ms=1, request_timeout_ms=200)
 
 
 def _fake_handler(base, valid):
     class Fake(base):
         def __init__(self):
-            BaseProtocolHandler.__init__(self, "127.0.0.1", 1, FAST)
+            BaseProtocolHandler.__init__(self, "127.0.0.1", 1, FAST_200MS)
             self._connected = True
             self.requests = 0
 
@@ -125,7 +125,7 @@ def test_modbus_island_between_invalid_registers_is_read():
 
 
 def test_modbus_reconnects_after_a_transport_error():
-    handler = ModbusHandler("127.0.0.1", port=1, config=FAST)
+    handler = ModbusHandler("127.0.0.1", port=1, config=FAST_200MS)
     handler._connected = True
     handler._client = MagicMock()
     handler._client.read_holding_registers.side_effect = ConnectionResetError("closed by the PLC")
@@ -137,7 +137,7 @@ def test_modbus_reconnects_after_a_transport_error():
 def test_modbus_contiguous_option_restores_the_edge_check():
     class Device(ModbusHandler):
         def __init__(self, **options):
-            super().__init__("127.0.0.1", port=1, config=FAST, **options)
+            super().__init__("127.0.0.1", port=1, config=FAST_200MS, **options)
             self._connected = True
             self.requests = 0
 

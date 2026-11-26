@@ -349,7 +349,7 @@ def test_denied_log_with_and_without_bom_is_not_mixed(tmp_path):
     assert len(list(tmp_path.glob("access_denied_log*.csv"))) == 2
 
 
-FAST = NetworkConfig(packet_interval_ms=0, retry_interval_ms=1, request_timeout_ms=200)
+FAST_200MS = NetworkConfig(packet_interval_ms=0, retry_interval_ms=1, request_timeout_ms=200)
 
 
 class _Silent(BaseProtocolHandler):
@@ -358,7 +358,7 @@ class _Silent(BaseProtocolHandler):
     protocol = Protocol.MODBUS_TCP
 
     def __init__(self, bad=(), dead_after=None):
-        super().__init__("127.0.0.1", 1, FAST)
+        super().__init__("127.0.0.1", 1, FAST_200MS)
         self._connected = True
         self.bad = set(bad)
         self.dead_after = dead_after
