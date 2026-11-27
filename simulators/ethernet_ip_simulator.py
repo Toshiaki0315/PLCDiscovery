@@ -19,14 +19,30 @@ logger = logging.getLogger("EtherNetIP-Simulator")
 
 # Shared CLI helpers (support both direct execution and package import)
 try:
-    from .common import parse_denied_ranges, peer_text, run_simulator, serve_until_stopped, simulator_parser
-except ImportError:
-    from common import (  # type: ignore[no-redef]
+    from .common import (
+        Faults,
+        add_fault_options,
+        faults_from_args,
+        log_faults,
         parse_denied_ranges,
         peer_text,
         run_simulator,
         serve_until_stopped,
         simulator_parser,
+        with_faults,
+    )
+except ImportError:
+    from common import (  # type: ignore[no-redef]
+        Faults,
+        add_fault_options,
+        faults_from_args,
+        log_faults,
+        parse_denied_ranges,
+        peer_text,
+        run_simulator,
+        serve_until_stopped,
+        simulator_parser,
+        with_faults,
     )
 
 # EtherNet/IP Commands
@@ -793,16 +809,19 @@ class EtherNetIPProtocol(asyncio.Protocol):
         return response
 
 
-async def run_server(host: str, port: int, denied_ranges: List[Tuple[int, int]], mode: str = "slc") -> None:
+async def run_server(
+    host: str, port: int, denied_ranges: List[Tuple[int, int]], mode: str = "slc", faults: Optional[Faults] = None
+) -> None:
     """Run EtherNet/IP simulator server ("slc" data files or "logix" tags)"""
     device = EtherNetIPDevice(denied_ranges, mode=mode)
 
     loop = asyncio.get_event_loop()
-    server = await loop.create_server(lambda: EtherNetIPProtocol(device), host, port)
+    server = await loop.create_server(with_faults(lambda: EtherNetIPProtocol(device), faults, device), host, port)
 
     addr = server.sockets[0].getsockname()
     logger.info(f"EtherNet/IP Simulator running on {addr[0]}:{addr[1]}")
     logger.info(f"Denied address ranges: {denied_ranges}")
+    log_faults(faults, logger)
 
     await serve_until_stopped(server, logger)
 
@@ -817,9 +836,10 @@ def main():
         "logix = ControlLogix style symbolic tags (tag list, UDTs, program tags), "
         "omron = Omron NJ/NX style variables (read by name only)",
     )
+    add_fault_options(parser)
     args = parser.parse_args()
     denied_ranges = parse_denied_ranges(args.denied)
-    run_simulator(run_server(args.host, args.port, denied_ranges, args.mode), logger)
+    run_simulator(run_server(args.host, args.port, denied_ranges, args.mode, faults_from_args(args)), logger)
 
 
 if __name__ == "__main__":

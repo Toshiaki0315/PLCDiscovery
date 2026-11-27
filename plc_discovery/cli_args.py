@@ -9,7 +9,7 @@ existing imports keep working.
 
 import argparse
 import dataclasses
-from typing import List, Optional, Union
+from typing import Dict, List, Optional, Union
 
 from .config import (
     DeviceRange,
@@ -20,7 +20,7 @@ from .config import (
     expand_tag_members,
     range_size_error,
 )
-from .config_loader import MAX_CONCURRENT, NETWORK_MINIMUMS, ConfigLoader, integer_error
+from .config_loader import MAX_CONCURRENT, NETWORK_MINIMUMS, ConfigLoader, integer_error, parse_port_map
 from .data_types import DataType
 from .names import BYTE_ORDER_NAMES, parse_device_type, parse_protocol
 from .output import DEFAULT_OUTPUT_DIR
@@ -126,13 +126,19 @@ Examples:
         "(default: discovery.protocols from --config, otherwise all)",
     )
 
+    parser.add_argument(
+        "--discover-ports",
+        help="Ports to probe in discover mode besides the standard ones, e.g. 'slmp=5000,5002;modbus=1502' "
+        "(default: discovery.ports from --config)",
+    )
+
     parser.add_argument("--port", type=_port_number, help="Override default port for the protocol (1-65535)")
 
     # Device/range specification
     parser.add_argument(
         "--device",
         "-d",
-        choices=["D", "M", "W", "R", "DM", "HR", "IR", "DB", "X", "Y", "B", "SM"],
+        choices=[d.value for d in DeviceType],
         default=None,
         help="Device type to read (default: D)",
     )
@@ -430,6 +436,36 @@ def resolve_discovery_protocols(
     if config_loader:
         return config_loader.get_discovery_protocols()
     return None
+
+
+def parse_discover_ports(text: str) -> Dict[Protocol, List[int]]:
+    """--discover-ports 'slmp=5000,5002;modbus=1502' (ValueError when invalid)"""
+    mapping: Dict[str, List[int]] = {}
+    for part in text.replace(" ", "").split(";"):
+        if not part:
+            continue
+        name, sep, numbers = part.partition("=")
+        if not sep or not numbers:
+            raise ValueError(f"--discover-ports: '{part}' must be protocol=port[,port...]")
+        try:
+            mapping.setdefault(name, []).extend(int(n) for n in numbers.split(",") if n)
+        except ValueError:
+            raise ValueError(f"--discover-ports: '{part}' must list port numbers") from None
+    ports, errors = parse_port_map(mapping, "--discover-ports")
+    if errors:
+        raise ValueError(errors[0])
+    return ports
+
+
+def resolve_discovery_ports(
+    args: argparse.Namespace, config_loader: Optional[ConfigLoader]
+) -> Dict[Protocol, List[int]]:
+    """Extra discovery ports: --discover-ports, then discovery.ports of the config file"""
+    if getattr(args, "discover_ports", None):
+        return parse_discover_ports(args.discover_ports)
+    if config_loader:
+        return config_loader.get_discovery_ports()
+    return {}
 
 
 def resolve_device_ranges(

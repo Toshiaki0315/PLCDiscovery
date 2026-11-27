@@ -220,7 +220,7 @@ def test_run_all_reports_when_nothing_could_be_started(monkeypatch):
     from simulators import run_all
 
     class Manager:
-        def __init__(self, host):
+        def __init__(self, host, faults=None):
             self.servers: list = []
 
         async def start_all(self):
@@ -411,7 +411,7 @@ def test_run_all_starts_without_signal_handlers(monkeypatch):
     from simulators import run_all
 
     class Manager:
-        def __init__(self, host):
+        def __init__(self, host, faults=None):
             self.stopped = False
             created.append(self)
 

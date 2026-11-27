@@ -31,7 +31,7 @@ from typing import Any, Callable, Coroutine, Dict, List, Optional, Sequence
 from plc_discovery import settings_file
 from plc_discovery.audit_log import get_audit_logger
 from plc_discovery.broadcast_discovery import BroadcastDiscovery
-from plc_discovery.cli_args import parse_tag_list
+from plc_discovery.cli_args import parse_discover_ports, parse_tag_list
 from plc_discovery.collector import PLCDataCollector, unreached_points
 from plc_discovery.config import (
     MAX_RANGE_POINTS,
@@ -46,7 +46,7 @@ from plc_discovery.config import (
     TagRange,
 )
 from plc_discovery.data_types import ByteOrder, DataType
-from plc_discovery.discovery import PLCDiscovery, discover_plcs, merge_discovery_results
+from plc_discovery.discovery import PLCDiscovery, detect_slmp_settings, discover_plcs, merge_discovery_results
 from plc_discovery.output import DEFAULT_OUTPUT_DIR, CSVExporter
 from plc_discovery.scan_runner import (
     CycleRunner,
@@ -258,6 +258,8 @@ class PLCScannerApp(SettingsTabsMixin):
         self.var_scope = tk.StringVar(value="segment")
         self.var_ip_range = tk.StringVar(value="192.168.1.0/24")
         self.var_broadcast = tk.BooleanVar(value=True)
+        # 標準ポートのほかに探索で調べるポート（例: slmp=5000,5002;modbus=1502）
+        self.var_discover_ports = tk.StringVar(value="")
 
         # データ収集タブ
         self.var_target = tk.StringVar()
@@ -405,6 +407,13 @@ class PLCScannerApp(SettingsTabsMixin):
         ttk.Checkbutton(opts, text="UDPブロードキャスト探索も行う", variable=self.var_broadcast).grid(
             row=1, column=0, sticky=tk.W, pady=(4, 0)
         )
+        ttk.Label(opts, text="追加で調べるポート:").grid(row=3, column=1, sticky=tk.W, padx=(20, 4), pady=(6, 0))
+        ttk.Entry(opts, textvariable=self.var_discover_ports, width=26).grid(row=3, column=2, sticky=tk.W, pady=(6, 0))
+        ttk.Label(
+            opts,
+            text="例: slmp=5000,5002;modbus=1502（PLC側で標準以外のポートを設定している場合）",
+            style="Hint.TLabel",
+        ).grid(row=4, column=2, sticky=tk.W)
 
         btns = ttk.Frame(f)
         btns.pack(fill=tk.X, pady=8)
@@ -417,7 +426,7 @@ class PLCScannerApp(SettingsTabsMixin):
         self.lbl_discover_count = ttk.Label(btns, text="")
         self.lbl_discover_count.pack(side=tk.RIGHT)
 
-        cols = ("ip", "manufacturer", "model", "cpu", "firmware", "protocol", "port", "read", "mac")
+        cols = ("ip", "manufacturer", "model", "cpu", "firmware", "protocol", "port", "read", "mac", "note")
         headings = (
             "IPアドレス",
             "メーカー",
@@ -428,8 +437,9 @@ class PLCScannerApp(SettingsTabsMixin):
             "ポート",
             "読み方",
             "MACアドレス",
+            "補足",
         )
-        widths = (100, 130, 170, 140, 80, 100, 50, 170, 110)
+        widths = (100, 130, 170, 140, 80, 100, 50, 170, 110, 260)
         self.tree_plc = self._make_tree(f, cols, headings, widths)
         self.tree_plc.bind(
             "<<TreeviewSelect>>",
@@ -703,6 +713,15 @@ class PLCScannerApp(SettingsTabsMixin):
         if not sel:
             return
         plc = self.discovered[int(sel[0])]
+        if not plc.protocol:
+            messagebox.showinfo(
+                "読めない機器",
+                f"{plc.ip_address} は、本ツールが対応するプロトコルに応答しませんでした。\n"
+                f"{plc.note or ''}\n\n"
+                "DeviceGateway の別のドライバ（横河 FA-M3、JTEKT TOYOPUC など）で読めるか、"
+                "機器の設定を確認してください。",
+            )
+            return
         self.var_target.set(plc.ip_address)
         if plc.protocol:
             self.var_protocol.set(plc.protocol.name)
@@ -779,6 +798,8 @@ class PLCScannerApp(SettingsTabsMixin):
         try:
             config = self._network_config()
             outputs = self._job_outputs()
+            ports_text = self.var_discover_ports.get().strip()
+            extra_ports = parse_discover_ports(ports_text) if ports_text else {}
         except ValueError as e:
             messagebox.showwarning("入力エラー", str(e))
             return
@@ -797,7 +818,7 @@ class PLCScannerApp(SettingsTabsMixin):
         self.discovered = []
         self.lbl_discover_count.configure(text="")
         self._run_job(
-            self._discover_job(config, ip_range, self.var_broadcast.get(), self._exporter(), outputs),
+            self._discover_job(config, ip_range, self.var_broadcast.get(), self._exporter(), outputs, extra_ports),
             "PLCを探索しています...",
         )
 
@@ -808,8 +829,13 @@ class PLCScannerApp(SettingsTabsMixin):
         use_broadcast: bool,
         exporter: CSVExporter,
         outputs: Optional[JobOutputs] = None,
+        extra_ports: Optional[Dict[Protocol, List[int]]] = None,
     ) -> None:
-        """ブロードキャスト探索とポートスキャンでPLCを探し、結果をCSVに保存する"""
+        """
+        ブロードキャスト探索とポートスキャンでPLCを探し、結果をCSVに保存する。
+        対応プロトコルに応答しないが PLC らしい機器（未対応・要確認）も一覧と CSV に載せる
+        （データベースには保存しない。収集もできない）
+        """
         outputs = outputs or JobOutputs(None, None)
         audit = get_audit_logger()
         audit.log_discovery_start([ip_range] if ip_range else [])
@@ -826,28 +852,33 @@ class PLCScannerApp(SettingsTabsMixin):
                 logging.warning(f"ブロードキャスト探索に失敗しました（続行します）: {e}")
 
         self._post("status", f"{ip_range or '同一セグメント'} をスキャン中...")
-        tcp_plcs = await discover_plcs(ip_range, config, self._progress_cb)
+        unidentified: List[PLCInfo] = []
+        tcp_plcs = await discover_plcs(
+            ip_range, config, self._progress_cb, extra_ports=extra_ports, unidentified=unidentified
+        )
         # 同じIPでも応答したプロトコルごとに1行（複数プロトコル対応PLC・シミュレータ）。
         # TCPスキャンの結果（プロトコル確認済み・機器情報あり）を優先し、
         # ブロードキャストでのみ見つかった機器を追加する
         plcs = merge_discovery_results(tcp_plcs, plcs)
+        found_ips = {p.ip_address for p in plcs}
+        unidentified = [u for u in unidentified if u.ip_address not in found_ips]
         audit.log_discovery_result(len(plcs), [p.to_dict() for p in plcs])
 
         path = None
-        if plcs:
+        if plcs or unidentified:
             try:
-                path = exporter.export_discovery_results(plcs)
+                path = exporter.export_discovery_results(plcs + unidentified)
             except Exception as e:  # 一覧は表示する
                 logging.error(f"探索結果CSVの書き込みに失敗しました: {e}")
             outputs.open_db()
             try:
-                if outputs.db:
+                if outputs.db and plcs:
                     outputs.db.export_discovery_results(plcs)
             except Exception as e:
                 logging.error(f"探索結果をデータベースに保存できませんでした: {e}")
             finally:
                 outputs.close()
-        self._post("discovered", plcs, path)
+        self._post("discovered", plcs + unidentified, path)
         await outputs.notify(lambda n: n.notify_discovery(len(plcs), [p.to_dict() for p in plcs]))
 
     def _show_discovered(self, plcs: List[PLCInfo], path: Optional[str]) -> None:
@@ -869,11 +900,16 @@ class PLCScannerApp(SettingsTabsMixin):
                     d["port"],
                     d.get("read_method") or "-",
                     d["mac_address"] or "-",
+                    d.get("note") or "",
                 ),
             )
-        if plcs:
+        unidentified = [p for p in plcs if not p.protocol]
+        plcs = [p for p in plcs if p.protocol]
+        if plcs or unidentified:
             hosts = len({p.ip_address for p in plcs})
             count = f"{len(plcs)} 件を検出" + (f"（{hosts} 台）" if hosts != len(plcs) else "")
+            if unidentified:
+                count += f"、未対応・要確認 {len(unidentified)} 台"
             self.lbl_discover_count.configure(text=count)
             saved = f"  →  {path}" if path else "（CSVは保存できませんでした。ログを確認してください）"
             self.var_status.set(f"探索完了: {count}{saved}")
@@ -1054,6 +1090,8 @@ class PLCScannerApp(SettingsTabsMixin):
                 )
         else:
             plc = PLCInfo(ip_address=ip, protocol=protocol, port=port or PROTOCOL_PORTS.get(protocol))
+            # SLMP: 4E フレーム・ASCII コードに設定されたポートも、応答した設定で読む
+            await detect_slmp_settings(plc, config)
 
         # The requested ranges / tags (None: full scan), shared with the CLI
         items: Optional[List[ScanItem]] = (
@@ -1143,6 +1181,13 @@ class PLCScannerApp(SettingsTabsMixin):
                     self._post("data", points, collector.get_statistics(), path, denied_path, iteration)
 
                 if not interval:
+                    # 調査用のまとめ（読めた範囲・応答時間）: scan_summary / readable_ranges
+                    summary = collector.get_statistics()
+                    summary["scan_seconds"] = round(loop.time() - job_started, 1)
+                    try:
+                        exporter.export_survey_summary([(ip, plc, points, summary)])
+                    except Exception as e:  # データの CSV は保存済み
+                        logging.error(f"スキャンのまとめを保存できませんでした: {e}")
                     break
 
                 # Periodic monitoring: an error notification when the PLC stops

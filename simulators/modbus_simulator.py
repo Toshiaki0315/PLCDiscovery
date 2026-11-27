@@ -24,14 +24,30 @@ logger = logging.getLogger("Modbus-Simulator")
 
 # Shared CLI helpers (support both direct execution and package import)
 try:
-    from .common import parse_denied_ranges, peer_text, run_simulator, serve_until_stopped, simulator_parser
-except ImportError:
-    from common import (  # type: ignore[no-redef]
+    from .common import (
+        Faults,
+        add_fault_options,
+        faults_from_args,
+        log_faults,
         parse_denied_ranges,
         peer_text,
         run_simulator,
         serve_until_stopped,
         simulator_parser,
+        with_faults,
+    )
+except ImportError:
+    from common import (  # type: ignore[no-redef]
+        Faults,
+        add_fault_options,
+        faults_from_args,
+        log_faults,
+        parse_denied_ranges,
+        peer_text,
+        run_simulator,
+        serve_until_stopped,
+        simulator_parser,
+        with_faults,
     )
 
 # Modbus Function Codes
@@ -468,17 +484,20 @@ class ModbusRTUProtocol(ModbusProtocol):
         return None
 
 
-async def run_server(host: str, port: int, denied_ranges: List[Tuple[int, int]], rtu: bool = False) -> None:
+async def run_server(
+    host: str, port: int, denied_ranges: List[Tuple[int, int]], rtu: bool = False, faults: Optional[Faults] = None
+) -> None:
     """Run the Modbus/TCP (or, with ``rtu``, Modbus RTU over TCP) simulator server"""
     device = ModbusDevice(denied_ranges)
 
     loop = asyncio.get_event_loop()
     protocol = ModbusRTUProtocol if rtu else ModbusProtocol
-    server = await loop.create_server(lambda: protocol(device), host, port)
+    server = await loop.create_server(with_faults(lambda: protocol(device), faults, device), host, port)
 
     addr = server.sockets[0].getsockname()
     logger.info(f"Modbus{' RTU over TCP' if rtu else '/TCP'} Simulator running on {addr[0]}:{addr[1]}")
     logger.info(f"Denied address ranges: {denied_ranges}")
+    log_faults(faults, logger)
 
     await serve_until_stopped(server, logger)
 
@@ -486,9 +505,10 @@ async def run_server(host: str, port: int, denied_ranges: List[Tuple[int, int]],
 def main():
     parser = simulator_parser("Modbus/TCP PLC Simulator", 502, "5000-5100,8000-8050")
     parser.add_argument("--rtu", action="store_true", help="Modbus RTU over TCP (RTU frames with CRC, no MBAP header)")
+    add_fault_options(parser)
     args = parser.parse_args()
     denied_ranges = parse_denied_ranges(args.denied)
-    run_simulator(run_server(args.host, args.port, denied_ranges, rtu=args.rtu), logger)
+    run_simulator(run_server(args.host, args.port, denied_ranges, rtu=args.rtu, faults=faults_from_args(args)), logger)
 
 
 if __name__ == "__main__":

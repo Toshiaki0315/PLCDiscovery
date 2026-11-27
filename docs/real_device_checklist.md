@@ -12,6 +12,9 @@
 - 対象 PLC の IP アドレス、ポート、プロトコル設定（SLMP のフレーム・交信データコード、EtherNet/IP のスロットなど）を控えておく
 - PLC 側の設定ツール（GX Works、KV STUDIO、Sysmac Studio、TIA Portal、Studio 5000 など）で、確認するアドレスの**現在値**を表示できるようにしておく
 - 結果を残すフォルダを決める（例：`-o ./実機確認_YYYYMMDD`）
+- **DeviceGateway を後でつなぐ場合**：PLC 側に、本ツールと DeviceGateway の分の空き接続があるか（MELSEC の
+  SLMP 用オープン設定の数、KV のポート設定など）を確認する。本ツールは読み終えると接続を閉じますが、
+  DeviceGateway は接続し続けます
 
 ## 1. 共通の確認（全メーカー）
 
@@ -22,6 +25,8 @@
 | 1-3 | 存在しないアドレスが NG になる | デバイスの上限をまたぐ範囲を指定（例：D の上限付近） | 上限までは OK、それより先は `NG_ILLEGAL_ADDR`。`NG_COMM_ERROR` にならない |
 | 1-4 | 通信が途切れても止まらない | 周期実行（`--interval 5`）中に LAN ケーブルを抜き、30 秒後に戻す | 抜いている間は `NG_COMM_ERROR`／`NG_TIMEOUT`。戻すと自動で再接続して OK に戻る |
 | 1-5 | 所要時間 | フルスキャン（工場停止中のみ） | 完了まで止まらない。所要時間を記録する |
+| 1-6 | 未対応の機器 | 探索（`--ip-range` で工場の範囲） | 本ツールで読めない PLC が「未対応・要確認」として載り、`note` に開いていたポートが出る。それらの機種を控え、DeviceGateway のドライバがあるか確認する |
+| 1-7 | 調査のまとめ | 範囲指定・フルスキャンのあと | `scan_summary_*.csv` の `readable_ranges` が読めた範囲と一致し、`avg_response_ms`・`max_response_ms` が出る。DeviceGateway の収集周期を決める目安として記録する |
 
 ## 2. メーカー別の確認
 
@@ -30,7 +35,10 @@
 - [ ] **X/Y/B/W のアドレス**：`--device X --range 0-31 --hex-addresses` で読み、CSV の `address_hex`（X0〜X1F）が GX Works の表記と一致すること
 - [ ] **1 回の読み出し量**：`--device D --range 0-899` が分割されずに読めること。読めない機種では、`NG_ILLEGAL_ADDR` が出たあと、分割して全点 OK になること
 - [ ] **R（ファイルレジスタ）未設定の機種**：R のフルスキャンが数秒で `NG_ILLEGAL_ADDR` として終わること
-- [ ] **4E フレームや ASCII 交信の設定**：PLC 側が 3E・バイナリ以外の設定だと接続できないので、PLC の設定を確認する
+- [ ] **機種名と通信設定**：探索結果の `model` が GX Works の CPU 形名と一致し、`note` のフレーム・交信データコード
+  （例：`SLMP 4E・ASCII`）が PLC のパラメータと一致すること。4E・ASCII のポートでも、データが読めること
+  （シミュレーターでは確認済み。UDP だけに設定されたポートは読めず、「未対応・要確認」になる）
+- [ ] **ZR・SD・L・TN・CN**：`--device TN --range 0-9` などの値が GX Works の現在値と一致すること
 
 ### キーエンス（KV シリーズ：SLMP / EtherNet/IP）
 

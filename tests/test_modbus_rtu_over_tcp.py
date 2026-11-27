@@ -222,7 +222,7 @@ def test_simulator_command_line_has_the_rtu_switch(monkeypatch):
 
     started = MagicMock()
     monkeypatch.setattr(simulator, "run_simulator", lambda coroutine, logger: started(coroutine))
-    monkeypatch.setattr(simulator, "run_server", lambda host, port, denied, rtu=False: ("run", port, rtu))
+    monkeypatch.setattr(simulator, "run_server", lambda host, port, denied, rtu=False, faults=None: ("run", port, rtu))
     monkeypatch.setattr("sys.argv", ["modbus_simulator.py", "--port", "1503", "--rtu"])
     simulator.main()
     started.assert_called_once_with(("run", 1503, True))

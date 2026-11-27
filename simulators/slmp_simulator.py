@@ -4,7 +4,9 @@ SLMP (Seamless Message Protocol) Simulator
 
 Simulates a Mitsubishi/Keyence PLC that responds to the SLMP / MC protocol
 (binary code, 3E and 4E frames): batch, random and block reads, CPU model
-name and loopback test, and with --writable batch / random writes. Used for
+name and loopback test, and with --writable batch / random writes. With
+--ascii the port answers ASCII code instead (batch read and CPU model name
+only), like a PLC whose communication data code is set to ASCII. Used for
 testing PLC Discovery tool, or another SLMP client (e.g. a device gateway),
 without physical hardware.
 
@@ -13,7 +15,7 @@ model name answers "read CPU model" and device numbers end where its do -
 reading past them is answered with C056, like the real CPU.
 
 Usage:
-    python slmp_simulator.py [--host 127.0.0.1] [--port 5001] [--writable] [--cpu R04CPU]
+    python slmp_simulator.py [--host 127.0.0.1] [--port 5001] [--writable] [--cpu R04CPU] [--ascii]
 """
 
 import asyncio
@@ -26,14 +28,30 @@ logger = logging.getLogger("SLMP-Simulator")
 
 # Shared CLI helpers (support both direct execution and package import)
 try:
-    from .common import parse_denied_ranges, peer_text, run_simulator, serve_until_stopped, simulator_parser
-except ImportError:
-    from common import (  # type: ignore[no-redef]
+    from .common import (
+        Faults,
+        add_fault_options,
+        faults_from_args,
+        log_faults,
         parse_denied_ranges,
         peer_text,
         run_simulator,
         serve_until_stopped,
         simulator_parser,
+        with_faults,
+    )
+except ImportError:
+    from common import (  # type: ignore[no-redef]
+        Faults,
+        add_fault_options,
+        faults_from_args,
+        log_faults,
+        parse_denied_ranges,
+        peer_text,
+        run_simulator,
+        serve_until_stopped,
+        simulator_parser,
+        with_faults,
     )
 
 # SLMP frame constants (binary code)
@@ -602,20 +620,126 @@ class SLMPProtocol(asyncio.Protocol):
         return b""
 
 
+# Device numbers written in hexadecimal (in ASCII code as on GX Works)
+HEX_NUMBERED = {"X", "Y", "B", "W", "SB", "SW", "DX", "DY"}
+
+
+class SLMPASCIIProtocol(SLMPProtocol):
+    """
+    SLMP in ASCII code (3E and 4E frames): every field is hexadecimal text,
+    numbers high digit first. Batch read (0401, words and bits) and CPU
+    model name (0101) are answered; any other command with C059. Each
+    request is translated to the binary frame the binary server answers,
+    and its answer back to text.
+    """
+
+    def data_received(self, data: bytes) -> None:
+        self.buffer += data
+        while self.buffer:
+            frame = self._next_ascii_frame()
+            if frame is None:
+                return
+            try:
+                response = self._process_ascii_frame(frame)
+            except Exception as e:  # never let one bad request kill the connection
+                self._log_once(logging.ERROR, f"Error processing ASCII frame: {e}")
+                continue
+            if response and self.transport is not None:
+                self.transport.write(response)
+
+    def _next_ascii_frame(self) -> Optional[bytes]:
+        head = self.buffer[:4].upper()
+        if len(head) < 4:
+            return None
+        if head == b"5000":
+            header = 18
+        elif head == b"5400":
+            header = 26
+        else:
+            logger.warning(f"Invalid ASCII subheader: {head!r} (ASCII 3E/4E frames only)")
+            self.buffer = b""
+            return None
+        if len(self.buffer) < header:
+            return None
+        try:
+            length = int(self.buffer[header - 4 : header].decode("ascii"), 16)
+        except ValueError:
+            logger.warning("Invalid ASCII request length; dropping the received data")
+            self.buffer = b""
+            return None
+        if length > MAX_REQUEST_LENGTH:
+            self.buffer = b""
+            return None
+        if len(self.buffer) < header + length:
+            return None
+        frame, self.buffer = self.buffer[: header + length], self.buffer[header + length :]
+        return frame
+
+    def _process_ascii_frame(self, frame: bytes) -> bytes:
+        text = frame.decode("ascii").upper()
+        four_e = text.startswith("5400")
+        prefix_text = ("D400" + text[4:8] + "0000") if four_e else "D000"
+        route_text = text[12:22] if four_e else text[4:14]
+        body = text[26:] if four_e else text[18:]
+        command, subcommand = int(body[4:8], 16), int(body[8:12], 16)
+        error_info = route_text + body[4:12]
+        try:
+            if command == 0x0401 and subcommand in (0x0000, 0x0001):
+                name = body[12:14].rstrip("*")
+                number = int(body[14:20], 16 if name in HEX_NUMBERED else 10)
+                points = int(body[20:24], 16)
+                if name not in DEVICE_CODES or len(body) != 24:
+                    raise SLMPError(ERR_REQUEST_LENGTH if len(body) != 24 else ERR_ILLEGAL_DEVICE)
+                data = self._handle(
+                    command,
+                    subcommand,
+                    struct.pack("<I", number)[:3] + bytes([DEVICE_CODES[name]]) + struct.pack("<H", points),
+                )
+                if subcommand == 0x0001:
+                    payload = "".join(str(bit) for bit in _unpack_bits(data, points))
+                else:
+                    payload = "".join(f"{value:04X}" for value in struct.unpack(f"<{len(data) // 2}H", data))
+            elif command == 0x0101 and subcommand == 0x0000:
+                data = self._handle(command, subcommand, b"")
+                payload = data[:16].decode("ascii") + f"{struct.unpack('<H', data[16:18])[0]:04X}"
+            else:
+                raise SLMPError(ERR_UNSUPPORTED)
+            end_code = 0
+        except SLMPError as e:
+            if e.code == ERR_UNSUPPORTED:
+                self._log_once(logging.WARNING, f"Unsupported ASCII command: {command:04X} subcommand {subcommand:04X}")
+            else:
+                self._log_once(logging.INFO, f"Command {command:04X}: {e}")
+            end_code, payload = e.code, error_info
+        # The route (network, PC, I/O, station) is echoed as received
+        answer = f"{end_code:04X}" + payload
+        return (prefix_text + route_text + f"{len(answer):04X}" + answer).encode("ascii")
+
+
 async def run_server(
-    host: str, port: int, denied_ranges: List[Tuple[int, int]], writable: bool = False, cpu: str = DEFAULT_CPU
+    host: str,
+    port: int,
+    denied_ranges: List[Tuple[int, int]],
+    writable: bool = False,
+    cpu: str = DEFAULT_CPU,
+    ascii_code: bool = False,
+    faults: Optional[Faults] = None,
 ) -> None:
     """Run SLMP simulator server"""
     device = SLMPDevice(denied_ranges, writable=writable, cpu=cpu)
+    protocol = SLMPASCIIProtocol if ascii_code else SLMPProtocol
 
     loop = asyncio.get_event_loop()
-    server = await loop.create_server(lambda: SLMPProtocol(device), host, port)
+    server = await loop.create_server(with_faults(lambda: protocol(device), faults, device), host, port)
 
     addr = server.sockets[0].getsockname()
     logger.info(f"SLMP Simulator running on {addr[0]}:{addr[1]}")
     logger.info(f"CPU: {cpu} (D0-D{device.limits['D'] - 1}, M0-M{device.limits['M'] - 1})")
     logger.info(f"Denied address ranges: {denied_ranges}")
     logger.info("Writes: " + ("accepted (--writable)" if writable else "refused (read-only; --writable to accept)"))
+    if ascii_code:
+        logger.info("Communication data code: ASCII (--ascii; batch read and CPU model name only)")
+    log_faults(faults, logger)
 
     await serve_until_stopped(server, logger)
 
@@ -631,9 +755,16 @@ def main():
         default=DEFAULT_CPU,
         help=f"Simulated CPU: model name and device ranges (default: {DEFAULT_CPU})",
     )
+    parser.add_argument(
+        "--ascii", action="store_true", help="Answer in ASCII code instead of binary (batch read and CPU model only)"
+    )
+    add_fault_options(parser)
     args = parser.parse_args()
     denied_ranges = parse_denied_ranges(args.denied)
-    run_simulator(run_server(args.host, args.port, denied_ranges, args.writable, args.cpu), logger)
+    run_simulator(
+        run_server(args.host, args.port, denied_ranges, args.writable, args.cpu, args.ascii, faults_from_args(args)),
+        logger,
+    )
 
 
 if __name__ == "__main__":

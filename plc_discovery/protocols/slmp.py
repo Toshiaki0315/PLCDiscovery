@@ -1,10 +1,12 @@
 """
-SLMP Protocol Handler - Mitsubishi MC Protocol (3E Frame)
+SLMP Protocol Handler - Mitsubishi MC Protocol (3E / 4E Frame)
 
 Supports:
 - Mitsubishi Electric (MELSEC iQ-R, iQ-F, Q series)
 - Keyence (KV series)
 - Panasonic, Toshiba, Hitachi, Sharp (SLMP compatible)
+- 3E or 4E frame, binary or ASCII code (targets[].options.frame / ascii;
+  discovery finds the setting the PLC's port answers)
 """
 
 import asyncio
@@ -26,14 +28,20 @@ SLMP_DEVICE_MAP = {
     DeviceType.Y: "Y",  # Output
     DeviceType.B: "B",  # Link relay
     DeviceType.SM: "SM",  # Special relay
+    DeviceType.L: "L",  # Latch relay
+    DeviceType.ZR: "ZR",  # File register (serial numbers)
+    DeviceType.SD: "SD",  # Special register
+    DeviceType.TN: "TN",  # Timer current value
+    DeviceType.CN: "CN",  # Counter current value
 }
 
 # Bit devices (read with batch read in bit units)
-SLMP_BIT_DEVICES = frozenset({DeviceType.M, DeviceType.X, DeviceType.Y, DeviceType.B, DeviceType.SM})
+SLMP_BIT_DEVICES = frozenset({DeviceType.M, DeviceType.X, DeviceType.Y, DeviceType.B, DeviceType.SM, DeviceType.L})
 
 # Devices whose numbers are hexadecimal on MELSEC (pymcprotocol parses the
 # number after the device name in base 16 for these)
 SLMP_HEX_DEVICES = (DeviceType.X, DeviceType.Y, DeviceType.B, DeviceType.W)
+SLMP_HEX_NAMES = frozenset(d.value for d in SLMP_HEX_DEVICES)
 
 
 def slmp_head_device(device_type: DeviceType, address: int) -> str:
@@ -68,16 +76,20 @@ SLMP_ADDRESS_END_CODES = (
 )
 
 
-# Binary response framing: (header size, subheader, offset of the 2-byte data length)
-#   3E: D0 00 | net | pc | io(2) | station | length(2)                     -> 9 bytes
-#   4E: D4 00 | serial(2) | 00 00 | net | pc | io(2) | station | length(2) -> 13 bytes
+# Response framing: (header size, subheader, offset of the data length,
+# size of the data length field)
+#   3E binary: D0 00 | net | pc | io(2) | station | length(2)                     -> 9 bytes
+#   4E binary: D4 00 | serial(2) | 00 00 | net | pc | io(2) | station | length(2) -> 13 bytes
+#   ASCII: the same fields as hexadecimal text ("D000" ... length as 4 characters)
 _FRAME_LAYOUT = {
-    "3E": (9, b"\xd0\x00", 7),
-    "4E": (13, b"\xd4\x00", 11),
+    ("3E", False): (9, b"\xd0\x00", 7, 2),
+    ("4E", False): (13, b"\xd4\x00", 11, 2),
+    ("3E", True): (18, b"D000", 14, 4),
+    ("4E", True): (26, b"D400", 22, 4),
 }
 
 
-def _framed_client_class(frame: str) -> Any:
+def _framed_client_class(frame: str, ascii_code: bool = False) -> Any:
     """
     pymcprotocol client whose _recv() reads exactly one complete response.
 
@@ -86,12 +98,16 @@ def _framed_client_class(frame: str) -> Any:
     then decoded with the missing bytes as 0 and reported as valid data, and
     the rest of the response was read as the next reply. A closed connection
     (recv() == b"") was decoded as all-zero data as well.
+
+    In ASCII code the device number of X/Y/B/W is written in hexadecimal
+    (as GX Works shows it); pymcprotocol writes it in decimal, so X1F would
+    read X31. The number is formatted here instead.
     """
     if frame == "4E":
         from pymcprotocol import Type4E as Base
     else:
         from pymcprotocol import Type3E as Base
-    header_size, subheader, length_offset = _FRAME_LAYOUT[frame]
+    header_size, subheader, length_offset, length_size = _FRAME_LAYOUT[(frame, ascii_code)]
 
     class FramedClient(Base):
         def _recv_exact(self, size: int) -> bytes:
@@ -105,10 +121,28 @@ def _framed_client_class(frame: str) -> Any:
 
         def _recv(self) -> bytes:
             header = self._recv_exact(header_size)
-            if header[:2] != subheader:
-                raise ConnectionError(f"unexpected SLMP response header: {header[:2].hex()}")
-            length = int.from_bytes(header[length_offset : length_offset + 2], "little")
+            if header[: len(subheader)].upper() != subheader:
+                raise ConnectionError(f"unexpected SLMP response header: {header[: len(subheader)].hex()}")
+            field = header[length_offset : length_offset + length_size]
+            if ascii_code:
+                try:
+                    length = int(field.decode("ascii"), 16)
+                except ValueError:
+                    raise ConnectionError(f"unexpected SLMP response length: {field!r}") from None
+            else:
+                length = int.from_bytes(field, "little")
             return header + self._recv_exact(length)
+
+        def _make_devicedata(self, device: str) -> bytes:
+            # slmp_head_device() names X/Y/B/W with one letter ("B" is
+            # also a hex digit, so the name cannot be split off the number)
+            name = device[:1].upper()
+            if not ascii_code or name not in SLMP_HEX_NAMES:
+                data: bytes = super()._make_devicedata(device)
+                return data
+            # Device code (2 characters, "X*") and the number in hexadecimal
+            number = device[1:].upper().lstrip("0") or "0"
+            return (name + "*").encode() + number.rjust(6, "0").encode()
 
     FramedClient.__name__ = f"Framed{Base.__name__}"
     return FramedClient
@@ -132,17 +166,34 @@ class SLMPHandler(BaseProtocolHandler):
     # pymcprotocol uses by default (a larger number raises OverflowError)
     MAX_ADDRESS = 0xFFFFFF
 
-    def __init__(self, ip_address: str, port: Optional[int] = None, **kwargs: Any):
+    def __init__(self, ip_address: str, port: Optional[int] = None, frame: int = 0, ascii: int = 0, **kwargs: Any):
+        """
+        Args:
+            frame: 3 or 4 (targets[].options.frame): the frame the PLC's
+                port is set to. 0 keeps the class default (3E).
+            ascii: 1 when the port's communication data code is ASCII
+                (targets[].options.ascii); 0 = binary
+        """
         super().__init__(ip_address, port or PROTOCOL_PORTS[Protocol.SLMP], **kwargs)
         self._client: Any = None
+        if frame:
+            self.FRAME = f"{frame}E"
+        self._ascii = bool(ascii)
+
+    @property
+    def settings_text(self) -> str:
+        """The frame and data code, e.g. "3E" or "4E ASCII" """
+        return self.FRAME + (" ASCII" if self._ascii else "")
 
     async def connect(self) -> bool:
         """Establish SLMP connection"""
         try:
-            client_class = _framed_client_class(self.FRAME)
+            client_class = _framed_client_class(self.FRAME, self._ascii)
 
             def _connect():
                 client = client_class()
+                if self._ascii:
+                    client.setaccessopt(commtype="ascii")
                 # Socket timeout follows the configured request timeout
                 # (pymcprotocol's own default is 2 s)
                 client.soc_timeout = self.config.request_timeout_ms / 1000
@@ -152,7 +203,7 @@ class SLMPHandler(BaseProtocolHandler):
             loop = asyncio.get_running_loop()
             self._client = await loop.run_in_executor(None, _connect)
             self._connected = True
-            logger.info(f"SLMP ({self.FRAME}) connected to {self.ip_address}:{self.port}")
+            logger.info(f"SLMP ({self.settings_text}) connected to {self.ip_address}:{self.port}")
             return True
 
         except ImportError:

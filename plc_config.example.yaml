@@ -39,6 +39,12 @@ discovery:
     - fins        # FINS/UDP
     - fins_tcp    # FINS/TCP
 
+  # Ports probed besides each protocol's standard port, for PLCs set to
+  # another port (--discover-ports on the command line overrides)
+  # ports:
+  #   slmp: [5000, 5002]
+  #   modbus: [1502]
+
 # Target PLCs for direct connection (skip discovery)
 targets:
   # Example: Mitsubishi PLC
@@ -47,6 +53,10 @@ targets:
   #   port: 5001
   #   name: "Main PLC"            # for your own reference (not used by the tool)
   #   manufacturer: "三菱電機"
+  #   options:                    # only when the port is not 3E / binary
+  #     frame: 4                  # 3 = 3E (default), 4 = 4E
+  #     ascii: 1                  # 1 = ASCII code, 0 = binary (default)
+  #                               # (without them the port's setting is detected)
   
   # Example: Omron PLC
   # - ip: "192.168.1.20"

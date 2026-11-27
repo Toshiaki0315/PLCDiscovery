@@ -140,6 +140,9 @@ python plc_scanner.py --mode range --target 127.0.0.1 --protocol modbus --port 1
 | S7 | バイト位置 500-550（本ツールのアドレスはワード単位のため DB250-DB275） |
 | FINS | DM5000-5100, HR300-350 |
 
+FINS シミュレーターは DM・HR・W のほか、AR（0〜959）、EM バンク0（0〜32767）、
+タイマ・カウンタの現在値（TIM0〜4095・CNT0〜4095）にも答えます。
+
 二分探索エラー回避アルゴリズムのテスト：
 
 ```bash
@@ -158,6 +161,40 @@ python plc_scanner.py --mode range --target 127.0.0.1 --protocol slmp --device D
 | `--denied` | アクセス拒否範囲（カンマ区切り）。FINS シミュレーターにはありません（拒否範囲は固定） | シミュレーター依存 |
 | `--writable` | 書き込みを受け付ける（SLMP のみ） | なし（読み取り専用） |
 | `--cpu` | シミュレートする CPU 機種（SLMP のみ。`Q03UDVCPU` / `R04CPU`） | `Q03UDVCPU` |
+| `--ascii` | 交信データコード ASCII で応答する（SLMP のみ。一括読み出しと CPU 形名読み出しだけ） | なし（バイナリ） |
+
+### 実機に近い異常の再現（全シミュレーター共通、`run_all.py` にも指定可）
+
+実機で起きるが、ふつうのシミュレーターでは起きない動きを再現し、スキャナーの異常時の処理を確かめます。
+FINS は FINS/TCP だけに効きます（UDP には効きません）。GUI（simulator_gui）からは指定できません。
+
+| オプション | 再現する状況 | スキャナー側で確かめること |
+|-----------|-------------|--------------------------|
+| `--delay MS` | 応答が遅い PLC（負荷の高い CPU、遅いネットワーク）。すべての応答を MS ミリ秒遅らせます | `--request-timeout` より長いとタイムアウト（`NG_TIMEOUT`）になり、再接続して続けること。`scan_summary` の応答時間 |
+| `--drop-denied` | 読めないアドレスを含む要求に、エラー応答ではなく**何も答えない**機器 | 応答のない範囲の探索（CLAUDE.md の「Unanswered ranges」）。予算を使い切った残りは `NG_TIMEOUT` になること |
+| `--max-connections N` | 接続数の上限に達した PLC のポート（DeviceGateway などがすでに接続している） | N 本を超える接続はすぐ切られ、`NG_COMM_ERROR` になること |
+
+```bash
+# 応答に 300 ms かかり、同時に 1 本しかつながらない SLMP
+python slmp_simulator.py --port 5001 --delay 300 --max-connections 1
+
+# 読めないアドレスへの要求に答えない Modbus
+python modbus_simulator.py --port 1502 --drop-denied
+```
+
+### 対応プロトコルに応答しない機器（silent_device.py）
+
+TCP のポートで接続を受け付けるだけで、何も答えない機器です。UDP にだけ設定された SLMP ポートや、
+本ツールが対応していないメーカーの PLC（DeviceGateway の別のドライバで読む機器）の代わりに使い、
+探索結果に「未対応・要確認」として載ることを確かめます。
+
+```bash
+python silent_device.py --ports 5001,8501
+python plc_scanner.py --mode discover --ip-range 127.0.0.1 --discover-ports "slmp=8501"
+```
+
+同じ IP で対応プロトコルの PLC が見つかった場合（ほかのシミュレーターを同時に動かしている場合など）は、
+その IP は「未対応・要確認」にはなりません。
 
 ### 例
 
@@ -178,6 +215,8 @@ python modbus_simulator.py --host 192.168.1.100 --port 502
 
 三菱電機 SLMP/MCプロトコル（バイナリコード、3E・4E フレーム）をシミュレート。
 このツールのほか、たけびしデバイスゲートウェイなど、ほかの SLMP クライアントからも読めます。
+`--ascii` を付けると ASCII コードで応答します（一括読み出し 0401 と CPU 形名読み出し 0101 だけ。
+X・Y・B・W の番号は 16 進数。ほかのコマンドには C059）。
 
 **対応コマンド（Q/L シリーズ形式と、デバイス番号 4 バイトの iQ-R 形式）：**
 - 一括読み出し（ワード単位 0401/0000、ビット単位 0401/0001。iQ-R 形式は 0002/0003）

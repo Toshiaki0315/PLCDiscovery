@@ -25,6 +25,33 @@ except ImportError:
 from plc_discovery.config import DataPoint, DeviceRange, DeviceType, NetworkConfig, PLCInfo, Protocol, StatusCode
 
 
+@pytest.fixture(autouse=True)
+def _slmp_identity_follows_a_patched_verify_protocol(monkeypatch):
+    """
+    Discovery verifies SLMP with identify_slmp() (frame, data code and CPU
+    model in one probe) and every other protocol with verify_protocol().
+    Tests that replace verify_protocol to fake a network expect it to decide
+    for SLMP as well: while it is replaced, SLMP follows it (as a 3E binary
+    port without a model name). Otherwise the real probe runs, for loopback
+    addresses only (simulators): the unit tests never connect to other hosts
+    (an SLMP target given with --protocol is probed for its frame / data code).
+    """
+    from plc_discovery import discovery as discovery_module
+    from plc_discovery import probes
+
+    real = discovery_module.identify_slmp
+
+    def identify(ip, port, timeout, interval=0.0):
+        verify = discovery_module.verify_protocol
+        if verify is probes.verify_protocol:
+            return real(ip, port, timeout, interval) if str(ip).startswith("127.") else None
+        if not verify(ip, port, Protocol.SLMP, timeout):
+            return None
+        return {"frame": "3E", "ascii": False, "end_code": 0, "model": None, "model_code": None}
+
+    monkeypatch.setattr(discovery_module, "identify_slmp", identify)
+
+
 @pytest.fixture
 def sample_plc_info():
     """Sample PLCInfo for testing"""

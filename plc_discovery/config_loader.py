@@ -121,6 +121,9 @@ TARGET_OPTION_RANGES: Dict[Optional[Protocol], Dict[str, tuple]] = {
     # rtu: 1 = Modbus RTU over TCP (a serial-to-Ethernet converter passing
     # RTU frames through), 0 (default) = Modbus/TCP
     Protocol.MODBUS_TCP: {"unit_id": (0, 255), "contiguous": (0, 1), "rtu": (0, 1)},
+    # frame: 3 = 3E (default), 4 = 4E; ascii: 1 = ASCII code, 0 (default) =
+    # binary - as set for the PLC's port (GX Works: 交信データコード)
+    Protocol.SLMP: {"frame": (3, 4), "ascii": (0, 1)},
 }
 TARGET_OPTIONS: Dict[Optional[Protocol], set] = {
     protocol: set(ranges) for protocol, ranges in TARGET_OPTION_RANGES.items()
@@ -140,6 +143,37 @@ NETWORK_MINIMUMS: Dict[str, int] = {
 }
 
 
+def parse_port_map(value: Any, where: str = "discovery.ports") -> Tuple[Dict[Protocol, List[int]], List[str]]:
+    """
+    Extra discovery ports per protocol, e.g. {"slmp": [5000, 5002]}.
+
+    Returns:
+        (protocol -> ports, errors); entries with errors are left out
+    """
+    if value is None:
+        return {}, []
+    if not isinstance(value, dict):
+        return {}, [f"{where} must be a mapping of protocol to ports (e.g. slmp: [5000, 5002])"]
+    ports: Dict[Protocol, List[int]] = {}
+    errors: List[str] = []
+    for name, numbers in value.items():
+        protocol = parse_protocol(str(name))
+        if protocol is None:
+            errors.append(f"{where}: unknown protocol '{name}'")
+            continue
+        if isinstance(numbers, int) and not isinstance(numbers, bool):
+            numbers = [numbers]
+        if not isinstance(numbers, list) or not numbers:
+            errors.append(f"{where}.{name} must list port numbers (e.g. [5000, 5002])")
+            continue
+        for number in numbers:
+            if isinstance(number, bool) or not isinstance(number, int) or not 1 <= number <= 65535:
+                errors.append(f"{where}.{name}: port must be an integer 1-65535, got {number!r}")
+            elif number not in ports.setdefault(protocol, []):
+                ports[protocol].append(number)
+    return {protocol: numbers for protocol, numbers in ports.items() if numbers}, errors
+
+
 # Upper limit of parallel PLC connections
 MAX_CONCURRENT = 32
 
@@ -148,7 +182,7 @@ OUTPUT_ENCODINGS = ("utf-8-sig", "utf-8", "shift-jis")
 
 # Settings read from each section; anything else is reported as unknown
 KNOWN_SECTION_KEYS: Dict[str, Tuple[str, ...]] = {
-    "discovery": ("enabled", "ip_ranges", "scan_same_segment", "protocols"),
+    "discovery": ("enabled", "ip_ranges", "scan_same_segment", "protocols", "ports"),
     "scan": ("mode", "device_ranges", "interval_seconds", "tags", "tag_members"),
     "output": ("directory", "encoding", "format", "include_timestamp", "database", "hex_addresses", "periodic_csv"),
     "logging": ("level", "file", "audit_log", "format"),
@@ -468,6 +502,10 @@ class ConfigLoader:
             return None
         return [p for p in (self._parse_protocol(n) for n in self.config["discovery"]["protocols"]) if p]
 
+    def get_discovery_ports(self) -> Dict[Protocol, List[int]]:
+        """Ports probed besides each protocol's standard port (discovery.ports)"""
+        return parse_port_map((self.config.get("discovery") or {}).get("ports"))[0]
+
     def get_output_settings(self) -> Dict[str, Any]:
         """Get output settings"""
         return dict(self.config.get("output", {}))
@@ -678,6 +716,8 @@ class ConfigLoader:
         if self.is_set("discovery", "protocols") and (not isinstance(protocols_filter, list) or not protocols_filter):
             errors.append("discovery.protocols must list at least one protocol (remove the key to probe all)")
             protocols_filter = []
+
+        errors.extend(parse_port_map((self.config.get("discovery") or {}).get("ports"))[1])
 
         # Validate discovery protocol filter
         for name in self.config.get("discovery", {}).get("protocols", []) or []:

@@ -28,9 +28,25 @@ logger = logging.getLogger(__name__)
 
 # Shared CLI helpers (support both direct execution and package import)
 try:
-    from .common import run_simulator, simulator_parser
+    from .common import (
+        Faults,
+        add_fault_options,
+        faults_from_args,
+        log_faults,
+        run_simulator,
+        simulator_parser,
+        with_faults,
+    )
 except ImportError:
-    from common import run_simulator, simulator_parser  # type: ignore[no-redef]
+    from common import (  # type: ignore[no-redef]
+        Faults,
+        add_fault_options,
+        faults_from_args,
+        log_faults,
+        run_simulator,
+        simulator_parser,
+        with_faults,
+    )
 
 # FINS Constants
 FINS_ICF_RESPONSE = 0xC0  # Response frame
@@ -55,6 +71,13 @@ FINS_AREA_DM = 0x82
 FINS_AREA_HR = 0xB2
 FINS_AREA_W = 0xB1
 FINS_AREA_CIO = 0xB0
+FINS_AREA_AR = 0xB3
+FINS_AREA_EM0 = 0xA0  # EM bank 0
+FINS_AREA_TC = 0x89  # timer present values 0000-, counter present values 8000-
+
+# Timers / counters per kind (CJ2): TIM0000-4095 at 0000-0FFF, CNT0000-4095 at 8000-8FFF
+FINS_TC_POINTS = 4096
+FINS_COUNTER_BASE = 0x8000
 
 # Words per memory area (CS/CJ series) and per Memory Area Read
 FINS_AREA_SIZES = {
@@ -62,6 +85,9 @@ FINS_AREA_SIZES = {
     FINS_AREA_HR: 512,
     FINS_AREA_W: 512,
     FINS_AREA_CIO: 6144,
+    FINS_AREA_AR: 960,
+    FINS_AREA_EM0: 32768,
+    FINS_AREA_TC: FINS_COUNTER_BASE + FINS_TC_POINTS,
 }
 FINS_MAX_READ_WORDS = 999
 
@@ -84,6 +110,9 @@ class FINSSimulator:
         self._dm_area: Dict[int, int] = {}  # DM area (0x82)
         self._hr_area: Dict[int, int] = {}  # HR area (0xB2)
         self._w_area: Dict[int, int] = {}  # W area (0xB1)
+        self._ar_area: Dict[int, int] = {}  # AR area (0xB3)
+        self._em_area: Dict[int, int] = {}  # EM bank 0 (0xA0)
+        self._tc_area: Dict[int, int] = {}  # timer / counter present values (0x89)
 
         # Answer to Controller Data Read (05 01)
         self.cpu_model = "CJ2M-CPU33 Sim"
@@ -117,6 +146,13 @@ class FINSSimulator:
         for i in range(200):
             self._w_area[i] = random.randint(0, 255)
 
+        # AR, EM, timers (TIM0-99) and counters (CNT0-99)
+        for i in range(100):
+            self._ar_area[i] = i
+            self._em_area[i] = 1000 + i
+            self._tc_area[i] = 50 + i
+            self._tc_area[FINS_COUNTER_BASE + i] = i * 3
+
         logger.info(f"Initialized DM: {len(self._dm_area)} words")
         logger.info(f"Initialized HR: {len(self._hr_area)} words")
         logger.info(f"Initialized W: {len(self._w_area)} words")
@@ -129,15 +165,22 @@ class FINSSimulator:
             return self._hr_area
         elif area_code == FINS_AREA_W:
             return self._w_area
+        elif area_code == FINS_AREA_AR:
+            return self._ar_area
+        elif area_code == FINS_AREA_EM0:
+            return self._em_area
+        elif area_code == FINS_AREA_TC:
+            return self._tc_area
         else:
             return {}
 
     def _is_accessible(self, area_code: int, address: int) -> bool:
         """Check if address is accessible"""
-        for area, start, end in INACCESSIBLE_RANGES:
-            if area == area_code and start <= address <= end:
-                return False
-        return True
+        return not self.is_address_denied(area_code, address)
+
+    def is_address_denied(self, area_code: int, address: int) -> bool:
+        """An address of INACCESSIBLE_RANGES (answered 1103, or not at all with --drop-denied)"""
+        return any(area == area_code and start <= address <= end for area, start, end in INACCESSIBLE_RANGES)
 
     def handle_frame(self, data: bytes, client_addr: Tuple[str, int]) -> Optional[bytes]:
         """
@@ -194,6 +237,11 @@ class FINSSimulator:
             return self._build_error_response(request, 0x110B)  # response too long
         if start_address + count > size:
             return self._build_error_response(request, 0x1104)  # address range exceeded
+        if area_code == FINS_AREA_TC and not (
+            start_address + count <= FINS_TC_POINTS
+            or FINS_COUNTER_BASE <= start_address <= start_address + count <= FINS_COUNTER_BASE + FINS_TC_POINTS
+        ):
+            return self._build_error_response(request, 0x1104)  # beyond TIM4095 / CNT4095
 
         # Check accessibility
         for addr in range(start_address, start_address + count):
@@ -381,7 +429,7 @@ class FINSTCPServerProtocol(asyncio.Protocol):
         self._send_error(FINS_TCP_ERR_UNSUPPORTED)
 
 
-async def run_fins_simulator(host: str, port: int, transport: str = "both") -> None:
+async def run_fins_simulator(host: str, port: int, transport: str = "both", faults: Optional[Faults] = None) -> None:
     """
     Run FINS simulator server.
 
@@ -389,6 +437,7 @@ async def run_fins_simulator(host: str, port: int, transport: str = "both") -> N
         host: Address to bind
         port: Port for both UDP and TCP (Omron default 9600)
         transport: "udp", "tcp" or "both"
+        faults: late / dropped answers and the connection limit (FINS/TCP only)
     """
     simulator = FINSSimulator(host, port)
 
@@ -402,7 +451,9 @@ async def run_fins_simulator(host: str, port: int, transport: str = "both") -> N
         )
 
     if transport in ("tcp", "both"):
-        tcp_server = await loop.create_server(lambda: FINSTCPServerProtocol(simulator), host, port)
+        tcp_server = await loop.create_server(
+            with_faults(lambda: FINSTCPServerProtocol(simulator), faults, simulator), host, port
+        )
 
     logger.info(f"FINS Simulator started on {host}:{port} ({transport.upper()})")
     logger.info("Memory areas:")
@@ -411,6 +462,8 @@ async def run_fins_simulator(host: str, port: int, transport: str = "both") -> N
     logger.info("  HR Area (0xB2): 0-499 (accessible)")
     logger.info("  HR Area (0xB2): 300-350 (INACCESSIBLE)")
     logger.info("  W Area (0xB1): 0-199 (accessible)")
+    logger.info("  AR (0xB3) 0-959, EM bank 0 (0xA0) 0-32767, TIM / CNT (0x89) 0-4095")
+    log_faults(faults, logger)
 
     try:
         # Keep running
@@ -437,12 +490,13 @@ def main():
         "--transport", choices=["both", "udp", "tcp"], default="both", help="Transport(s) to serve (default: both)"
     )
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
+    add_fault_options(parser)
     args = parser.parse_args()
 
     if args.debug:
         logging.getLogger().setLevel(logging.DEBUG)
 
-    run_simulator(run_fins_simulator(args.host, args.port, args.transport), logger)
+    run_simulator(run_fins_simulator(args.host, args.port, args.transport, faults_from_args(args)), logger)
 
 
 if __name__ == "__main__":

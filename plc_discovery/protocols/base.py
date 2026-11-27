@@ -117,6 +117,13 @@ class BaseProtocolHandler(ABC):
         self.partial_points: List[DataPoint] = []
         # True when the last _tracked_read() was answered here, without a request
         self._last_read_local = False
+        # Requests sent and the PLC's response times (answered requests only,
+        # in ms): how long a DeviceGateway collection cycle of the same reads
+        # would take at least
+        self.request_count = 0
+        self.answered_count = 0
+        self.response_ms_total = 0.0
+        self.response_ms_max = 0.0
 
         # Set when a blocking request timed out while its worker thread may
         # still be using the client; the connection is re-established before
@@ -438,6 +445,12 @@ class BaseProtocolHandler(ABC):
         self._audit_read(device_type.value, start_address, count, status, started)
 
         plc_answered = status not in self._TRANSIENT_FAILURES
+        self.request_count += 1
+        if plc_answered:
+            elapsed_ms = (time.monotonic() - started) * 1000
+            self.answered_count += 1
+            self.response_ms_total += elapsed_ms
+            self.response_ms_max = max(self.response_ms_max, elapsed_ms)
 
         if status == StatusCode.OK:
             if data is None or len(data) < count:

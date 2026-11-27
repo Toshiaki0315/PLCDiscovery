@@ -40,7 +40,14 @@ FINS_AREA_CODES = {
     # the CIO area that "IR" once named on older models is read as M).
     # A request for IR is answered NG_UNSUPPORTED.
     DeviceType.M: 0xB0,  # CIO Area (word access; 0x30 is bit access = 1 byte/point)
+    DeviceType.AR: 0xB3,  # Auxiliary Area (word)
+    DeviceType.EM: 0xA0,  # EM bank 0 (word)
+    DeviceType.TN: 0x89,  # Timer present values (TIM0000-)
+    DeviceType.CN: 0x89,  # Counter present values: same area code, from address 8000 hex
 }
+
+# Word address of the first point of an area that shares its area code
+FINS_ADDRESS_OFFSETS = {DeviceType.CN: 0x8000}
 
 # End code bits that are flags, not errors:
 #   MRES bit 7 (0x8000): network relay error flag
@@ -324,6 +331,9 @@ class FINSHandler(BaseProtocolHandler):
             # recorded under the requested device's addresses
             logger.warning(f"Unsupported device type for FINS: {device_type}")
             return None, StatusCode.NG_UNSUPPORTED
+        if device_type in (DeviceType.TN, DeviceType.CN) and start_address + count > 0x8000:
+            # Timers and counters share one area: TIM8000 would read CNT0000
+            return None, StatusCode.NG_ILLEGAL_ADDR
 
         try:
             # Build FINS command
@@ -375,8 +385,9 @@ class FINSHandler(BaseProtocolHandler):
 
         # Build command data
         # Address format: Area(1) + Address(2) + Bit(1)
-        addr_high = (start_address >> 8) & 0xFF
-        addr_low = start_address & 0xFF
+        address = start_address + FINS_ADDRESS_OFFSETS.get(device_type, 0)
+        addr_high = (address >> 8) & 0xFF
+        addr_low = address & 0xFF
 
         data = bytes(
             [

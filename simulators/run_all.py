@@ -5,7 +5,7 @@ PLC Simulator Launcher
 Starts all PLC simulators for comprehensive testing of the PLC Discovery tool.
 
 Usage:
-    python run_all.py [--host 127.0.0.1]
+    python run_all.py [--host 127.0.0.1] [--delay MS] [--drop-denied] [--max-connections N]
 
 This will start:
     - SLMP Simulator on port 5001
@@ -20,19 +20,21 @@ import asyncio
 import logging
 import signal
 import sys
-from typing import List
+from typing import List, Optional
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("PLC-Simulator-Launcher")
 
 # Import simulators (support both direct execution and package import)
 try:
+    from .common import Faults, add_fault_options, faults_from_args, log_faults, with_faults
     from .ethernet_ip_simulator import EtherNetIPDevice, EtherNetIPProtocol
     from .fins_simulator import FINSSimulator, FINSTCPServerProtocol, FINSUDPServerProtocol
     from .modbus_simulator import ModbusDevice, ModbusProtocol
     from .s7_simulator import COTPProtocol, S7Device
     from .slmp_simulator import SLMPDevice, SLMPProtocol
 except ImportError:
+    from common import Faults, add_fault_options, faults_from_args, log_faults, with_faults  # type: ignore[no-redef]
     from ethernet_ip_simulator import EtherNetIPDevice, EtherNetIPProtocol  # type: ignore[no-redef]
     from fins_simulator import FINSSimulator, FINSTCPServerProtocol, FINSUDPServerProtocol  # type: ignore[no-redef]
     from modbus_simulator import ModbusDevice, ModbusProtocol  # type: ignore[no-redef]
@@ -43,8 +45,10 @@ except ImportError:
 class SimulatorManager:
     """Manages all PLC simulators"""
 
-    def __init__(self, host: str = "127.0.0.1"):
+    def __init__(self, host: str = "127.0.0.1", faults: Optional[Faults] = None):
         self.host = host
+        # Late / dropped answers and the connection limit, for every TCP server
+        self.faults = faults
         self.servers: List[asyncio.AbstractServer] = []
 
         # Default denied ranges for each simulator
@@ -68,7 +72,9 @@ class SimulatorManager:
         # SLMP Simulator
         try:
             slmp_device = SLMPDevice(self.slmp_denied)
-            slmp_server = await loop.create_server(lambda: SLMPProtocol(slmp_device), self.host, 5001)
+            slmp_server = await loop.create_server(
+                with_faults(lambda: SLMPProtocol(slmp_device), self.faults, slmp_device), self.host, 5001
+            )
             self.servers.append(slmp_server)
             logger.info(f"✓ SLMP Simulator started on {self.host}:5001")
             logger.info(f"  Denied ranges: {self.slmp_denied}")
@@ -78,9 +84,9 @@ class SimulatorManager:
         # Modbus Simulator
         try:
             modbus_device = ModbusDevice(self.modbus_denied)
-            modbus_server = await loop.create_server(
-                lambda: ModbusProtocol(modbus_device), self.host, 1502  # Using 1502 instead of 502 (non-privileged)
-            )
+            modbus_factory = with_faults(lambda: ModbusProtocol(modbus_device), self.faults, modbus_device)
+            # Using 1502 instead of 502 (non-privileged)
+            modbus_server = await loop.create_server(modbus_factory, self.host, 1502)
             self.servers.append(modbus_server)
             logger.info(f"✓ Modbus/TCP Simulator started on {self.host}:1502")
             logger.info("  (Note: Using port 1502 instead of 502 to avoid privileged port)")
@@ -91,7 +97,9 @@ class SimulatorManager:
         # EtherNet/IP Simulator
         try:
             eip_device = EtherNetIPDevice(self.eip_denied)
-            eip_server = await loop.create_server(lambda: EtherNetIPProtocol(eip_device), self.host, 44818)
+            eip_server = await loop.create_server(
+                with_faults(lambda: EtherNetIPProtocol(eip_device), self.faults, eip_device), self.host, 44818
+            )
             self.servers.append(eip_server)
             logger.info(f"✓ EtherNet/IP Simulator started on {self.host}:44818")
             logger.info(f"  Denied ranges: {self.eip_denied}")
@@ -101,7 +109,9 @@ class SimulatorManager:
         # EtherNet/IP Logix Simulator (symbolic tags, pycomm3 LogixDriver)
         try:
             logix_device = EtherNetIPDevice(mode="logix")
-            logix_server = await loop.create_server(lambda: EtherNetIPProtocol(logix_device), self.host, 44819)
+            logix_server = await loop.create_server(
+                with_faults(lambda: EtherNetIPProtocol(logix_device), self.faults, logix_device), self.host, 44819
+            )
             self.servers.append(logix_server)
             logger.info(f"✓ EtherNet/IP Logix Simulator started on {self.host}:44819")
             logger.info(f"  Tags: {', '.join(logix_device.logix_tags)}")
@@ -111,7 +121,9 @@ class SimulatorManager:
         # EtherNet/IP Omron NJ/NX Simulator (variables read by name)
         try:
             omron_device = EtherNetIPDevice(mode="omron")
-            omron_server = await loop.create_server(lambda: EtherNetIPProtocol(omron_device), self.host, 44820)
+            omron_server = await loop.create_server(
+                with_faults(lambda: EtherNetIPProtocol(omron_device), self.faults, omron_device), self.host, 44820
+            )
             self.servers.append(omron_server)
             logger.info(f"✓ EtherNet/IP Omron NJ/NX Simulator started on {self.host}:44820")
             logger.info(f"  Variables: {', '.join(omron_device.logix_tags)}")
@@ -121,9 +133,9 @@ class SimulatorManager:
         # S7 Simulator
         try:
             s7_device = S7Device(self.s7_denied)
-            s7_server = await loop.create_server(
-                lambda: COTPProtocol(s7_device), self.host, 1102  # Using 1102 instead of 102 (non-privileged)
-            )
+            s7_factory = with_faults(lambda: COTPProtocol(s7_device), self.faults, s7_device)
+            # Using 1102 instead of 102 (non-privileged)
+            s7_server = await loop.create_server(s7_factory, self.host, 1102)
             self.servers.append(s7_server)
             logger.info(f"✓ S7 Simulator started on {self.host}:1102")
             logger.info("  (Note: Using port 1102 instead of 102 to avoid privileged port)")
@@ -139,7 +151,9 @@ class SimulatorManager:
             )
             try:
                 fins_tcp_server = await loop.create_server(
-                    lambda: FINSTCPServerProtocol(fins_simulator), self.host, 9600
+                    with_faults(lambda: FINSTCPServerProtocol(fins_simulator), self.faults, fins_simulator),
+                    self.host,
+                    9600,
                 )
             except Exception:
                 transport.close()  # not half a simulator: "failed" means nothing is listening
@@ -151,6 +165,7 @@ class SimulatorManager:
         except Exception as e:
             logger.error(f"✗ Failed to start FINS Simulator: {e}")
 
+        log_faults(self.faults, logger)
         logger.info("")
         logger.info("=" * 60)
         logger.info(f"All simulators running. {len(self.servers)} server(s) active.")
@@ -211,9 +226,9 @@ class SimulatorManager:
         await asyncio.Event().wait()
 
 
-async def main(host: str) -> bool:
+async def main(host: str, faults: Optional[Faults] = None) -> bool:
     """Main entry point"""
-    manager = SimulatorManager(host)
+    manager = SimulatorManager(host, faults)
 
     # Handle shutdown signals
     loop = asyncio.get_event_loop()
@@ -248,10 +263,11 @@ def run():
     parser.add_argument(
         "--host", default="127.0.0.1", help="Host to bind to (default 127.0.0.1; 0.0.0.0 = all interfaces)"
     )
+    add_fault_options(parser)
     args = parser.parse_args()
 
     try:
-        started = asyncio.run(main(args.host))
+        started = asyncio.run(main(args.host, faults_from_args(args)))
     except (KeyboardInterrupt, asyncio.CancelledError):
         # (CancelledError: a second Ctrl+C while the simulators were stopping
         # ended in a traceback and exit code 1, which the launchers report

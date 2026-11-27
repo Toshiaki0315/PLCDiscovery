@@ -136,6 +136,23 @@ python plc_scanner.py --mode discover --ip-range "192.168.1.0/24"
 - `--discover-protocols` で絞った場合、ブロードキャストもそのプロトコルの分だけ送ります
 - 応答した機器への接続の間と、10台ごとのまとまりの間には、`--packet-interval` の待ち時間が入ります
 
+#### DeviceGateway などの導入前調査に使う情報
+
+- **SLMP の機種と通信設定**: 探索で「CPU 形名読出し（0101）」を送り、機種名（`Q03UDVCPU`、`R04CPU` など）と
+  形名コードを `model`・`cpu_type` 列に記入します。ポートが応答したフレームと交信データコード
+  （3E／4E、バイナリ／ASCII）は `note` 列に「SLMP 4E・ASCII」のように記入し、データの読み取りにもその設定を使います
+  （`--protocol slmp` で対象を指定した場合も同じ。設定ファイルの `options.frame`・`options.ascii` で指定することもできます）。
+  UDP にだけ設定されたポートは読めません
+- **対応プロトコルに応答しない機器（未対応・要確認）**: PLC のポートが接続を受け付けたのに、どのプロトコルにも
+  応答しなかった機器と、MAC アドレスが PLC メーカーの登録になっている機器は、機種「未対応・要確認」として
+  探索結果に載せ、`note` 列に理由（開いていたポート）を書きます。横河 FA-M3、JTEKT TOYOPUC、パナソニック MEWTOCOL
+  など、本ツールでは読めなくても DeviceGateway の別のドライバで読める機器を見落とさないためです。
+  データの収集はできず、データベースにも保存しません（GUI の一覧にも表示します）
+- **標準以外のポート**: PLC 側で標準以外のポートを設定している場合は、`--discover-ports "slmp=5000,5002;modbus=1502"`
+  （設定ファイルでは `discovery.ports`）で追加のポートも調べます。GUI では「追加で調べるポート」に同じ形式で入力します
+- SLMP のポートが開いているのに応答がない場合、設定を変えて最大 4 回問い合わせるため、1 台あたり探索タイムアウトの
+  4 倍ほどかかります
+
 ### フルスキャンモード (Full Scan)
 
 工場停止時用。PLCの主要デバイス範囲を一括取得:
@@ -303,9 +320,10 @@ python plc_scanner.py --mode full --target 192.168.1.10 --no-database
 | `--target`, `-t` | 対象PLC IPアドレス（カンマ区切りで複数指定可。ホスト名も可）。不正な値は接続前にエラー | - |
 | `--ip-range`, `-r` | スキャン対象IPレンジ（指定時はUDPブロードキャスト探索を行いません） | - |
 | `--discover-protocols` | 探索で確認するプロトコル（カンマ区切り、例: `slmp,modbus`）。省略時は設定ファイルの `discovery.protocols`、なければ全プロトコル | 全プロトコル |
+| `--discover-ports` | 探索で標準ポートのほかに調べるポート（例: `"slmp=5000,5002;modbus=1502"`）。省略時は設定ファイルの `discovery.ports` | - |
 | `--protocol`, `-p` | プロトコル指定 (slmp/eip/modbus/s7/fins/fins-tcp)。fins は FINS/UDP、fins-tcp は FINS/TCP | 自動検出 |
 | `--port` | ポート番号 | プロトコルデフォルト |
-| `--device`, `-d` | デバイス種別 (D/M/W/R等) | D |
+| `--device`, `-d` | デバイス種別（D/M/W/R/ZR/SD/L/TN/CN/X/Y/B/SM、FINS は DM/HR/W/AR/EM/TN/CN など） | D |
 | `--range` | アドレス範囲 (例: 0-1000) | 0-999 |
 | `--interval`, `-i` | 範囲指定モードの周期（秒、1以上）。省略時は設定ファイルの `scan.interval_seconds` | 0 (単発) |
 | `--packet-interval` | パケット間隔(ms)。指定すると設定ファイルの値より優先 | 50 |
@@ -386,18 +404,19 @@ logging:
 | `discovery_result_YYYYMMDD_HHMMSS.csv` | 検出されたPLC一覧（メーカー・機種・型式・ファームウェア・読み方〔`read_method`：アドレス／タグ一覧あり／変数名指定／データファイル〕など。識別情報が取れない機器は、プロトコルから分かるメーカー〔SLMP・S7・FINS〕と「〜対応PLC」を記入） |
 | `plc_data_<IP>_YYYYMMDD_HHMMSS.csv` | PLCデバイスデータ。同じIPを複数のプロトコルで読んだ場合は `plc_data_<IP>_<プロトコル>_<ポート>_…csv`。IP・プロトコル・ポートまで同じターゲット（ゲートウェイ配下の Modbus ユニットなど）は `…_<ポート>_unit_id2_…csv` のように区別され、データベースの `protocol` 列も `MODBUS_TCP/unit_id2` になります |
 | `access_denied_log.csv` | アクセス不可アドレス一覧（同じIPを複数のプロトコルで読んだ場合、`plc_ip` 列は `IP (プロトコル:ポート)`） |
-| `scan_summary_YYYYMMDD_HHMMSS.csv` | スキャン統計サマリー |
+| `scan_summary_YYYYMMDD_HHMMSS.csv` | スキャンのまとめ（フル・範囲指定のスキャンごと、ターゲットごとに1行）。メーカー・機種・プロトコル・`note`（SLMP の設定）、ステータス別の件数、読めた範囲（`readable_ranges`、例: `D0-8191, M0-8191`）、要求数と PLC の応答時間（`avg_response_ms`・`max_response_ms`）、所要時間（`scan_seconds`）。DeviceGateway で何を何秒ごとに集められるかを見積もる材料です（周期実行では最後の周期の結果。応答時間は空欄） |
+| `readable_ranges_YYYYMMDD_HHMMSS.csv` | 読めた範囲・読めなかった範囲の一覧。同じデバイスで連続し、ステータスが同じアドレスを1行にまとめます（`target, device, start, end, count, status`） |
 | `audit.log` | 監査ログ（JSON Lines形式） |
 
 ## 対応プロトコルとメーカー
 
 | プロトコル | 対応メーカー | デフォルトポート | 備考 |
 |------------|--------------|------------------|------|
-| SLMP (3Eフレーム) | 三菱電機、キーエンス、パナソニック、東芝、日立産機 | 5001 | |
+| SLMP (3E/4Eフレーム) | 三菱電機、キーエンス、パナソニック、東芝、日立産機 | 5001 | バイナリ・ASCII（探索で判別。`options.frame: 4`・`options.ascii: 1` で指定も可）。デバイス D/W/R/ZR/SD/TN/CN（ワード）、M/X/Y/B/L/SM（ビット） |
 | EtherNet/IP | オムロン、ロックウェル、キーエンス、安川電機 | 44818 | |
 | Modbus/TCP | 横河電機、富士電機、IDEC、デルタ電子 | 502 | RTU over TCP（シリアル-Ethernet 変換器）は設定ファイルの `rtu: 1` で対応 |
 | S7通信 | シーメンス | 102 | |
-| FINS通信 | オムロン、キーエンス | 9600 | UDP（`fins`）と TCP（`fins-tcp`）に対応 |
+| FINS通信 | オムロン、キーエンス | 9600 | UDP（`fins`）と TCP（`fins-tcp`）に対応。DM/HR/W/CIO（`M`）/AR/EM（バンク0）/TIM（`TN`）/CNT（`CN`） |
 
 ### Modbus RTU over TCP（シリアル-Ethernet 変換器）
 

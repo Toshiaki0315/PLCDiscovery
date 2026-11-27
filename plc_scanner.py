@@ -55,6 +55,7 @@ from plc_discovery.cli_args import (  # noqa: F401  (re-exported for existing im
     parse_targets,
     resolve_device_ranges,
     resolve_device_ranges_only,
+    resolve_discovery_ports,
     resolve_discovery_protocols,
     resolve_mode_and_interval,
     resolve_output_settings,
@@ -87,6 +88,7 @@ from plc_discovery.data_types import ByteOrder, DataType, DataTypeManager
 from plc_discovery.database import DatabaseConfig, DatabaseExporter
 from plc_discovery.discovery import (
     PLCDiscovery,
+    detect_slmp_settings,
     discover_plcs,
     merge_discovery_results,
     target_instances,
@@ -121,12 +123,17 @@ async def run_discovery(
     db_exporter: Optional[DatabaseExporter] = None,
     protocols: Optional[List[Protocol]] = None,
     errors: Optional[List[str]] = None,
+    extra_ports: Optional[Dict[Protocol, List[int]]] = None,
 ) -> List[PLCInfo]:
     """
     Run PLC discovery (same segment when ip_ranges is empty).
 
     Output failures (CSV/database) are reported and appended to ``errors``;
-    the discovered PLCs are still displayed and returned.
+    the discovered PLCs are still displayed and returned. Devices that
+    answered none of the protocols but look like automation equipment are
+    added to the CSV (model 未対応・要確認, with the reason in ``note``) and
+    shown, but neither returned nor saved to the database: they cannot be
+    scanned.
     """
     audit = get_audit_logger()
 
@@ -154,13 +161,20 @@ async def run_discovery(
 
     # Then TCP port scanning
     tcp_plcs: List[PLCInfo] = []
+    unidentified: List[PLCInfo] = []
     if ip_ranges:
         for ip_range in ip_ranges:
             display.print_info(f"Scanning IP range: {ip_range}")
-            tcp_plcs.extend(await discover_plcs(ip_range, config, protocols=protocols))
+            tcp_plcs.extend(
+                await discover_plcs(
+                    ip_range, config, protocols=protocols, extra_ports=extra_ports, unidentified=unidentified
+                )
+            )
     else:
         display.print_info("Scanning same network segment...")
-        tcp_plcs = await discover_plcs(None, config, protocols=protocols)
+        tcp_plcs = await discover_plcs(
+            None, config, protocols=protocols, extra_ports=extra_ports, unidentified=unidentified
+        )
 
     # Broadcast results are limited to the requested protocols too
     if protocols:
@@ -171,17 +185,27 @@ async def run_discovery(
     # protocol). The TCP scan verified the protocol and read the identity,
     # so its entries win; broadcast adds hosts the scan did not reach.
     plcs = merge_discovery_results(tcp_plcs, plcs)
+    # A host listed through a broadcast reply is not unidentified
+    found_ips = {p.ip_address for p in plcs}
+    unidentified = [u for u in unidentified if u.ip_address not in found_ips]
 
     # Log and display results
     audit.log_discovery_result(len(plcs), [p.to_dict() for p in plcs])
 
-    if plcs:
-        hosts = len({p.ip_address for p in plcs})
-        display.print_success(
-            f"Discovered {len(plcs)} PLC endpoint(s)" + (f" on {hosts} host(s)" if hosts != len(plcs) else "")
+    if unidentified:
+        display.print_warning(
+            f"{len(unidentified)} device(s) answered none of the supported protocols "
+            "(listed in the CSV as 未対応・要確認; another DeviceGateway driver may read them): "
+            + ", ".join(u.ip_address for u in unidentified)
         )
+    if plcs or unidentified:
+        hosts = len({p.ip_address for p in plcs})
+        if plcs:
+            display.print_success(
+                f"Discovered {len(plcs)} PLC endpoint(s)" + (f" on {hosts} host(s)" if hosts != len(plcs) else "")
+            )
         try:
-            filepath = exporter.export_discovery_results(plcs)
+            filepath = exporter.export_discovery_results(plcs + unidentified)
             display.print_info(f"Results saved to: {filepath}")
         except Exception as e:
             message = f"Failed to write discovery CSV: {e}"
@@ -190,7 +214,7 @@ async def run_discovery(
                 errors.append(message)
 
         # Save to database if enabled
-        if db_exporter and db_exporter.is_enabled:
+        if plcs and db_exporter and db_exporter.is_enabled:
             try:
                 # One row per IP, protocol and port (database schema v2)
                 db_count = db_exporter.export_discovery_results(plcs)
@@ -201,8 +225,8 @@ async def run_discovery(
                 if errors is not None:
                     errors.append(message)
 
-        display.print_discovery_results([p.to_dict() for p in plcs])
-    else:
+        display.print_discovery_results([p.to_dict() for p in plcs + unidentified])
+    if not plcs:
         display.print_warning("No PLCs discovered")
 
     return plcs
@@ -354,6 +378,9 @@ class ScanOutcome:
     # Name in results/reports: the IP, or "IP (PROTOCOL:port)" when several
     # targets share the IP (see target_labels)
     label: Optional[str] = None
+    # Collector statistics with the request count, response times and the
+    # scan duration (scan_seconds), for the survey summary
+    statistics: Dict[str, Any] = dataclasses.field(default_factory=dict)
 
     def __post_init__(self):
         if self.label is None:
@@ -486,6 +513,8 @@ async def run_single_scan(
             outcome.denied_addresses = collector.get_denied_addresses()
             denied_statuses = collector.get_denied_statuses()
             stats = collector.get_statistics()
+            stats["scan_seconds"] = round(loop.time() - scan_started, 1)
+            outcome.statistics = stats
             audit.log_scan_complete(
                 ip,
                 stats["total_points"],
@@ -759,6 +788,8 @@ async def resolve_target(
         plc_info = base or PLCInfo(ip_address=ip)
         plc_info.protocol = protocol
         plc_info.port = port or PROTOCOL_PORTS.get(protocol)
+        # SLMP: the frame / data code the port answers (4E, ASCII), unless given
+        await detect_slmp_settings(plc_info, config)
         return plc_info
 
     # With a port but no protocol, the protocols are tried on that port:
@@ -961,16 +992,27 @@ class _RunResults:
     interrupted: bool = False
     # Targets a scan was run for (fewer than plcs when the run was interrupted)
     scanned: int = 0
+    # Target label -> PLC, and label -> collector statistics (survey summary)
+    targets: Dict[str, PLCInfo] = dataclasses.field(default_factory=dict)
+    statistics: Dict[str, Dict[str, Any]] = dataclasses.field(default_factory=dict)
 
     def add_failure(self, label: str, reason: Optional[str]) -> None:
         self.failed_targets.append(label)
         self.target_errors.append(_target_error(label, reason))
 
     def add(
-        self, label: str, success: bool, error: Optional[str], data_points: List[DataPoint], denied: Set[str]
+        self,
+        label: str,
+        success: bool,
+        error: Optional[str],
+        data_points: List[DataPoint],
+        denied: Set[str],
+        statistics: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Record one target's scan result"""
         self.scanned += 1
+        if statistics:
+            self.statistics[label] = statistics
         if not success:
             self.add_failure(label, error)
         if data_points:
@@ -1003,6 +1045,7 @@ async def _run_discover(
         db_exporter,
         resolve_discovery_protocols(args, config_loader),
         errors=results.output_errors,
+        extra_ports=resolve_discovery_ports(args, config_loader),
     )
     results.plcs = discovered if discovered else []
     await _notify(notifier, lambda n: n.notify_discovery(len(results.plcs), [p.to_dict() for p in results.plcs]))
@@ -1090,6 +1133,7 @@ async def _run_scans(
         if filepath:
             display.print_info(f"Unreachable addresses saved to: {filepath}")
         results.add(label, False, UNDETECTED_PROTOCOL, unread, set())
+        results.targets[label] = PLCInfo(ip_address=ip)
 
     if mode == ScanMode.FULL and interval > 0:
         display.print_warning("--interval is ignored in full scan mode")
@@ -1100,6 +1144,7 @@ async def _run_scans(
 
     # Undetected targets are listed (without protocol) in the report
     results.plcs = plc_infos + [PLCInfo(ip_address=ip) for ip in undetected]
+    results.targets.update(zip(target_labels(plc_infos), plc_infos))
 
     if not plc_infos:
         return  # nothing could be scanned; reported as failed
@@ -1135,7 +1180,9 @@ async def _run_scans(
             plc_infos, config, exporter, display, mode, device_ranges, data_type, byte_order, type_manager, db_exporter
         )
         for label, outcome in parallel.items():
-            results.add(label, outcome.success, outcome.error, outcome.data_points, outcome.denied_addresses)
+            results.add(
+                label, outcome.success, outcome.error, outcome.data_points, outcome.denied_addresses, outcome.statistics
+            )
             results.interrupted = results.interrupted or outcome.interrupted
         # Interrupted while every remaining target was still waiting for its turn
         results.interrupted = results.interrupted or len(parallel) < len(plc_infos)
@@ -1156,7 +1203,9 @@ async def _run_scans(
                 label,
                 instance,
             )
-            results.add(label, outcome.success, outcome.error, outcome.data_points, outcome.denied_addresses)
+            results.add(
+                label, outcome.success, outcome.error, outcome.data_points, outcome.denied_addresses, outcome.statistics
+            )
             if outcome.interrupted:
                 # Ctrl+C: the remaining targets are not scanned
                 results.interrupted = True
@@ -1206,6 +1255,28 @@ async def _notify_scan_end(
             interrupted=results.interrupted,
         ),
     )
+
+
+def _write_survey_summary(exporter: CSVExporter, display: RichProgressDisplay, results: _RunResults) -> None:
+    """
+    scan_summary / readable_ranges CSV of the run (see survey.py): what was
+    readable on each target and how fast the PLC answered. A failure counts
+    as an output error.
+    """
+    if not results.data_points:
+        return
+    targets = [
+        (label, results.targets.get(label), points, results.statistics.get(label))
+        for label, points in results.data_points.items()
+    ]
+    try:
+        summary_path, ranges_path = exporter.export_survey_summary(targets)
+    except Exception as e:
+        message = f"Failed to write the scan summary: {e}"
+        display.print_error(message)
+        results.output_errors.append(message)
+        return
+    display.print_info(f"Scan summary saved to: {summary_path} (readable ranges: {ranges_path})")
 
 
 def _write_report(
@@ -1335,6 +1406,7 @@ async def run_cli() -> Optional[int]:
         # notification destinations as a scan error of a PLC
         if mode_name == "discover":
             resolve_discovery_protocols(args, config_loader)
+            resolve_discovery_ports(args, config_loader)
         else:
             if args.target:
                 parse_targets(args.target)
@@ -1393,6 +1465,7 @@ async def run_cli() -> Optional[int]:
 
         completed_at = datetime.now()
         if mode_name != "discover":
+            _write_survey_summary(exporter, display, results)
             await _notify_scan_end(notifier, mode_name, results, (completed_at - started_at).total_seconds())
         if args.report:
             _write_report(

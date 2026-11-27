@@ -68,6 +68,12 @@ class DeviceType(Enum):
         HR: 保持レジスタ (Modbus)
         IR: 入力レジスタ (Modbus)
         DB: データブロック (Siemens)
+        ZR: ファイルレジスタ（連番。MELSEC）
+        SD: 特殊レジスタ (MELSEC)
+        TN: タイマ現在値 (MELSEC TN / オムロン TIM)
+        CN: カウンタ現在値 (MELSEC CN / オムロン CNT)
+        AR: 補助記憶リレー（ワード。オムロン）
+        EM: 拡張データメモリ（バンク0。オムロン）
 
     ビットデバイス:
         M: 内部リレー
@@ -75,6 +81,7 @@ class DeviceType(Enum):
         Y: 出力
         B: リンクリレー
         SM: 特殊リレー
+        L: ラッチリレー (MELSEC)
     """
 
     # Word devices
@@ -85,6 +92,12 @@ class DeviceType(Enum):
     HR = "HR"
     IR = "IR"
     DB = "DB"
+    ZR = "ZR"
+    SD = "SD"
+    TN = "TN"
+    CN = "CN"
+    AR = "AR"
+    EM = "EM"
 
     # Bit devices
     M = "M"
@@ -92,6 +105,7 @@ class DeviceType(Enum):
     Y = "Y"
     B = "B"
     SM = "SM"
+    L = "L"
 
 
 class StatusCode(Enum):
@@ -393,6 +407,7 @@ class PLCInfo:
         cpu_type: CPUタイプ（オプション）
         firmware_version: ファームウェアバージョン（オプション）
         read_method: データの読み方（アドレス／タグなど。探索で判定）
+        note: 補足（SLMP のフレーム・交信データコード、未対応機器の理由など）
 
     Example:
         >>> plc = PLCInfo(
@@ -416,6 +431,10 @@ class PLCInfo:
     # Protocol-specific handler options (e.g. FINS node numbers, S7 rack/slot);
     # passed to the protocol handler, not exported
     options: Dict[str, Any] = field(default_factory=dict)
+    # What discovery found out beyond the columns above: the SLMP frame and
+    # data code ("4E・ASCII"), or why a device without a supported
+    # protocol is listed (its open ports)
+    note: Optional[str] = None
 
     def __setattr__(self, name: str, value: Any) -> None:
         # Device-reported text never carries control characters, however
@@ -446,6 +465,7 @@ class PLCInfo:
             "cpu_type": self.cpu_type or "",
             "firmware_version": self.firmware_version or "",
             "read_method": self.read_method or "",
+            "note": self.note or "",
         }
 
 
@@ -525,6 +545,11 @@ DEFAULT_DEVICE_RANGES: Dict[Protocol, List[DeviceRange]] = {
         DeviceRange(DeviceType.M, 0, 8191),
         DeviceRange(DeviceType.W, 0, 2047),
         DeviceRange(DeviceType.R, 0, 32767),
+        # Default device settings of Q / iQ-R CPUs (GX Works): L 8K points,
+        # timers 2K, counters 1K. ZR and SD are read in range mode.
+        DeviceRange(DeviceType.L, 0, 8191),
+        DeviceRange(DeviceType.TN, 0, 2047),
+        DeviceRange(DeviceType.CN, 0, 1023),
     ],
     Protocol.ETHERNET_IP: [
         # Data files N7 / B3 of PLC-5/SLC/MicroLogix (elements 0-255).
@@ -545,6 +570,11 @@ DEFAULT_DEVICE_RANGES: Dict[Protocol, List[DeviceRange]] = {
         DeviceRange(DeviceType.DM, 0, 999),
         DeviceRange(DeviceType.HR, 0, 499),
         DeviceRange(DeviceType.W, 0, 199),
+        # CJ/CS: AR 0-959 words, timers and counters 0-4095 (CP1: fewer;
+        # the rest is reported NG_ILLEGAL_ADDR). EM is read in range mode.
+        DeviceRange(DeviceType.AR, 0, 959),
+        DeviceRange(DeviceType.TN, 0, 4095),
+        DeviceRange(DeviceType.CN, 0, 4095),
     ],
 }
 # FINS/TCP reads the same memory areas as FINS/UDP

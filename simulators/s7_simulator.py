@@ -19,14 +19,30 @@ logger = logging.getLogger("S7-Simulator")
 
 # Shared CLI helpers (support both direct execution and package import)
 try:
-    from .common import parse_denied_ranges, peer_text, run_simulator, serve_until_stopped, simulator_parser
-except ImportError:
-    from common import (  # type: ignore[no-redef]
+    from .common import (
+        Faults,
+        add_fault_options,
+        faults_from_args,
+        log_faults,
         parse_denied_ranges,
         peer_text,
         run_simulator,
         serve_until_stopped,
         simulator_parser,
+        with_faults,
+    )
+except ImportError:
+    from common import (  # type: ignore[no-redef]
+        Faults,
+        add_fault_options,
+        faults_from_args,
+        log_faults,
+        parse_denied_ranges,
+        peer_text,
+        run_simulator,
+        serve_until_stopped,
+        simulator_parser,
+        with_faults,
     )
 
 # S7comm constants
@@ -499,25 +515,29 @@ class COTPProtocol(asyncio.Protocol):
         return bytes([0x03, 0x00]) + struct.pack(">H", length) + data
 
 
-async def run_server(host: str, port: int, denied_ranges: List[Tuple[int, int]]) -> None:
+async def run_server(
+    host: str, port: int, denied_ranges: List[Tuple[int, int]], faults: Optional[Faults] = None
+) -> None:
     """Run S7 simulator server"""
     device = S7Device(denied_ranges)
 
     loop = asyncio.get_event_loop()
-    server = await loop.create_server(lambda: COTPProtocol(device), host, port)
+    server = await loop.create_server(with_faults(lambda: COTPProtocol(device), faults, device), host, port)
 
     addr = server.sockets[0].getsockname()
     logger.info(f"S7 Simulator running on {addr[0]}:{addr[1]}")
     logger.info(f"Denied address ranges: {denied_ranges}")
+    log_faults(faults, logger)
 
     await serve_until_stopped(server, logger)
 
 
 def main():
     parser = simulator_parser("Siemens S7 PLC Simulator", 102, "500-550")
+    add_fault_options(parser)
     args = parser.parse_args()
     denied_ranges = parse_denied_ranges(args.denied)
-    run_simulator(run_server(args.host, args.port, denied_ranges), logger)
+    run_simulator(run_server(args.host, args.port, denied_ranges, faults_from_args(args)), logger)
 
 
 if __name__ == "__main__":

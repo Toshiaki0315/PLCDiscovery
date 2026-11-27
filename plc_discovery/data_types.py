@@ -422,7 +422,7 @@ VARIABLE_LENGTH_TYPES = frozenset({DataType.STRING, DataType.RAW})
 
 # Bit devices: multi-word types are never applied to them, and mappings
 # without an explicit device do not apply to them
-BIT_DEVICES = frozenset({"M", "X", "Y", "B", "SM"})
+BIT_DEVICES = frozenset({"M", "X", "Y", "B", "SM", "L"})
 
 
 @dataclass

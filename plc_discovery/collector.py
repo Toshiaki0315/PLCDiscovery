@@ -441,6 +441,22 @@ class PLCDataCollector:
             "unsupported_count": counts[StatusCode.NG_UNSUPPORTED],
             "success_rate": success_rate_text(counts[StatusCode.OK], total),
             "denied_addresses": len(self.get_denied_addresses()),
+            **self.request_statistics(),
+        }
+
+    def request_statistics(self) -> Dict[str, Any]:
+        """
+        Requests sent to the PLC and its response times (answered requests;
+        ms, rounded to 0.1). Empty before a connection was made.
+        """
+        handler = self._handler
+        if handler is None or not isinstance(getattr(handler, "request_count", None), int):
+            return {}  # not connected (or a stand-in handler without the counters)
+        answered = handler.answered_count
+        return {
+            "requests": handler.request_count,
+            "avg_response_ms": round(handler.response_ms_total / answered, 1) if answered else None,
+            "max_response_ms": round(handler.response_ms_max, 1) if answered else None,
         }
 
     def clear_data(self):

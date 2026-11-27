@@ -157,12 +157,13 @@ class RichProgressDisplay:
             return
 
         if self.console:
-            table = Table(title="Discovered PLCs", box=box.ROUNDED)
+            table = Table(title="Discovered devices", box=box.ROUNDED)
             table.add_column("IP Address", style="cyan")
             table.add_column("Protocol", style="green")
             table.add_column("Manufacturer", style="magenta")
             table.add_column("Model", style="blue")
             table.add_column("Port", justify="right")
+            table.add_column("Note")
 
             for plc in plcs:
                 table.add_row(
@@ -171,13 +172,20 @@ class RichProgressDisplay:
                     _cell(plc.get("manufacturer", "Unknown")),
                     _cell(plc.get("model", "Unknown")),
                     _cell(plc.get("port", "")),
+                    _cell(plc.get("note", "")),
                 )
 
             self.console.print(table)
         else:
-            print(f"\nDiscovered {len(plcs)} PLCs:")
+            print(f"\nDiscovered {len(plcs)} device(s):")
             for plc in plcs:
-                print(_safe(f"  {plc.get('ip_address')}: {plc.get('protocol')} - {plc.get('manufacturer', 'Unknown')}"))
+                note = f" ({plc['note']})" if plc.get("note") else ""
+                print(
+                    _safe(
+                        f"  {plc.get('ip_address')}: {plc.get('protocol') or '-'} - "
+                        f"{plc.get('manufacturer', 'Unknown')}{note}"
+                    )
+                )
 
     def print_scan_results(self, results: Dict[str, Any]) -> None:
         """Print scan results"""

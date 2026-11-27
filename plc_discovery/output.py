@@ -11,9 +11,10 @@ import codecs
 import csv
 import logging
 from pathlib import Path
-from typing import IO, Any, Dict, List, Mapping, Optional, Set
+from typing import IO, Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
 from .config import DataPoint, PLCInfo, StatusCode
+from .survey import RANGES_HEADERS, SUMMARY_HEADERS, address_runs, summary_row
 from .utils import get_file_timestamp, get_timestamp, melsec_address
 
 logger = logging.getLogger(__name__)
@@ -32,6 +33,7 @@ DISCOVERY_HEADERS = [
     "cpu_type",
     "firmware_version",
     "read_method",
+    "note",
     "discovered_at",
 ]
 
@@ -531,6 +533,47 @@ class CSVExporter:
         except Exception as e:
             logger.error(f"Failed to export summary report: {e}")
             raise
+
+    def export_survey_summary(
+        self, targets: Sequence[Tuple[str, Optional[PLCInfo], Sequence[DataPoint], Optional[Dict[str, Any]]]]
+    ) -> Tuple[str, str]:
+        """
+        Write the survey summary of a scan run: scan_summary_<time>.csv (one
+        row per target: device, settings, counts per status, readable
+        ranges, response times) and readable_ranges_<time>.csv (every run of
+        consecutive addresses with the same status, per target).
+
+        Args:
+            targets: (label, PLC, data points, collector statistics) per target
+
+        Returns:
+            (summary path, readable ranges path)
+        """
+        timestamp = get_file_timestamp()
+        summary_path = _unique_path(self.output_dir / f"scan_summary_{timestamp}.csv")
+        ranges_path = _unique_path(self.output_dir / f"readable_ranges_{timestamp}.csv")
+        with self._open_csv(summary_path, "w") as f:
+            writer = _SafeDictWriter(f, fieldnames=SUMMARY_HEADERS)
+            writer.writeheader()
+            for label, plc, points, statistics in targets:
+                writer.writerow(summary_row(label, plc, points, statistics))
+        with self._open_csv(ranges_path, "w") as f:
+            writer = _SafeDictWriter(f, fieldnames=RANGES_HEADERS)
+            writer.writeheader()
+            for label, _, points, _ in targets:
+                for run in address_runs(points):
+                    writer.writerow(
+                        {
+                            "target": label,
+                            "device": run.device,
+                            "start": run.start,
+                            "end": run.end,
+                            "count": run.count,
+                            "status": run.status,
+                        }
+                    )
+        logger.info(f"Survey summary exported to: {summary_path}, {ranges_path}")
+        return str(summary_path), str(ranges_path)
 
 
 def load_denied_addresses(filepath: str, plc_ip: Optional[str] = None) -> Set[str]:

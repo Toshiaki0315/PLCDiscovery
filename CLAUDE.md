@@ -165,6 +165,16 @@ The tool generates timestamped CSV files:
   `..._<port>_unit_id2_...csv` when they also share protocol and port, see
   `discovery.target_instances`)
 - `access_denied_log.csv` - Inaccessible addresses for reference in next session
+- `scan_summary_YYYYMMDD_HHMMSS.csv` / `readable_ranges_YYYYMMDD_HHMMSS.csv` - Per
+  target: readable ranges, counts per status, response times (survey for a
+  gateway such as Takebishi DeviceGateway; `survey.py`)
+
+Discovery also lists devices that answer none of the supported protocols
+(an open PLC port, or a PLC maker's MAC) as model 未対応・要確認 with the
+reason in `note`; they are written to the discovery CSV only, never scanned
+or saved to the database. SLMP discovery reads the CPU model (0101) and the
+frame / data code the port answers (3E/4E, binary/ASCII), kept as handler
+options (`options.frame`, `options.ascii`).
 
 ### Critical Safety Requirements
 

@@ -13,7 +13,7 @@ import ipaddress
 from typing import Callable, Dict, List, Optional, Tuple
 
 from .config import PROTOCOL_PORTS, NetworkConfig, PLCInfo, Protocol
-from .probes import UDP_PROTOCOLS, read_eip_identity, verify_protocol
+from .probes import UDP_PROTOCOLS, identify_slmp, read_eip_identity, verify_protocol
 from .utils import (
     get_local_networks,
     get_manufacturer_from_mac,
@@ -57,7 +57,48 @@ def plc_key(plc: PLCInfo) -> tuple:
 
 
 # Descriptive fields filled from a second source when the first lacks them
-_MERGED_FIELDS = ("mac_address", "manufacturer", "model", "cpu_type", "firmware_version", "read_method")
+_MERGED_FIELDS = ("mac_address", "manufacturer", "model", "cpu_type", "firmware_version", "read_method", "note")
+
+# Model column of a device that answered none of the supported protocols
+UNIDENTIFIED_MODEL = "未対応・要確認"
+
+
+def slmp_settings_note(frame: str, ascii_code: bool) -> str:
+    """Note column for an SLMP port: its frame and communication data code"""
+    return f"SLMP {frame}・{'ASCII' if ascii_code else 'バイナリ'}"
+
+
+# Makers named by the start of the CPU model name answered to 0101
+_SLMP_MODEL_MAKERS = (
+    (("Q", "L", "R", "FX", "A", "MELSEC"), "三菱電機"),
+    (("KV",), "キーエンス"),
+)
+
+
+def apply_slmp_identity(plc_info: PLCInfo, identity: dict) -> None:
+    """
+    Fill in what identify_slmp() found: the CPU model name (and the maker it
+    implies), and the frame / data code the port answers. The frame and data
+    code are also kept as handler options, so the data collection talks to
+    the port the way it answered.
+    """
+    frame, ascii_code = identity["frame"], identity["ascii"]
+    plc_info.note = slmp_settings_note(frame, ascii_code)
+    options = dict(plc_info.options or {})
+    if frame != "3E":
+        options["frame"] = int(frame[0])
+    if ascii_code:
+        options["ascii"] = 1
+    plc_info.options = options
+    model = identity.get("model")
+    if model:
+        plc_info.model = model
+        if identity.get("model_code") is not None:
+            plc_info.cpu_type = f"形名コード {identity['model_code']:04X}"
+        for prefixes, maker in _SLMP_MODEL_MAKERS:
+            if model.upper().startswith(prefixes):
+                plc_info.manufacturer = plc_info.manufacturer or maker
+                break
 
 
 def merge_discovery_results(primary: List[PLCInfo], extra: List[PLCInfo]) -> List[PLCInfo]:
@@ -207,6 +248,36 @@ def eip_read_method(identity: Optional[dict]) -> Optional[str]:
     return None
 
 
+async def detect_slmp_settings(plc_info: PLCInfo, config: Optional[NetworkConfig] = None) -> None:
+    """
+    Find the frame and data code of an SLMP target given without them
+    (targets[].options.frame / ascii), so that a port set to 4E or ASCII is
+    read as discovery found it. One read-only "Read CPU Model Name" per
+    setting tried; a target that answers none is left unchanged (its
+    connection then fails as before).
+    """
+    if plc_info.protocol != Protocol.SLMP or not plc_info.port:
+        return
+    options = plc_info.options or {}
+    if "frame" in options or "ascii" in options:
+        return  # given by the user
+    config = config or NetworkConfig()
+    identity = await asyncio.get_running_loop().run_in_executor(
+        None,
+        identify_slmp,
+        plc_info.ip_address,
+        plc_info.port,
+        config.discovery_timeout_ms / 1000,
+        config.packet_interval_ms / 1000,
+    )
+    if identity:
+        model = plc_info.model
+        apply_slmp_identity(plc_info, identity)
+        plc_info.model = model or plc_info.model
+        if (identity["frame"], identity["ascii"]) != ("3E", False):
+            logger.info(f"{plc_info.ip_address}:{plc_info.port} answers {plc_info.note}")
+
+
 class PLCDiscovery:
     """
     PLC Discovery Engine
@@ -219,6 +290,7 @@ class PLCDiscovery:
         config: Optional[NetworkConfig] = None,
         protocols: Optional[List[Protocol]] = None,
         port: Optional[int] = None,
+        extra_ports: Optional[Dict[Protocol, List[int]]] = None,
     ):
         """
         Args:
@@ -233,6 +305,13 @@ class PLCDiscovery:
         self.config = config or NetworkConfig()
         self.protocols = list(protocols) if protocols else list(PROTOCOL_PORTS)
         self.port = port
+        # Ports probed in addition to each protocol's standard port
+        # (discovery.ports: e.g. SLMP on 5000-5002, a Keyence KV on 5000)
+        self.extra_ports: Dict[Protocol, List[int]] = {p: list(v) for p, v in (extra_ports or {}).items()}
+        # Devices that answered none of the protocols but look like
+        # automation equipment (an open PLC port, or a PLC maker's MAC),
+        # keyed by IP: listed for the survey, never scanned
+        self.unidentified: Dict[str, PLCInfo] = {}
         # Keyed by plc_key(): (ip, protocol, port) - one entry per protocol
         self.discovered_plcs: Dict[tuple, PLCInfo] = {}
         # Thread pool for blocking probes during a batch scan (see _probe_hosts)
@@ -291,6 +370,7 @@ class PLCDiscovery:
                 mac_table = await self._arp_scan(ip, netmask)
 
             await self._probe_hosts(hosts, mac_table)
+            await self._note_unidentified_from_arp_cache(hosts)
 
         await self._fill_macs_from_arp_cache()
         return list(self.discovered_plcs.values())
@@ -313,6 +393,7 @@ class PLCDiscovery:
         self._report_progress(f"Scanning {total_hosts} hosts", 0, total_hosts)
 
         await self._probe_hosts(hosts, {})
+        await self._note_unidentified_from_arp_cache(hosts)
         await self._fill_macs_from_arp_cache()
         return list(self.discovered_plcs.values())
 
@@ -469,12 +550,49 @@ class PLCDiscovery:
 
         return mac_table
 
+    def _note_unidentified(self, ip: str, mac: Optional[str], silent_ports: List[Tuple[Protocol, int]]) -> None:
+        """
+        Remember a host that answered none of the protocols when it looks
+        like automation equipment: a PLC port accepted the connection, or
+        its MAC address is registered to a PLC maker. DeviceGateway may
+        still read it with another driver (Yokogawa FA-M3, JTEKT TOYOPUC,
+        Panasonic MEWTOCOL ...), so the survey must not lose it.
+        """
+        maker = get_manufacturer_from_mac(mac) if mac else None
+        if not silent_ports and not maker:
+            return
+        if silent_ports:
+            ports = ", ".join(
+                f"{port}（{protocol.name}）" for protocol, port in sorted(silent_ports, key=lambda x: x[1])
+            )
+            note = f"ポートは開いているが、対応プロトコルの応答なし: {ports}"
+        else:
+            note = "MACアドレスがPLCメーカーの登録。対応プロトコルの応答なし"
+        self.unidentified[ip] = PLCInfo(
+            ip_address=ip, mac_address=mac, manufacturer=maker, model=UNIDENTIFIED_MODEL, note=note
+        )
+
+    async def _note_unidentified_from_arp_cache(self, hosts: List[str]) -> None:
+        """
+        Hosts of the scanned range in the OS ARP cache whose MAC address is
+        registered to a PLC maker and that answered no protocol. The probes
+        have just contacted every host, so live hosts on the local segment
+        are in the cache (no administrator rights needed, unlike ARP scans).
+        """
+        cache = await asyncio.get_running_loop().run_in_executor(None, read_arp_cache)
+        found = {plc.ip_address for plc in self.discovered_plcs.values()}
+        for ip in hosts:
+            mac = cache.get(ip)
+            if mac and ip not in found and ip not in self.unidentified:
+                self._note_unidentified(ip, mac, [])
+
     def _candidate_ports(self, ip: str, protocol: Protocol) -> List[int]:
         """Ports to try for a protocol: the standard port, plus the simulator
         ports (non-privileged) when scanning this PC's loopback address"""
         if self.port:
             return [self.port]
         ports = [PROTOCOL_PORTS[protocol]]
+        ports += [p for p in self.extra_ports.get(protocol, []) if p not in ports]
         if _is_loopback(ip):
             ports += [p for p in SIMULATOR_PORTS.get(protocol, []) if p not in ports]
         return ports
@@ -508,6 +626,13 @@ class PLCDiscovery:
         # auto-detection) fits in the default pool
         executor = self._probe_executor
 
+        # SLMP: frame, data code and model found by the probe (no second
+        # connection is made for them)
+        slmp_identity: Dict[int, dict] = {}
+        # TCP ports that accepted the connection but did not answer the
+        # protocol (e.g. SLMP set to UDP only, another vendor's protocol)
+        silent_ports: List[Tuple[Protocol, int]] = []
+
         async def check(protocol: Protocol, port: int) -> bool:
             try:
                 # TCP protocols: skip the probe if the port is closed.
@@ -520,10 +645,21 @@ class PLCDiscovery:
                     await asyncio.sleep(self.config.packet_interval_ms / 1000)
                 # An open port is not proof of a PLC (e.g. NAS on 5001):
                 # require a valid protocol reply
-                if await loop.run_in_executor(executor, verify_protocol, ip, port, protocol, timeout):
+                if protocol == Protocol.SLMP:
+                    identity = await loop.run_in_executor(
+                        executor, identify_slmp, ip, port, timeout, self.config.packet_interval_ms / 1000
+                    )
+                    if identity:
+                        slmp_identity[port] = identity
+                    verified = identity is not None
+                else:
+                    verified = await loop.run_in_executor(executor, verify_protocol, ip, port, protocol, timeout)
+                if verified:
                     logger.debug(f"Verified {protocol.name} on {ip}:{port}")
                     return True
                 logger.debug(f"Open port {ip}:{port} did not answer as {protocol.name}")
+                if protocol not in UDP_PROTOCOLS:
+                    silent_ports.append((protocol, port))
             except Exception as e:
                 logger.debug(f"Port scan error {ip}:{port}: {e}")
             return False
@@ -548,6 +684,9 @@ class PLCDiscovery:
         if first_only:
             detected = detected[:1]
 
+        if not detected and not first_only:
+            self._note_unidentified(ip, mac, silent_ports)
+
         results = []
         for protocol, port in detected:
             plc_info = PLCInfo(
@@ -557,6 +696,9 @@ class PLCDiscovery:
                 port=port,
                 manufacturer=get_manufacturer_from_mac(mac) if mac else None,
             )
+            identity = slmp_identity.get(port) if protocol == Protocol.SLMP else None
+            if identity:
+                apply_slmp_identity(plc_info, identity)
             # Try to get detailed info using protocol-specific queries
             # (another connection to the device: after the packet interval)
             await asyncio.sleep(self.config.packet_interval_ms / 1000)
@@ -595,11 +737,12 @@ class PLCDiscovery:
         """
         Fill in SLMP device information.
 
-        SLMP has no standard identification command, and probe_slmp() has
-        already confirmed that the host answers SLMP. No further connection
-        is opened (previously a pymcprotocol connection was made only to set
-        these fixed names - an extra TCP session to the PLC with the
-        library's own 2 s timeout instead of the discovery timeout).
+        The probe (identify_slmp) has already read the CPU model name (0101)
+        and found the frame and data code (apply_slmp_identity). No further
+        connection is opened (previously a pymcprotocol connection was made
+        only to set fixed names - an extra TCP session to the PLC with the
+        library's own 2 s timeout instead of the discovery timeout). A PLC
+        that does not answer 0101 (e.g. a Keyence KV) keeps these names.
         """
         plc_info.manufacturer = plc_info.manufacturer or "三菱電機/キーエンス"
         plc_info.model = plc_info.model or "SLMP対応PLC"
@@ -792,9 +935,17 @@ async def discover_plcs(
     config: Optional[NetworkConfig] = None,
     progress_callback: Optional[Callable[[str, int, int], None]] = None,
     protocols: Optional[List[Protocol]] = None,
+    extra_ports: Optional[Dict[Protocol, List[int]]] = None,
+    unidentified: Optional[List[PLCInfo]] = None,
 ) -> List[PLCInfo]:
     """
     Convenience function to discover PLCs.
+
+    ``extra_ports`` are probed besides each protocol's standard port.
+    Devices that answered none of the protocols but look like automation
+    equipment (see PLCDiscovery.unidentified) are appended to
+    ``unidentified`` when a list is given; they are never returned (and so
+    never scanned).
 
     Args:
         ip_range: Optional IP range to scan. If None, scans same segment.
@@ -804,12 +955,15 @@ async def discover_plcs(
     Returns:
         List of discovered PLCInfo objects.
     """
-    discovery = PLCDiscovery(config, protocols)
+    discovery = PLCDiscovery(config, protocols, extra_ports=extra_ports)
 
     if progress_callback:
         discovery.set_progress_callback(progress_callback)
 
     if ip_range:
-        return await discovery.discover_ip_range(ip_range)
+        found = await discovery.discover_ip_range(ip_range)
     else:
-        return await discovery.discover_same_segment()
+        found = await discovery.discover_same_segment()
+    if unidentified is not None:
+        unidentified.extend(discovery.unidentified.values())
+    return found

@@ -51,7 +51,7 @@ def test_device_names(name):
 
 
 def test_unknown_device_and_byte_order():
-    assert parse_device_type("ZR") is None and parse_device_type("") is None
+    assert parse_device_type("QQ") is None and parse_device_type("") is None
     assert parse_byte_order("middle") is None
     assert {name: parse_byte_order(name) for name in ("little", "BIG", "little_swap", "big_swap")} == {
         "little": ByteOrder.LITTLE_ENDIAN,

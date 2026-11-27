@@ -15,6 +15,7 @@ import logging
 import os
 import socket
 import struct
+import time
 from typing import Callable, Dict, Optional
 
 from .config import Protocol, clean_device_text
@@ -40,17 +41,147 @@ def _exchange(ip: str, port: int, request: bytes, timeout: float, min_len: int) 
         return None
 
 
+# SLMP communication settings tried by identify_slmp(), in this order:
+# (frame, ascii). The PLC answers only the frame and data code its port is
+# configured for (GX Works "交信データコード": binary or ASCII).
+SLMP_SETTINGS = (("3E", False), ("4E", False), ("3E", True), ("4E", True))
+
+# Read CPU Model Name answer: 16 characters of model name, then the model code
+SLMP_MODEL_NAME_SIZE = 16
+
+
+def slmp_type_name_request(frame: str, ascii_code: bool) -> bytes:
+    """SLMP "Read CPU Model Name" (0101) request to the connected station"""
+    timer, command, subcommand = 0x0010, 0x0101, 0x0000
+    if ascii_code:
+        body = f"{timer:04X}{command:04X}{subcommand:04X}"
+        route = "00FF03FF00"  # network, PC, I/O (big-endian text), station
+        text_head = "5000" if frame == "3E" else ("5400" + "0000" + "0000")  # 4E: serial, 0000
+        return (text_head + route + f"{len(body):04X}" + body).encode("ascii")
+    payload = struct.pack("<HHH", timer, command, subcommand)
+    head = struct.pack("<H", 0x0050) if frame == "3E" else struct.pack("<HHH", 0x0054, 0x0000, 0x0000)
+    return head + struct.pack("<BBHB", 0x00, 0xFF, 0x03FF, 0x00) + struct.pack("<H", len(payload)) + payload
+
+
+def parse_slmp_type_name(reply: bytes, frame: str, ascii_code: bool) -> Optional[dict]:
+    """
+    Settings and model of an answer to slmp_type_name_request().
+
+    Any answer in the frame's format counts, an error end code included
+    (e.g. a Keyence KV or a module that does not support 0101): the
+    protocol and its settings are confirmed, only the model is then unknown.
+    """
+    if ascii_code:
+        header = 18 if frame == "3E" else 26
+        subheader = b"D000" if frame == "3E" else b"D400"
+        if len(reply) < header + 4 or reply[:4].upper() != subheader:
+            return None
+        try:
+            end_code = int(reply[header : header + 4].decode("ascii"), 16)
+        except ValueError:
+            return None
+        data = reply[header + 4 :]
+        name = data[:SLMP_MODEL_NAME_SIZE]
+        code_text = data[SLMP_MODEL_NAME_SIZE : SLMP_MODEL_NAME_SIZE + 4]
+        try:
+            code: Optional[int] = int(code_text.decode("ascii"), 16) if len(code_text) == 4 else None
+        except ValueError:
+            code = None
+    else:
+        header = 9 if frame == "3E" else 13
+        subheader = b"\xd0\x00" if frame == "3E" else b"\xd4\x00"
+        if len(reply) < header + 2 or reply[:2] != subheader:
+            return None
+        end_code = struct.unpack("<H", reply[header : header + 2])[0]
+        data = reply[header + 2 :]
+        name = data[:SLMP_MODEL_NAME_SIZE]
+        code_bytes = data[SLMP_MODEL_NAME_SIZE : SLMP_MODEL_NAME_SIZE + 2]
+        code = struct.unpack("<H", code_bytes)[0] if len(code_bytes) == 2 else None
+    model = None
+    if end_code == 0 and len(name) == SLMP_MODEL_NAME_SIZE:
+        model = clean_device_text(name.decode("ascii", errors="replace").strip(" \x00")) or None
+    return {
+        "frame": frame,
+        "ascii": ascii_code,
+        "end_code": end_code,
+        "model": model,
+        "model_code": code if model else None,
+    }
+
+
+def identify_slmp(ip: str, port: int, timeout: float, interval: float = 0.0) -> Optional[dict]:
+    """
+    Find the frame and data code a port answers SLMP with, and the CPU model.
+
+    Tries SLMP_SETTINGS one after another (one connection each, ``interval``
+    seconds apart) until one is answered. An open port that answers none
+    costs one timeout per setting; a port that cannot be connected to ends
+    the search at once.
+
+    Returns:
+        {"frame": "3E"/"4E", "ascii": bool, "end_code": int,
+         "model": str or None, "model_code": int or None}, or None
+    """
+
+    for i, (frame, ascii_code) in enumerate(SLMP_SETTINGS):
+        if i and interval:
+            time.sleep(interval)
+        reply = _exchange_slmp(ip, port, slmp_type_name_request(frame, ascii_code), timeout, frame, ascii_code)
+        if reply is None:
+            return None  # no connection: the other settings cannot be answered either
+        if not reply:
+            continue  # connected, not answered in this setting
+        identity = parse_slmp_type_name(reply, frame, ascii_code)
+        if identity:
+            return identity
+    return None
+
+
+def _exchange_slmp(ip: str, port: int, request: bytes, timeout: float, frame: str, ascii_code: bool) -> Optional[bytes]:
+    """
+    Send one SLMP request and read one whole answer: the header, then as
+    many bytes as its data length field gives (an error answer is shorter
+    than a model name answer and must not cost a timeout). Whatever arrived
+    before a timeout or a close is returned (b"" if nothing did); None when
+    the connection could not be made.
+    """
+    if ascii_code:
+        header_size = 18 if frame == "3E" else 26
+        length_at, length_size = header_size - 4, 4
+    else:
+        header_size = 9 if frame == "3E" else 13
+        length_at, length_size = header_size - 2, 2
+    data = b""
+    try:
+        sock = socket.create_connection((ip, port), timeout=timeout)
+    except OSError as e:
+        logger.debug(f"SLMP probe {ip}:{port}: {e}")
+        return None
+    try:
+        with sock:
+            sock.settimeout(timeout)
+            sock.sendall(request)
+            total = None
+            while total is None or len(data) < total:
+                chunk = sock.recv(512)
+                if not chunk:
+                    break
+                data += chunk
+                if total is None and len(data) >= header_size:
+                    field = data[length_at : length_at + length_size]
+                    try:
+                        length = int(field.decode("ascii"), 16) if ascii_code else int.from_bytes(field, "little")
+                    except ValueError:
+                        break  # not an SLMP answer in this setting
+                    total = header_size + length
+    except OSError as e:
+        logger.debug(f"SLMP probe {ip}:{port} ({frame}{' ASCII' if ascii_code else ''}): {e}")
+    return data
+
+
 def probe_slmp(ip: str, port: int, timeout: float) -> bool:
-    """SLMP 3E binary "Read Type Name" (0x0101); any 3E response (D0 00) counts"""
-    payload = struct.pack("<HHH", 0x0010, 0x0101, 0x0000)  # timer, command, subcommand
-    request = (
-        struct.pack("<H", 0x0050)  # subheader "50 00"
-        + struct.pack("<BBHB", 0x00, 0xFF, 0x03FF, 0x00)  # network, PC, I/O, station
-        + struct.pack("<H", len(payload))
-        + payload
-    )
-    reply = _exchange(ip, port, request, timeout, 2)
-    return reply is not None and reply[:2] == b"\xd0\x00"
+    """SLMP "Read CPU Model Name" (0x0101) in any frame / data code; any SLMP answer counts"""
+    return identify_slmp(ip, port, timeout) is not None
 
 
 def probe_modbus(ip: str, port: int, timeout: float) -> bool:
