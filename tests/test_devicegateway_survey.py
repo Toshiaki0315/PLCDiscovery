@@ -844,3 +844,76 @@ def test_settings_settled_by_a_read_are_noted_too():
         asyncio.run(run())
     # No model name, but the settings it answered in are in the note (scan summary)
     assert plc.model is None and plc.note == "SLMP 3E・バイナリ" and plc.options == {"frame": 3, "ascii": 0}
+
+
+# ---------------------------------------------------------------- connections all in use
+
+
+class _ClosesAtOnce(asyncio.Protocol):
+    """A port whose connections are all in use: accepted, then closed at once"""
+
+    def connection_made(self, transport):
+        transport.close()
+
+
+def test_slmp_probe_reports_a_port_that_closes_every_connection():
+    report = {}
+    with serve(_ClosesAtOnce) as port:
+        assert identify_slmp("127.0.0.1", port, 0.5, report=report) is None
+    assert report == {"closed": True}
+    report = {}
+    with serve(SilentProtocol) as port:  # keeps the connection, never answers
+        assert identify_slmp("127.0.0.1", port, 0.2, report=report) is None
+    assert report == {"closed": False}
+
+
+def test_discovery_says_the_connections_may_be_in_use():
+    with serve(_ClosesAtOnce) as port:
+        discovery = PLCDiscovery(FAST, protocols=[Protocol.SLMP], port=port)
+        assert asyncio.run(discovery._probe_host_all("127.0.0.1")) == []
+    note = discovery.unidentified["127.0.0.1"].note
+    assert note.startswith(f"接続はすぐ切られた: {port}（SLMP）") and "DeviceGateway" in note
+    assert "対応プロトコルの応答なし" not in note
+
+
+def test_both_kinds_of_unanswered_ports_are_noted():
+    discovery = PLCDiscovery(FAST)
+    discovery._note_unidentified("10.0.0.5", None, [(Protocol.MODBUS_TCP, 502)], [(Protocol.SLMP, 5001)])
+    assert discovery.unidentified["10.0.0.5"].note == (
+        "接続はすぐ切られた: 5001（SLMP）。PLC の接続数が上限に達している可能性（DeviceGateway・GOT などが接続中）"
+        "／ポートは開いているが、対応プロトコルの応答なし: 502（MODBUS_TCP）"
+    )
+
+
+def test_a_scan_of_a_plc_with_its_connections_in_use_says_so(tmp_path):
+    device = SLMPDevice([])
+    factory = with_faults(lambda: SLMPProtocol(device), Faults(max_connections=1), device)
+    with serve(factory) as port, socket.create_connection(("127.0.0.1", port)):  # the one connection is in use
+        time.sleep(0.1)
+        plc = PLCInfo("127.0.0.1", protocol=Protocol.SLMP, port=port, options={"frame": 3})
+        outcome = asyncio.run(
+            plc_scanner.scan_target(
+                plc,
+                FAST,
+                CSVExporter(str(tmp_path)),
+                MagicMock(),
+                ScanMode.RANGE,
+                [DeviceRange(DeviceType.D, 0, 9)],
+                None,
+                ByteOrder.LITTLE_ENDIAN,
+                None,
+                None,
+                "127.0.0.1",
+                None,
+            )
+        )
+    assert not outcome.success
+    assert "its connections may all be in use" in outcome.error
+
+
+def test_no_answer_message_without_closed_connections_is_unchanged():
+    from plc_discovery.scan_runner import no_answer_error
+
+    points = _points(("D0", StatusCode.NG_TIMEOUT))
+    assert no_answer_error(points) == "the PLC answered none of the 1 addresses read (1 NG_TIMEOUT)"
+    assert no_answer_error(points, closed_by_device=True).endswith("(e.g. by DeviceGateway or a GOT)")

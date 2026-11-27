@@ -41,10 +41,10 @@ def _slmp_identity_follows_a_patched_verify_protocol(monkeypatch):
     from plc_discovery import probes
 
     def follow(real, protocol):
-        def identify(ip, port, timeout, interval=0.0):
+        def identify(ip, port, timeout, interval=0.0, *extra):
             verify = discovery_module.verify_protocol
             if verify is probes.verify_protocol:
-                return real(ip, port, timeout, interval) if str(ip).startswith("127.") else None
+                return real(ip, port, timeout, interval, *extra) if str(ip).startswith("127.") else None
             if not verify(ip, port, protocol, timeout):
                 return None
             return {"frame": "3E", "ascii": False, "end_code": 0, "model": None, "model_code": None}
@@ -58,8 +58,8 @@ def _slmp_identity_follows_a_patched_verify_protocol(monkeypatch):
         monkeypatch.setattr(
             probes,
             name,
-            lambda ip, port, timeout, interval=0.0, _real=real_probe: (
-                _real(ip, port, timeout, interval) if str(ip).startswith("127.") else None
+            lambda ip, port, timeout, interval=0.0, *extra, _real=real_probe: (
+                _real(ip, port, timeout, interval, *extra) if str(ip).startswith("127.") else None
             ),
         )
     monkeypatch.setattr(discovery_module, "identify_slmp", follow(discovery_module.identify_slmp, Protocol.SLMP))

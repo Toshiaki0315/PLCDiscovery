@@ -235,6 +235,10 @@ class SLMPHandler(BaseProtocolHandler):
         self.detected_options: Dict[str, int] = {}
         # Answer to Read CPU Model Name when the settings were detected
         self.identity: Optional[Dict[str, Any]] = None
+        # The PLC answered a read on some connection of this handler / closed
+        # a connection before answering anything (connections all in use)
+        self._answered = False
+        self.closed_before_answer = False
         if frame:
             self.FRAME = f"{frame}E"
         self._ascii = bool(ascii)
@@ -361,6 +365,7 @@ class SLMPHandler(BaseProtocolHandler):
             data = await self._run_blocking(_read)
 
             if data is not None:
+                self._answered = True
                 if self._detect:
                     self._settings_confirmed()
                 # pymcprotocol decodes words as signed; report raw 16-bit
@@ -381,8 +386,16 @@ class SLMPHandler(BaseProtocolHandler):
                 # Transport-level failure (closed/reset connection, framing
                 # error): re-establish the connection before the next request
                 self._needs_reconnect = True
-            elif self._detect:
-                self._settings_confirmed()  # answered with an end code: the format is right
+                if isinstance(e, ConnectionError) and not self._answered and not self.closed_before_answer:
+                    self.closed_before_answer = True
+                    logger.warning(
+                        f"{self.ip_address}:{self.port} closed the connection without answering: "
+                        "its connections may all be in use (e.g. by DeviceGateway or a GOT)"
+                    )
+            else:
+                self._answered = True
+                if self._detect:
+                    self._settings_confirmed()  # answered with an end code: the format is right
             return None, self._classify_error(e, device_type, start_address)
 
     @staticmethod

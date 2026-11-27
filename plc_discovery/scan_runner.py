@@ -242,8 +242,24 @@ def plc_answered(points: Sequence[DataPoint]) -> bool:
     return any(point.status in (StatusCode.OK, StatusCode.NG_ILLEGAL_ADDR) for point in requested)
 
 
-def no_answer_error(points: Sequence[DataPoint]) -> Optional[str]:
-    """Why a scan whose requests all went unanswered is a failure (None otherwise)"""
+# Added when the device closed its connection without answering anything
+CLOSED_BY_DEVICE_HINT = (
+    "the device closed the connection without answering: its connections may all be in use "
+    "(e.g. by DeviceGateway or a GOT)"
+)
+
+
+def closed_by_device(collector: Any) -> bool:
+    """PLCDataCollector.closed_by_device (False for a collector without it)"""
+    return getattr(collector, "closed_by_device", False) is True
+
+
+def no_answer_error(points: Sequence[DataPoint], closed_by_device: bool = False) -> Optional[str]:
+    """
+    Why a scan whose requests all went unanswered is a failure (None
+    otherwise). ``closed_by_device``: the PLC closed the connection before
+    answering anything (see PLCDataCollector.closed_by_device).
+    """
     if plc_answered(points):
         return None
     requested = _requested(points)
@@ -253,7 +269,8 @@ def no_answer_error(points: Sequence[DataPoint]) -> Optional[str]:
         if any(p.status == status for p in requested)
     )
     unanswered = sum(1 for p in requested if p.status in NO_ANSWER_STATUSES)
-    return f"the PLC answered none of the {unanswered} addresses read ({counts})"
+    message = f"the PLC answered none of the {unanswered} addresses read ({counts})"
+    return f"{message}; {CLOSED_BY_DEVICE_HINT}" if closed_by_device else message
 
 
 def cycle_start(interval: Optional[float], previous_start: Optional[float]) -> float:

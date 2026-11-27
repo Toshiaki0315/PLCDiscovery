@@ -71,6 +71,9 @@ class PLCDataCollector:
         # closed: disconnect() drops the handler, and the statistics are
         # read after it (a reconnect during a scan keeps the same handler)
         self._request_totals = [0, 0, 0.0, 0.0]
+        # A handler already closed saw the device close the connection
+        # before answering anything (see closed_by_device)
+        self._closed_by_device = False
 
     def set_progress_callback(self, callback: Callable[[str, int, int], None]) -> None:
         """Set callback for progress updates"""
@@ -151,6 +154,18 @@ class PLCDataCollector:
                 f"{detected['frame']}E", bool(detected["ascii"]), self.plc_info.protocol == Protocol.SLMP_UDP
             )
 
+    def _handler_closed_by_device(self) -> bool:
+        return getattr(self._handler, "closed_before_answer", False) is True
+
+    @property
+    def closed_by_device(self) -> bool:
+        """
+        The device closed the connection before answering anything - for a
+        PLC typically because its connections are all in use (a gateway or
+        a GOT connected), told apart from a PLC that does not answer
+        """
+        return self._closed_by_device or self._handler_closed_by_device()
+
     def _absorb_request_counts(self) -> None:
         """Add the current handler's request counts to the totals (before it is dropped)"""
         handler = self._handler
@@ -171,6 +186,7 @@ class PLCDataCollector:
             self._denied_addresses = self._handler.get_denied_addresses()
             self._denied_statuses = self._handler.get_denied_statuses()
             await self._handler.disconnect()
+            self._closed_by_device = self._closed_by_device or self._handler_closed_by_device()
             self._keep_detected_settings()
             self._absorb_request_counts()
             self._handler = None

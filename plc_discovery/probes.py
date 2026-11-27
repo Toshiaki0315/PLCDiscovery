@@ -109,7 +109,9 @@ def parse_slmp_type_name(reply: bytes, frame: str, ascii_code: bool) -> Optional
     }
 
 
-def identify_slmp(ip: str, port: int, timeout: float, interval: float = 0.0) -> Optional[dict]:
+def identify_slmp(
+    ip: str, port: int, timeout: float, interval: float = 0.0, report: Optional[dict] = None
+) -> Optional[dict]:
     """
     Find the frame and data code a port answers SLMP with, and the CPU model.
 
@@ -118,18 +120,28 @@ def identify_slmp(ip: str, port: int, timeout: float, interval: float = 0.0) -> 
     costs one timeout per setting; a port that cannot be connected to ends
     the search at once.
 
+    ``report`` (when given) gets "closed": True when the device closed every
+    connection without answering - typically a PLC whose connections are
+    all in use (a gateway or a GOT already connected), not a device that
+    speaks another protocol.
+
     Returns:
         {"frame": "3E"/"4E", "ascii": bool, "end_code": int,
          "model": str or None, "model_code": int or None}, or None
     """
 
+    closed = []
     for i, (frame, ascii_code) in enumerate(SLMP_SETTINGS):
         if i and interval:
             time.sleep(interval)
-        reply = _exchange_slmp(ip, port, slmp_type_name_request(frame, ascii_code), timeout, frame, ascii_code)
+        state: dict = {}
+        reply = _exchange_slmp(ip, port, slmp_type_name_request(frame, ascii_code), timeout, frame, ascii_code, state)
         if reply is None:
             return None  # no connection: the other settings cannot be answered either
         if not reply:
+            closed.append(bool(state.get("closed")))
+            if report is not None:
+                report["closed"] = all(closed)
             continue  # connected, not answered in this setting
         identity = parse_slmp_type_name(reply, frame, ascii_code)
         if identity:
@@ -137,13 +149,16 @@ def identify_slmp(ip: str, port: int, timeout: float, interval: float = 0.0) -> 
     return None
 
 
-def _exchange_slmp(ip: str, port: int, request: bytes, timeout: float, frame: str, ascii_code: bool) -> Optional[bytes]:
+def _exchange_slmp(
+    ip: str, port: int, request: bytes, timeout: float, frame: str, ascii_code: bool, state: Optional[dict] = None
+) -> Optional[bytes]:
     """
     Send one SLMP request and read one whole answer: the header, then as
     many bytes as its data length field gives (an error answer is shorter
     than a model name answer and must not cost a timeout). Whatever arrived
     before a timeout or a close is returned (b"" if nothing did); None when
-    the connection could not be made.
+    the connection could not be made. ``state["closed"]`` tells that the
+    device closed (or reset) the connection before answering anything.
     """
     if ascii_code:
         header_size = 18 if frame == "3E" else 26
@@ -165,6 +180,8 @@ def _exchange_slmp(ip: str, port: int, request: bytes, timeout: float, frame: st
             while total is None or len(data) < total:
                 chunk = sock.recv(512)
                 if not chunk:
+                    if not data and state is not None:
+                        state["closed"] = True
                     break
                 data += chunk
                 if total is None and len(data) >= header_size:
@@ -174,7 +191,11 @@ def _exchange_slmp(ip: str, port: int, request: bytes, timeout: float, frame: st
                     except ValueError:
                         break  # not an SLMP answer in this setting
                     total = header_size + length
-    except OSError as e:
+    except socket.timeout as e:
+        logger.debug(f"SLMP probe {ip}:{port} ({frame}{' ASCII' if ascii_code else ''}): {e}")
+    except OSError as e:  # reset by the device
+        if not data and state is not None:
+            state["closed"] = True
         logger.debug(f"SLMP probe {ip}:{port} ({frame}{' ASCII' if ascii_code else ''}): {e}")
     return data
 

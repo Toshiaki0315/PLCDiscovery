@@ -101,6 +101,7 @@ from plc_discovery.scan_runner import (  # noqa: F401  (status_report_message re
     CycleRunner,
     ResultWriter,
     ScanItem,
+    closed_by_device,
     collect_items,
     cycle_start,
     next_cycle_wait,
@@ -566,7 +567,7 @@ async def run_single_scan(
         # Connected, but not one request was answered (PLC hung, cable
         # pulled after connecting, wrong unit behind a gateway): the data
         # is written as read, and the scan is a failure, not a success
-        outcome.error = no_answer_error(outcome.data_points)
+        outcome.error = no_answer_error(outcome.data_points, closed_by_device(collector))
         display.print_error(_target_error(outcome.label or ip, outcome.error))
     else:
         # Also when interrupted: the run then ends as "interrupted" (130)
@@ -757,7 +758,7 @@ async def run_periodic_scan(
                 outcome.error = writers[key].error_summary(" during monitoring")
             elif not plc_answered(outcome.data_points):
                 # Not answering when the monitoring ended
-                outcome.error = no_answer_error(outcome.data_points)
+                outcome.error = no_answer_error(outcome.data_points, closed_by_device(collectors[key]))
             else:
                 outcome.success = True
 

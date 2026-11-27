@@ -10,7 +10,7 @@ Supports:
 import asyncio
 import concurrent.futures
 import ipaddress
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from .config import PROTOCOL_PORTS, NetworkConfig, PLCInfo, Protocol
 from .probes import UDP_PROTOCOLS, identify_slmp, identify_slmp_udp, read_eip_identity, verify_protocol
@@ -61,6 +61,9 @@ _MERGED_FIELDS = ("mac_address", "manufacturer", "model", "cpu_type", "firmware_
 
 # SLMP over TCP and over UDP (same frames, same handler)
 SLMP_PROTOCOLS = (Protocol.SLMP, Protocol.SLMP_UDP)
+
+# Note of a port whose device closed every connection without answering
+CLOSED_PORT_HINT = "PLC の接続数が上限に達している可能性（DeviceGateway・GOT などが接続中）"
 
 # Model column of a device that answered none of the supported protocols
 UNIDENTIFIED_MODEL = "未対応・要確認"
@@ -528,24 +531,36 @@ class PLCDiscovery:
 
         return mac_table
 
-    def _note_unidentified(self, ip: str, mac: Optional[str], silent_ports: List[Tuple[Protocol, int]]) -> None:
+    def _note_unidentified(
+        self,
+        ip: str,
+        mac: Optional[str],
+        silent_ports: List[Tuple[Protocol, int]],
+        closed_ports: Sequence[Tuple[Protocol, int]] = (),
+    ) -> None:
         """
         Remember a host that answered none of the protocols when it looks
         like automation equipment: a PLC port accepted the connection, or
         its MAC address is registered to a PLC maker. DeviceGateway may
         still read it with another driver (Yokogawa FA-M3, JTEKT TOYOPUC,
-        Panasonic MEWTOCOL ...), so the survey must not lose it.
+        Panasonic MEWTOCOL ...), so the survey must not lose it. A port
+        whose device closed every connection at once is listed apart: that
+        is usually a PLC with all its connections in use, which this tool
+        can read once one is free.
         """
         maker = get_manufacturer_from_mac(mac) if mac else None
-        if not silent_ports and not maker:
+        if not silent_ports and not closed_ports and not maker:
             return
+
+        def ports_text(ports: Sequence[Tuple[Protocol, int]]) -> str:
+            return ", ".join(f"{port}（{protocol.name}）" for protocol, port in sorted(ports, key=lambda x: x[1]))
+
+        notes = []
+        if closed_ports:
+            notes.append(f"接続はすぐ切られた: {ports_text(closed_ports)}。{CLOSED_PORT_HINT}")
         if silent_ports:
-            ports = ", ".join(
-                f"{port}（{protocol.name}）" for protocol, port in sorted(silent_ports, key=lambda x: x[1])
-            )
-            note = f"ポートは開いているが、対応プロトコルの応答なし: {ports}"
-        else:
-            note = "MACアドレスがPLCメーカーの登録。対応プロトコルの応答なし"
+            notes.append(f"ポートは開いているが、対応プロトコルの応答なし: {ports_text(silent_ports)}")
+        note = "／".join(notes) or "MACアドレスがPLCメーカーの登録。対応プロトコルの応答なし"
         self.unidentified[ip] = PLCInfo(
             ip_address=ip, mac_address=mac, manufacturer=maker, model=UNIDENTIFIED_MODEL, note=note
         )
@@ -610,6 +625,9 @@ class PLCDiscovery:
         # TCP ports that accepted the connection but did not answer the
         # protocol (e.g. SLMP set to UDP only, another vendor's protocol)
         silent_ports: List[Tuple[Protocol, int]] = []
+        # Of those, the ones whose device closed every connection at once
+        # (connections all in use, e.g. by a gateway): not "another protocol"
+        closed_ports: List[Tuple[Protocol, int]] = []
 
         async def check(protocol: Protocol, port: int) -> bool:
             try:
@@ -623,11 +641,16 @@ class PLCDiscovery:
                     await asyncio.sleep(self.config.packet_interval_ms / 1000)
                 # An open port is not proof of a PLC (e.g. NAS on 5001):
                 # require a valid protocol reply
+                report: dict = {}
                 if protocol in SLMP_PROTOCOLS:
-                    identify = identify_slmp_udp if protocol == Protocol.SLMP_UDP else identify_slmp
-                    identity = await loop.run_in_executor(
-                        executor, identify, ip, port, timeout, self.config.packet_interval_ms / 1000
-                    )
+                    if protocol == Protocol.SLMP_UDP:
+                        identity = await loop.run_in_executor(
+                            executor, identify_slmp_udp, ip, port, timeout, self.config.packet_interval_ms / 1000
+                        )
+                    else:
+                        identity = await loop.run_in_executor(
+                            executor, identify_slmp, ip, port, timeout, self.config.packet_interval_ms / 1000, report
+                        )
                     if identity:
                         slmp_identity[(protocol, port)] = identity
                     verified = identity is not None
@@ -638,7 +661,7 @@ class PLCDiscovery:
                     return True
                 logger.debug(f"Open port {ip}:{port} did not answer as {protocol.name}")
                 if protocol not in UDP_PROTOCOLS:
-                    silent_ports.append((protocol, port))
+                    (closed_ports if report.get("closed") else silent_ports).append((protocol, port))
             except Exception as e:
                 logger.debug(f"Port scan error {ip}:{port}: {e}")
             return False
@@ -664,7 +687,7 @@ class PLCDiscovery:
             detected = detected[:1]
 
         if not detected and not first_only:
-            self._note_unidentified(ip, mac, silent_ports)
+            self._note_unidentified(ip, mac, silent_ports, closed_ports)
 
         results = []
         for protocol, port in detected:
