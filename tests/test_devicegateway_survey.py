@@ -480,10 +480,11 @@ def test_addresses_are_grouped_into_runs():
         ("D2-3", 2, "NG_ILLEGAL_ADDR"),
         ("D5", 1, "OK"),  # not joined across the gap
         ("M0", 1, "OK"),
-        ("Line.Speed - Line.Count", 2, "OK"),  # tags: joined while the status stays the same
+        ("Line.Speed", 1, "OK"),  # tags: one row each
+        ("Line.Count", 1, "OK"),
         ("Line.Name", 1, "NG_ILLEGAL_ADDR"),
     ]
-    assert readable_text(address_runs(points)) == "D0-1, D5, M0, Line.Speed - Line.Count"
+    assert readable_text(address_runs(points)) == "D0-1, D5, M0, Line.Speed, Line.Count"
 
 
 def test_readable_ranges_text_is_shortened():
@@ -635,7 +636,8 @@ def test_slmp_ascii_simulator_answers_4e_and_rejects_other_commands():
 def test_tag_names_ending_in_digits_are_kept_in_the_summary():
     points = _points(("Motor1", OK), ("Motor2", OK), ("Tank3", ILLEGAL), ("D1", OK), ("D2", OK))
     assert [(r.text, r.status) for r in address_runs(points)] == [
-        ("Motor1 - Motor2", "OK"),  # previously "MOTOR1-2"
+        ("Motor1", "OK"),  # previously "MOTOR1-2"
+        ("Motor2", "OK"),
         ("Tank3", "NG_ILLEGAL_ADDR"),
         ("D1-2", "OK"),
     ]
@@ -917,3 +919,66 @@ def test_no_answer_message_without_closed_connections_is_unchanged():
     points = _points(("D0", StatusCode.NG_TIMEOUT))
     assert no_answer_error(points) == "the PLC answered none of the 1 addresses read (1 NG_TIMEOUT)"
     assert no_answer_error(points, closed_by_device=True).endswith("(e.g. by DeviceGateway or a GOT)")
+
+
+def test_an_slmp_udp_port_without_a_listener_is_not_said_to_be_busy(tmp_path):
+    from plc_discovery.scan_runner import no_answer_error
+
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]  # closed again: nothing listens there
+
+    async def run():
+        collector = PLCDataCollector(
+            PLCInfo("127.0.0.1", protocol=Protocol.SLMP_UDP, port=port, options={"frame": 3}), FAST
+        )
+        assert await collector.connect()  # UDP: no handshake
+        status = (await collector._handler.read_device_raw(DeviceType.D, 0, 1))[1]
+        await collector.disconnect()
+        return status, collector.closed_by_device
+
+    status, closed = asyncio.run(run())
+    assert status in (StatusCode.NG_COMM_ERROR, StatusCode.NG_TIMEOUT)
+    assert closed is False  # UDP has no connections to be in use
+    assert "in use" not in no_answer_error(_points(("D0", status)), closed)
+
+
+def test_the_busy_hint_is_cleared_once_the_plc_answers():
+    handler = SLMPHandler("10.0.0.1", frame=3, config=FAST)
+    handler._connected = True
+    handler._client = MagicMock()
+    handler._client.batchread_wordunits.side_effect = ConnectionResetError("reset by peer")
+    asyncio.run(handler.read_device_raw(DeviceType.D, 0, 1))
+    assert handler.closed_before_answer  # closed before any answer
+
+    handler._needs_reconnect = False
+    handler._client.batchread_wordunits.side_effect = None
+    handler._client.batchread_wordunits.return_value = [1]
+    assert asyncio.run(handler.read_device_raw(DeviceType.D, 0, 1)) == ([1], StatusCode.OK)
+    assert not handler.closed_before_answer  # it answered: no longer "busy"
+
+
+def test_tags_named_like_device_addresses_are_not_joined():
+    # Symbolic tags "D0" and "D1" are two variables, not device range D0-1
+    tags = [DataPoint(address=a, value=0, status=OK, timestamp="t", is_tag=True) for a in ("D0", "D1", "D2")]
+    runs = address_runs(tags)
+    assert [(r.device, r.start, r.end, r.count) for r in runs] == [
+        ("", "D0", "D0", 1),
+        ("", "D1", "D1", 1),
+        ("", "D2", "D2", 1),
+    ]
+    assert readable_text(runs) == "D0, D1, D2"
+
+
+def test_parallel_scanner_results_carry_the_request_statistics():
+    from plc_discovery.parallel import ParallelPLCScanner
+
+    device = SLMPDevice([])
+    with serve(lambda: SLMPProtocol(device)) as port:
+        plc = PLCInfo("127.0.0.1", protocol=Protocol.SLMP, port=port, options={"frame": 3})
+        results = asyncio.run(
+            ParallelPLCScanner(FAST).scan_multiple_plcs([plc], ScanMode.RANGE, [DeviceRange(DeviceType.D, 0, 9)])
+        )
+    [result] = results.values()
+    stats = result.statistics
+    assert stats["requests"] >= 1 and stats["avg_response_ms"] is not None and "scan_seconds" in stats

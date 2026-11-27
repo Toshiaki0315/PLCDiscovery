@@ -186,7 +186,8 @@ class PLCDataCollector:
             self._denied_addresses = self._handler.get_denied_addresses()
             self._denied_statuses = self._handler.get_denied_statuses()
             await self._handler.disconnect()
-            self._closed_by_device = self._closed_by_device or self._handler_closed_by_device()
+            # The state of the last connection (cleared once the PLC answered)
+            self._closed_by_device = self._handler_closed_by_device()
             self._keep_detected_settings()
             self._absorb_request_counts()
             self._handler = None

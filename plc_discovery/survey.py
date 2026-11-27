@@ -39,25 +39,27 @@ class AddressRun:
 
     @property
     def text(self) -> str:
-        """ "D0-8191", "D5", or "tag1 - tag9" for tags"""
+        """ "D0-8191", "D5", or a tag's name (tags are never joined)"""
+        if not self.device:
+            return self.start
         if self.start == self.end:
-            return f"{self.device}{self.start}" if self.device else self.start
-        if self.device:
-            return f"{self.device}{self.start}-{self.end}"
-        return f"{self.start} - {self.end}"
+            return f"{self.device}{self.start}"
+        return f"{self.device}{self.start}-{self.end}"
 
 
 def address_runs(points: Iterable[DataPoint]) -> List[AddressRun]:
     """
     The points as runs of consecutive addresses with the same status, in
-    the order read. Numbered addresses join when the number is one higher;
-    tags (no number) join while the status stays the same.
+    the order read. Numbered device addresses join when the number is one
+    higher. Tags (DataPoint.is_tag) and anything else that is not a device
+    address of the tool get a row each: a tag named "D0" is not device D0,
+    and joining tags hid the names between the first and the last.
     """
     runs: List[AddressRun] = []
     last_number: Optional[int] = None
     for point in points:
         status = point.status.value
-        match = _ADDRESS.match(point.address or "")
+        match = None if point.is_tag else _ADDRESS.match(point.address or "")
         if match and match.group(1) in _DEVICES:
             device, number = match.group(1), int(match.group(2))
         else:
@@ -65,9 +67,11 @@ def address_runs(points: Iterable[DataPoint]) -> List[AddressRun]:
         run = runs[-1] if runs else None
         if (
             run is not None
+            and number is not None
             and run.status == status
             and run.device == device
-            and (number is None or (last_number is not None and number == last_number + 1))
+            and last_number is not None
+            and number == last_number + 1
         ):
             run.end = str(number) if number is not None else point.address
             run.count += 1

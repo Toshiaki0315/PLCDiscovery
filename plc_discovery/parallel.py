@@ -33,6 +33,8 @@ class PLCScanResult:
     start_time: datetime
     end_time: datetime
     denied_statuses: Dict[str, StatusCode] = field(default_factory=dict)
+    # Requests sent and the PLC's response times (PLCDataCollector.request_statistics)
+    request_statistics: Dict[str, Any] = field(default_factory=dict)
 
     @property
     def duration_ms(self) -> float:
@@ -52,6 +54,9 @@ class PLCScanResult:
             "denied_addresses": len(self.denied_addresses),
             "duration_ms": self.duration_ms,
             "success_rate": success_rate_text(success_count, total),
+            # The same names as the CLI's statistics (survey summary)
+            **self.request_statistics,
+            "scan_seconds": round(self.duration_ms / 1000, 1),
         }
 
 
@@ -154,6 +159,7 @@ class ParallelPLCScanner:
         data_points = []
         denied_addresses = set()
         denied_statuses: Dict[str, StatusCode] = {}
+        request_statistics: Dict[str, Any] = {}
         error_message = None
         success = False
 
@@ -177,6 +183,9 @@ class ParallelPLCScanner:
 
                 denied_addresses = collector.get_denied_addresses()
                 denied_statuses = collector.get_denied_statuses()
+                get_requests = getattr(collector, "request_statistics", None)
+                counted = get_requests() if callable(get_requests) else None
+                request_statistics = counted if isinstance(counted, dict) else {}
                 # Connected but nothing answered: a failure, with the data
                 # (every address NG_TIMEOUT / NG_COMM_ERROR) kept
                 error_message = no_answer_error(data_points, closed_by_device(collector))
@@ -207,6 +216,7 @@ class ParallelPLCScanner:
             start_time=start_time,
             end_time=end_time,
             denied_statuses=denied_statuses,
+            request_statistics=request_statistics,
         )
 
         # Log scan completion
