@@ -643,3 +643,144 @@ def test_slmp_ascii_simulator_answers_4e_and_rejects_other_commands():
         body = "0010" + "0619" + "0000" + "0002" + "AB"
         reply = _exchange(port, ("5000" + "00FF03FF00" + f"{len(body):04X}" + body).encode())
         assert reply[18:22] == b"C059"
+
+
+# ---------------------------------------------------------------- review fixes
+
+
+def test_tag_names_ending_in_digits_are_kept_in_the_summary():
+    points = _points(("Motor1", OK), ("Motor2", OK), ("Tank3", ILLEGAL), ("D1", OK), ("D2", OK))
+    assert [(r.text, r.status) for r in address_runs(points)] == [
+        ("Motor1 - Motor2", "OK"),  # previously "MOTOR1-2"
+        ("Tank3", "NG_ILLEGAL_ADDR"),
+        ("D1-2", "OK"),
+    ]
+
+
+def test_slmp_handler_detects_the_setting_of_its_port_itself():
+    device = SLMPDevice([])
+    device.write_words("D", 5, [55])
+    with serve(lambda: SLMPASCIIProtocol(device)) as port:
+
+        async def read():
+            handler = SLMPHandler("127.0.0.1", port, config=FAST)  # no frame / ascii given
+            assert await handler.connect()
+            try:
+                return handler.settings_text, await handler.read_device_raw(DeviceType.D, 5, 1)
+            finally:
+                await handler.disconnect()
+
+        assert asyncio.run(read()) == ("3E ASCII", ([55], StatusCode.OK))
+
+
+def test_slmp_handler_detects_again_once_the_plc_is_back():
+    port = free_port()
+    device = SLMPDevice([])
+    device.write_words("D", 0, [7])
+
+    async def run():
+        handler = SLMPHandler("127.0.0.1", port, config=FAST)
+        assert not await handler.connect()  # PLC off: nothing detected, not connected
+        assert handler._detect
+        loop = asyncio.get_running_loop()
+        server = await loop.create_server(lambda: SLMPASCIIProtocol(device), "127.0.0.1", port)
+        try:
+            assert await handler.connect()  # back: detected now
+            try:
+                return handler.settings_text, await handler.read_device_raw(DeviceType.D, 0, 1)
+            finally:
+                await handler.disconnect()
+        finally:
+            server.close()
+
+    assert asyncio.run(run()) == ("3E ASCII", ([7], StatusCode.OK))
+
+
+def test_slmp_settings_given_are_not_detected(monkeypatch):
+    from plc_discovery import probes
+    from plc_discovery.protocols.slmp import SLMPBinaryHandler
+
+    monkeypatch.setattr(probes, "identify_slmp", MagicMock(side_effect=AssertionError("not expected")))
+    device = SLMPDevice([])
+    with serve(lambda: SLMPProtocol(device)) as port:
+
+        async def connect():
+            handler = SLMPHandler("127.0.0.1", port, frame=3, config=FAST)
+            ok = await handler.connect()
+            await handler.disconnect()
+            return ok
+
+        assert asyncio.run(connect())
+    assert SLMPBinaryHandler("127.0.0.1").settings_text == "4E" and not SLMPBinaryHandler("127.0.0.1")._detect
+
+
+def test_unsupported_answers_decided_without_a_request_are_not_timed():
+    from plc_discovery.protocols.modbus import ModbusHandler
+
+    handler = ModbusHandler("10.0.0.1", config=FAST)
+    handler._connected, handler._client = True, MagicMock()
+    assert asyncio.run(handler._tracked_read(DeviceType.DM, 0, 1))[1] == StatusCode.NG_UNSUPPORTED
+    assert (handler.request_count, handler.answered_count) == (0, 0)
+
+
+def test_periodic_scans_report_requests_and_response_times(tmp_path):
+    device = SLMPDevice([])
+    with serve(lambda: SLMPProtocol(device)) as port:
+
+        async def run():
+            task = asyncio.ensure_future(
+                plc_scanner.run_periodic_scan(
+                    [PLCInfo("127.0.0.1", protocol=Protocol.SLMP, port=port, options={"frame": 3})],
+                    FAST,
+                    CSVExporter(str(tmp_path)),
+                    MagicMock(),
+                    [DeviceRange(DeviceType.D, 0, 9)],
+                    interval=60,
+                )
+            )
+            await asyncio.sleep(0.5)  # one cycle, then waiting for the next
+            task.cancel()
+            return await task
+
+        (outcome,) = asyncio.run(run())
+    assert outcome.statistics["requests"] >= 1 and outcome.statistics["avg_response_ms"] is not None
+
+
+def test_statistics_without_answers_show_a_dash(capsys):
+    from plc_discovery.progress import RichProgressDisplay
+
+    RichProgressDisplay(use_rich=False).print_statistics({"requests": 0, "avg_response_ms": None})
+    assert "avg_response_ms: -" in capsys.readouterr().out
+
+
+def test_probe_threads_include_the_extra_ports():
+    discovery = PLCDiscovery(FAST, protocols=[Protocol.SLMP], extra_ports={Protocol.SLMP: [5002]})
+    with patch.object(discovery_module.concurrent.futures, "ThreadPoolExecutor") as pool:
+        pool.return_value.shutdown = MagicMock()
+        with patch.object(discovery, "_probe_host_all", side_effect=_no_plcs):
+            asyncio.run(discovery._probe_hosts(["10.0.0.1"], {}))
+    # A batch of 10 hosts x (SLMP + 1 extra port + the 4 simulator ports)
+    assert pool.call_args.kwargs["max_workers"] == 10 * (1 + 1 + 4)
+
+
+async def _no_plcs(host, mac=None):
+    return []
+
+
+def test_collector_counts_requests_across_reconnects_and_keeps_detected_settings():
+    device = SLMPDevice([])
+    with serve(lambda: SLMPASCIIProtocol(device)) as port:
+
+        async def run():
+            plc = PLCInfo("127.0.0.1", protocol=Protocol.SLMP, port=port)
+            collector = PLCDataCollector(plc, FAST)
+            for _ in range(2):  # a reconnect creates a new handler
+                assert await collector.connect()
+                await collector._handler.read_device_range(DeviceRange(DeviceType.D, 0, 9))
+                await collector.disconnect()
+            return plc, collector.request_statistics()
+
+        plc, stats = asyncio.run(run())
+    assert stats["requests"] == 2 and stats["avg_response_ms"] is not None
+    # Detected on the first connection and kept: the second one is not probed again
+    assert plc.options == {"frame": 3, "ascii": 1}

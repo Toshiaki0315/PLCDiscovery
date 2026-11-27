@@ -67,6 +67,9 @@ class PLCDataCollector:
         # Set by collect_items() for the rest of a scan once a range found
         # the PLC unreachable: one reconnect attempt per scan, not per range
         self.skip_reconnect = False
+        # Requests / answers / response ms (total, max) of the handlers
+        # already replaced or closed (a reconnect creates a new handler)
+        self._request_totals = [0, 0, 0.0, 0.0]
 
     def set_progress_callback(self, callback: Callable[[str, int, int], None]) -> None:
         """Set callback for progress updates"""
@@ -101,6 +104,7 @@ class PLCDataCollector:
             logger.error(f"No handler for protocol: {protocol}")
             return False
 
+        self._absorb_request_counts()
         try:
             self._handler = handler_class(
                 ip_address=self.plc_info.ip_address,
@@ -115,7 +119,26 @@ class PLCDataCollector:
             logger.error(f"Invalid options for {protocol.name}: {self.plc_info.options} ({e})")
             return False
 
-        return await self._handler.connect()
+        connected = await self._handler.connect()
+        # Settings the handler found out (SLMP frame / data code) are kept
+        # for the next connection, so they are not detected again
+        detected = getattr(self._handler, "detected_options", None)
+        if isinstance(detected, dict) and detected:
+            self.plc_info.options = {**detected, **(self.plc_info.options or {})}
+        return connected
+
+    def _absorb_request_counts(self) -> None:
+        """Add the current handler's request counts to the totals (before it is dropped)"""
+        handler = self._handler
+        if handler is None or not isinstance(getattr(handler, "request_count", None), int):
+            return
+        totals = self._request_totals
+        totals[0] += handler.request_count
+        totals[1] += handler.answered_count
+        totals[2] += handler.response_ms_total
+        totals[3] = max(totals[3], handler.response_ms_max)
+        handler.request_count = handler.answered_count = 0
+        handler.response_ms_total = handler.response_ms_max = 0.0
 
     async def disconnect(self):
         """Disconnect from PLC"""
@@ -124,6 +147,7 @@ class PLCDataCollector:
             self._denied_addresses = self._handler.get_denied_addresses()
             self._denied_statuses = self._handler.get_denied_statuses()
             await self._handler.disconnect()
+            self._absorb_request_counts()
             self._handler = None
 
     async def _ensure_link(self) -> bool:
@@ -448,16 +472,22 @@ class PLCDataCollector:
     def request_statistics(self) -> Dict[str, Any]:
         """
         Requests sent to the PLC and its response times (answered requests;
-        ms, rounded to 0.1). Empty before a connection was made.
+        ms, rounded to 0.1), over every connection of this collector. Empty
+        before a connection was made.
         """
+        requests, answered, total_ms, max_ms = self._request_totals
         handler = self._handler
-        if handler is None or not isinstance(getattr(handler, "request_count", None), int):
-            return {}  # not connected (or a stand-in handler without the counters)
-        answered = handler.answered_count
+        if handler is not None and isinstance(getattr(handler, "request_count", None), int):
+            requests += handler.request_count
+            answered += handler.answered_count
+            total_ms += handler.response_ms_total
+            max_ms = max(max_ms, handler.response_ms_max)
+        elif not requests:
+            return {}  # never connected (or a stand-in handler without the counters)
         return {
-            "requests": handler.request_count,
-            "avg_response_ms": round(handler.response_ms_total / answered, 1) if answered else None,
-            "max_response_ms": round(handler.response_ms_max, 1) if answered else None,
+            "requests": requests,
+            "avg_response_ms": round(total_ms / answered, 1) if answered else None,
+            "max_response_ms": round(max_ms, 1) if answered else None,
         }
 
     def clear_data(self):

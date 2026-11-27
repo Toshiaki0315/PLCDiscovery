@@ -457,7 +457,11 @@ class PLCDiscovery:
         # protocols at once (blocking socket calls that mostly wait). The
         # shared default pool (min(32, CPUs + 4) threads, ~8 on a 4-core PC)
         # made these calls queue: 5-10 s per batch of 10 silent hosts instead of ~1 s.
-        checks_per_host = len(self.protocols) + sum(len(p) for p in SIMULATOR_PORTS.values())
+        checks_per_host = (
+            len(self.protocols)
+            + sum(len(p) for p in SIMULATOR_PORTS.values())
+            + sum(len(p) for p in self.extra_ports.values())
+        )
         workers = min(MAX_PROBE_THREADS, batch_size * checks_per_host)
         self._probe_executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=workers, thread_name_prefix="plc-probe"

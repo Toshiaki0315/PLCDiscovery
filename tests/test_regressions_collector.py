@@ -177,7 +177,8 @@ class FakeSLMP:
 
 
 async def connected_handler(server, timeout_ms=1000):
-    handler = SLMPHandler("127.0.0.1", server.port, config=NetworkConfig(request_timeout_ms=timeout_ms))
+    # Settings given: the fake server answers reads only (no detection probe first)
+    handler = SLMPHandler("127.0.0.1", server.port, frame=3, config=NetworkConfig(request_timeout_ms=timeout_ms))
     assert await handler.connect()
     return handler
 

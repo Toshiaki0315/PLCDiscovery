@@ -404,7 +404,7 @@ logging:
 | `discovery_result_YYYYMMDD_HHMMSS.csv` | 検出されたPLC一覧（メーカー・機種・型式・ファームウェア・読み方〔`read_method`：アドレス／タグ一覧あり／変数名指定／データファイル〕など。識別情報が取れない機器は、プロトコルから分かるメーカー〔SLMP・S7・FINS〕と「〜対応PLC」を記入） |
 | `plc_data_<IP>_YYYYMMDD_HHMMSS.csv` | PLCデバイスデータ。同じIPを複数のプロトコルで読んだ場合は `plc_data_<IP>_<プロトコル>_<ポート>_…csv`。IP・プロトコル・ポートまで同じターゲット（ゲートウェイ配下の Modbus ユニットなど）は `…_<ポート>_unit_id2_…csv` のように区別され、データベースの `protocol` 列も `MODBUS_TCP/unit_id2` になります |
 | `access_denied_log.csv` | アクセス不可アドレス一覧（同じIPを複数のプロトコルで読んだ場合、`plc_ip` 列は `IP (プロトコル:ポート)`） |
-| `scan_summary_YYYYMMDD_HHMMSS.csv` | スキャンのまとめ（フル・範囲指定のスキャンごと、ターゲットごとに1行）。メーカー・機種・プロトコル・`note`（SLMP の設定）、ステータス別の件数、読めた範囲（`readable_ranges`、例: `D0-8191, M0-8191`）、要求数と PLC の応答時間（`avg_response_ms`・`max_response_ms`）、所要時間（`scan_seconds`）。DeviceGateway で何を何秒ごとに集められるかを見積もる材料です（周期実行では最後の周期の結果。応答時間は空欄） |
+| `scan_summary_YYYYMMDD_HHMMSS.csv` | スキャンのまとめ（フル・範囲指定のスキャンごと、ターゲットごとに1行）。メーカー・機種・プロトコル・`note`（SLMP の設定）、ステータス別の件数、読めた範囲（`readable_ranges`、例: `D0-8191, M0-8191`）、要求数と PLC の応答時間（`avg_response_ms`・`max_response_ms`）、所要時間（`scan_seconds`）。DeviceGateway で何を何秒ごとに集められるかを見積もる材料です（周期実行では、件数と読めた範囲は最後の周期の結果、要求数と応答時間は全周期の合計・平均・最大。所要時間は空欄。GUI の周期実行では出力しません） |
 | `readable_ranges_YYYYMMDD_HHMMSS.csv` | 読めた範囲・読めなかった範囲の一覧。同じデバイスで連続し、ステータスが同じアドレスを1行にまとめます（`target, device, start, end, count, status`） |
 | `audit.log` | 監査ログ（JSON Lines形式） |
 
@@ -485,6 +485,8 @@ targets:
 - ASCII コード・4E フレームの読み取りは、シミュレーターでのみ確認済みです
 - SLMP の探索で、開いているのに応答しないポートには、設定を変えて最大 4 回（TCP）問い合わせるため、1 台あたり探索タイムアウトの 4 倍ほどかかります
 - 形名読み出し（0101）に応答しない機種（キーエンス KV など）は、機種名が「SLMP対応PLC」のままです
+- フレーム・交信データコードを指定していない SLMP の対象は、接続するときに判別します。PLC が止まっていて判別できなかった
+  場合は 3E・バイナリで接続を試み、判別できるまで接続し直すたびに判別を試みます（そのたびに形名読み出しを 1〜4 回送ります）
 
 ### 探索
 
@@ -494,7 +496,8 @@ targets:
 
 ### スキャンのまとめ
 
-- `scan_summary` の応答時間は、PLC が応答した要求だけの平均・最大です。周期実行では空欄です
+- `scan_summary` の応答時間は、PLC が応答した要求だけの平均・最大です（本ツールが送らずに `NG_UNSUPPORTED` と判断した分は含みません）。
+  周期実行では全周期をまとめた値で、所要時間は空欄です。GUI の周期実行では `scan_summary` を出力しません
 - `readable_ranges` は CSV のアドレスのままです（X・Y・B・W も 10 進数）
 
 ### シミュレーター

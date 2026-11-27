@@ -230,13 +230,13 @@ class RichProgressDisplay:
             for key, value in stats.items():
                 # Format key
                 formatted_key = key.replace("_", " ").title()
-                table.add_row(_cell(formatted_key), _cell(value))
+                table.add_row(_cell(formatted_key), _cell("-" if value is None else value))
 
             self.console.print(table)
         else:
             print("\nStatistics:")
             for key, value in stats.items():
-                print(f"  {key}: {value}")
+                print(f"  {key}: {'-' if value is None else value}")
 
     @contextmanager
     def progress_context(self, description: str = "Processing") -> Iterator[Any]:

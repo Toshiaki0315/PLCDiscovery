@@ -51,6 +51,17 @@ def _slmp_identity_follows_a_patched_verify_protocol(monkeypatch):
 
         return identify
 
+    # The SLMP handler detects the settings itself (probes.identify_slmp*):
+    # only for loopback addresses (simulators), never other hosts
+    for name in ("identify_slmp", "identify_slmp_udp"):
+        real_probe = getattr(probes, name)
+        monkeypatch.setattr(
+            probes,
+            name,
+            lambda ip, port, timeout, interval=0.0, _real=real_probe: (
+                _real(ip, port, timeout, interval) if str(ip).startswith("127.") else None
+            ),
+        )
     monkeypatch.setattr(discovery_module, "identify_slmp", follow(discovery_module.identify_slmp, Protocol.SLMP))
     monkeypatch.setattr(
         discovery_module, "identify_slmp_udp", follow(discovery_module.identify_slmp_udp, Protocol.SLMP_UDP)

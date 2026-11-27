@@ -13,7 +13,7 @@ Supports:
 import asyncio
 import logging
 import socket
-from typing import Any, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..config import PROTOCOL_PORTS, DeviceType, Protocol, StatusCode
 from .base import BaseProtocolHandler
@@ -208,21 +208,29 @@ class SLMPHandler(BaseProtocolHandler):
         self,
         ip_address: str,
         port: Optional[int] = None,
-        frame: int = 0,
-        ascii: int = 0,
+        frame: Optional[int] = None,
+        ascii: Optional[int] = None,
         udp: int = 0,
         **kwargs: Any,
     ):
         """
         Args:
             frame: 3 or 4 (targets[].options.frame): the frame the PLC's
-                port is set to. 0 keeps the class default (3E).
+                port is set to.
             ascii: 1 when the port's communication data code is ASCII
                 (targets[].options.ascii); 0 = binary
             udp: 1 for a port opened for UDP (protocol slmp-udp); 0 = TCP
+
+        Without frame and ascii the setting is detected (Read CPU Model
+        Name in each setting) before connecting, and again on every later
+        connection until it was found - a PLC that was off when the scan
+        started is then read the way its port answers once it is back.
+        Until then 3E binary is used.
         """
         super().__init__(ip_address, port or PROTOCOL_PORTS[Protocol.SLMP], **kwargs)
         self._client: Any = None
+        self._detect = frame is None and ascii is None
+        self.detected_options: Dict[str, int] = {}
         if frame:
             self.FRAME = f"{frame}E"
         self._ascii = bool(ascii)
@@ -235,8 +243,33 @@ class SLMPHandler(BaseProtocolHandler):
         """The frame, data code and transport, e.g. "3E" or "4E ASCII UDP" """
         return self.FRAME + (" ASCII" if self._ascii else "") + (" UDP" if self._udp else "")
 
+    async def _detect_settings(self) -> None:
+        """Adopt the frame / data code the port answers (see __init__)"""
+        from .. import probes
+
+        identify = probes.identify_slmp_udp if self._udp else probes.identify_slmp
+        identity = await asyncio.get_running_loop().run_in_executor(
+            None,
+            identify,
+            self.ip_address,
+            self.port or PROTOCOL_PORTS[Protocol.SLMP],
+            self.config.discovery_timeout_ms / 1000,
+            self.config.packet_interval_ms / 1000,
+        )
+        if not identity:
+            logger.debug(f"SLMP settings of {self.ip_address}:{self.port} not detected; trying 3E binary")
+            return
+        self._detect = False
+        self.FRAME, self._ascii = identity["frame"], bool(identity["ascii"])
+        # Kept by the collector for its next connections (targets[].options)
+        self.detected_options = {"frame": int(self.FRAME[0]), "ascii": int(self._ascii)}
+        if self.settings_text not in ("3E", "3E UDP"):
+            logger.info(f"{self.ip_address}:{self.port} answers SLMP {self.settings_text}")
+
     async def connect(self) -> bool:
         """Establish SLMP connection"""
+        if self._detect:
+            await self._detect_settings()
         try:
             client_class = _framed_client_class(self.FRAME, self._ascii, self._udp)
 
@@ -368,4 +401,5 @@ class SLMPBinaryHandler(SLMPHandler):
     FRAME = "4E"
 
     def __init__(self, ip_address: str, port: Optional[int] = None, **kwargs: Any):
+        kwargs.setdefault("frame", 4)
         super().__init__(ip_address, port or 5000, **kwargs)

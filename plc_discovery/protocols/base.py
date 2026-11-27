@@ -445,8 +445,12 @@ class BaseProtocolHandler(ABC):
         self._audit_read(device_type.value, start_address, count, status, started)
 
         plc_answered = status not in self._TRANSIENT_FAILURES
-        self.request_count += 1
-        if plc_answered:
+        # NG_UNSUPPORTED is mostly decided by the handler without a request
+        # (a device type the protocol does not have): not counted, so the
+        # PLC's response times are not lowered by answers it never gave
+        if status != StatusCode.NG_UNSUPPORTED:
+            self.request_count += 1
+        if plc_answered and status != StatusCode.NG_UNSUPPORTED:
             elapsed_ms = (time.monotonic() - started) * 1000
             self.answered_count += 1
             self.response_ms_total += elapsed_ms

@@ -741,6 +741,8 @@ async def run_periodic_scan(
             outcome.denied_addresses = collector.get_denied_addresses()
             writers[key].export_new_denied(outcome.denied_addresses, collector.get_denied_statuses())
             stats = collector.get_statistics()
+            # Requests and response times of every cycle (survey summary)
+            outcome.statistics = stats
             audit.log_scan_complete(
                 ips[key],
                 stats["total_points"],
@@ -1173,6 +1175,7 @@ async def _run_scans(
                 outcome.error,
                 outcome.data_points,
                 outcome.denied_addresses,
+                outcome.statistics,
             )
             results.interrupted = results.interrupted or outcome.interrupted
     elif len(plc_infos) > 1 and config.max_concurrent > 1:

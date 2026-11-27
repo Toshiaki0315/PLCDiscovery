@@ -14,11 +14,13 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
-from .config import DataPoint, PLCInfo, StatusCode
+from .config import DataPoint, DeviceType, PLCInfo, StatusCode
 
-# "D100", "ZR32767": device letters, then the number. Anything else (a tag
-# name, "ALL") is kept as it is, one run per run of equal status.
-_ADDRESS = re.compile(r"^([A-Za-z]+)(\d+)$")
+# "D100", "ZR32767": a device of the tool, then the number. Anything else (a
+# tag name such as "Motor1", "ALL") is kept as it is, one run per run of
+# equal status.
+_ADDRESS = re.compile(r"^([A-Z]+)(\d+)$")
+_DEVICES = frozenset(device.value for device in DeviceType)
 
 # Longest text in the readable_ranges column of the summary (the full list
 # is in the readable ranges file)
@@ -56,7 +58,10 @@ def address_runs(points: Iterable[DataPoint]) -> List[AddressRun]:
     for point in points:
         status = point.status.value
         match = _ADDRESS.match(point.address or "")
-        device, number = (match.group(1).upper(), int(match.group(2))) if match else ("", None)
+        if match and match.group(1) in _DEVICES:
+            device, number = match.group(1), int(match.group(2))
+        else:
+            device, number = "", None  # a tag: its name as read
         run = runs[-1] if runs else None
         if (
             run is not None
