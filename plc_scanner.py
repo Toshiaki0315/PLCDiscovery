@@ -88,7 +88,6 @@ from plc_discovery.data_types import ByteOrder, DataType, DataTypeManager
 from plc_discovery.database import DatabaseConfig, DatabaseExporter
 from plc_discovery.discovery import (
     PLCDiscovery,
-    detect_slmp_settings,
     discover_plcs,
     merge_discovery_results,
     target_instances,
@@ -790,8 +789,6 @@ async def resolve_target(
         plc_info = base or PLCInfo(ip_address=ip)
         plc_info.protocol = protocol
         plc_info.port = port or PROTOCOL_PORTS.get(protocol)
-        # SLMP: the frame / data code the port answers (4E, ASCII), unless given
-        await detect_slmp_settings(plc_info, config)
         return plc_info
 
     # With a port but no protocol, the protocols are tried on that port:

@@ -120,12 +120,28 @@ class PLCDataCollector:
             return False
 
         connected = await self._handler.connect()
-        # Settings the handler found out (SLMP frame / data code) are kept
-        # for the next connection, so they are not detected again
-        detected = getattr(self._handler, "detected_options", None)
+        self._keep_detected_settings()
+        return connected
+
+    def _keep_detected_settings(self) -> None:
+        """
+        Settings the handler found out (SLMP frame / data code) are kept in
+        the target's options for the next connection, so they are not
+        detected again; the CPU model and the settings it answered go to
+        the target's model / note (scan summary), a name the user gave wins.
+        """
+        handler = self._handler
+        detected = getattr(handler, "detected_options", None)
         if isinstance(detected, dict) and detected:
             self.plc_info.options = {**detected, **(self.plc_info.options or {})}
-        return connected
+        identity = getattr(handler, "identity", None)
+        if isinstance(identity, dict) and not self.plc_info.note:
+            from .discovery import apply_slmp_identity
+
+            model, options = self.plc_info.model, dict(self.plc_info.options or {})
+            apply_slmp_identity(self.plc_info, identity)
+            self.plc_info.model = model or self.plc_info.model
+            self.plc_info.options = options
 
     def _absorb_request_counts(self) -> None:
         """Add the current handler's request counts to the totals (before it is dropped)"""
@@ -147,6 +163,7 @@ class PLCDataCollector:
             self._denied_addresses = self._handler.get_denied_addresses()
             self._denied_statuses = self._handler.get_denied_statuses()
             await self._handler.disconnect()
+            self._keep_detected_settings()
             self._absorb_request_counts()
             self._handler = None
 

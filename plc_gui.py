@@ -46,7 +46,7 @@ from plc_discovery.config import (
     TagRange,
 )
 from plc_discovery.data_types import ByteOrder, DataType
-from plc_discovery.discovery import PLCDiscovery, detect_slmp_settings, discover_plcs, merge_discovery_results
+from plc_discovery.discovery import PLCDiscovery, discover_plcs, merge_discovery_results
 from plc_discovery.output import DEFAULT_OUTPUT_DIR, CSVExporter
 from plc_discovery.scan_runner import (
     CycleRunner,
@@ -1089,9 +1089,8 @@ class PLCScannerApp(SettingsTabsMixin):
                     "PLCの電源・ネットワーク接続を確認するか、プロトコルを手動で選択してください。"
                 )
         else:
+            # SLMP の 4E フレーム・ASCII コードは、接続するときにハンドラが判別する
             plc = PLCInfo(ip_address=ip, protocol=protocol, port=port or PROTOCOL_PORTS.get(protocol))
-            # SLMP: 4E フレーム・ASCII コードに設定されたポートも、応答した設定で読む
-            await detect_slmp_settings(plc, config)
 
         # The requested ranges / tags (None: full scan), shared with the CLI
         items: Optional[List[ScanItem]] = (

@@ -225,12 +225,16 @@ class SLMPHandler(BaseProtocolHandler):
         Name in each setting) before connecting, and again on every later
         connection until it was found - a PLC that was off when the scan
         started is then read the way its port answers once it is back.
-        Until then 3E binary is used.
+        Until then 3E binary is used. A read the PLC answers also settles
+        it: a device that reads fine but ignores Read CPU Model Name is not
+        probed again on every reconnect (up to four timeouts each).
         """
         super().__init__(ip_address, port or PROTOCOL_PORTS[Protocol.SLMP], **kwargs)
         self._client: Any = None
         self._detect = frame is None and ascii is None
         self.detected_options: Dict[str, int] = {}
+        # Answer to Read CPU Model Name when the settings were detected
+        self.identity: Optional[Dict[str, Any]] = None
         if frame:
             self.FRAME = f"{frame}E"
         self._ascii = bool(ascii)
@@ -259,12 +263,17 @@ class SLMPHandler(BaseProtocolHandler):
         if not identity:
             logger.debug(f"SLMP settings of {self.ip_address}:{self.port} not detected; trying 3E binary")
             return
-        self._detect = False
+        self.identity = identity
         self.FRAME, self._ascii = identity["frame"], bool(identity["ascii"])
-        # Kept by the collector for its next connections (targets[].options)
-        self.detected_options = {"frame": int(self.FRAME[0]), "ascii": int(self._ascii)}
+        self._settings_confirmed()
         if self.settings_text not in ("3E", "3E UDP"):
             logger.info(f"{self.ip_address}:{self.port} answers SLMP {self.settings_text}")
+
+    def _settings_confirmed(self) -> None:
+        """The PLC answers in the current settings: stop detecting, keep them"""
+        self._detect = False
+        # Kept by the collector for its next connections (targets[].options)
+        self.detected_options = {"frame": int(self.FRAME[0]), "ascii": int(self._ascii)}
 
     async def connect(self) -> bool:
         """Establish SLMP connection"""
@@ -352,6 +361,8 @@ class SLMPHandler(BaseProtocolHandler):
             data = await self._run_blocking(_read)
 
             if data is not None:
+                if self._detect:
+                    self._settings_confirmed()
                 # pymcprotocol decodes words as signed; report raw 16-bit
                 # values (0-65535) like the other protocols
                 return [v & 0xFFFF for v in data], StatusCode.OK
@@ -370,6 +381,8 @@ class SLMPHandler(BaseProtocolHandler):
                 # Transport-level failure (closed/reset connection, framing
                 # error): re-establish the connection before the next request
                 self._needs_reconnect = True
+            elif self._detect:
+                self._settings_confirmed()  # answered with an end code: the format is right
             return None, self._classify_error(e, device_type, start_address)
 
     @staticmethod

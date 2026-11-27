@@ -784,3 +784,62 @@ def test_collector_counts_requests_across_reconnects_and_keeps_detected_settings
     assert stats["requests"] == 2 and stats["avg_response_ms"] is not None
     # Detected on the first connection and kept: the second one is not probed again
     assert plc.options == {"frame": 3, "ascii": 1}
+
+
+class _IgnoresModelName(SLMPProtocol):
+    """Reads like a PLC, but leaves Read CPU Model Name (0101) unanswered"""
+
+    def _process_frame(self, frame):
+        if frame[-6:-4] == b"\x01\x01":  # command 0101 (little-endian), subcommand 0000
+            return b""
+        return super()._process_frame(frame)
+
+
+def test_a_device_ignoring_the_model_name_is_not_probed_on_every_reconnect(monkeypatch):
+    from plc_discovery import probes
+
+    calls = []
+    real = probes.identify_slmp
+    monkeypatch.setattr(probes, "identify_slmp", lambda *a: calls.append(a) or real(*a))
+    device = SLMPDevice([])
+    device.write_words("D", 0, [3])
+    config = NetworkConfig(packet_interval_ms=0, retry_interval_ms=0, request_timeout_ms=1000, discovery_timeout_ms=100)
+    with serve(lambda: _IgnoresModelName(device)) as port:
+
+        async def run():
+            handler = SLMPHandler("127.0.0.1", port, config=config)
+            assert await handler.connect()  # nothing detected: 3E binary
+            first = await handler.read_device_raw(DeviceType.D, 0, 1)
+            handler._needs_reconnect = True  # e.g. after a timeout
+            second = await handler.read_device_raw(DeviceType.D, 0, 1)
+            await handler.disconnect()
+            return first, second, handler.detected_options
+
+        first, second, kept = asyncio.run(run())
+    assert first == second == ([3], StatusCode.OK)
+    assert len(calls) == 1  # the answered read settled it: no probe on the reconnect
+    assert kept == {"frame": 3, "ascii": 0}
+
+
+def test_the_collector_fills_in_the_model_and_settings_the_handler_found():
+    device = SLMPDevice([], cpu="R04CPU")
+    with serve(lambda: SLMPASCIIProtocol(device)) as port:
+        plc = PLCInfo("127.0.0.1", protocol=Protocol.SLMP, port=port)  # given without options (--protocol slmp)
+        named = PLCInfo("127.0.0.1", protocol=Protocol.SLMP, port=port, model="Line 3")
+
+        async def run():
+            for target in (plc, named):
+                collector = PLCDataCollector(target, FAST)
+                assert await collector.connect()
+                await collector.disconnect()
+
+        asyncio.run(run())
+    assert (plc.model, plc.note, plc.options) == ("R04CPU", "SLMP 3E・ASCII", {"frame": 3, "ascii": 1})
+    assert named.model == "Line 3"  # the user's name wins
+
+
+def test_cli_targets_are_not_probed_before_connecting():
+    # The handler detects the settings when it connects: no second probe first
+    with patch.object(discovery_module, "identify_slmp", side_effect=AssertionError("not expected")):
+        plc = asyncio.run(plc_scanner.resolve_target("127.0.0.1", Protocol.SLMP, 5001, FAST, MagicMock()))
+    assert plc.options == {}
