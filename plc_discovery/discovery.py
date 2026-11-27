@@ -252,36 +252,6 @@ def eip_read_method(identity: Optional[dict]) -> Optional[str]:
     return None
 
 
-async def detect_slmp_settings(plc_info: PLCInfo, config: Optional[NetworkConfig] = None) -> None:
-    """
-    Find the frame and data code of an SLMP target given without them
-    (targets[].options.frame / ascii), so that a port set to 4E or ASCII is
-    read as discovery found it. One read-only "Read CPU Model Name" per
-    setting tried; a target that answers none is left unchanged (its
-    connection then fails as before).
-    """
-    if plc_info.protocol not in SLMP_PROTOCOLS or not plc_info.port:
-        return
-    options = plc_info.options or {}
-    if "frame" in options or "ascii" in options:
-        return  # given by the user
-    config = config or NetworkConfig()
-    identity = await asyncio.get_running_loop().run_in_executor(
-        None,
-        identify_slmp_udp if plc_info.protocol == Protocol.SLMP_UDP else identify_slmp,
-        plc_info.ip_address,
-        plc_info.port,
-        config.discovery_timeout_ms / 1000,
-        config.packet_interval_ms / 1000,
-    )
-    if identity:
-        model = plc_info.model
-        apply_slmp_identity(plc_info, identity)
-        plc_info.model = model or plc_info.model
-        if (identity["frame"], identity["ascii"]) != ("3E", False):
-            logger.info(f"{plc_info.ip_address}:{plc_info.port} answers {plc_info.note}")
-
-
 class PLCDiscovery:
     """
     PLC Discovery Engine

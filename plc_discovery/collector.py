@@ -67,8 +67,9 @@ class PLCDataCollector:
         # Set by collect_items() for the rest of a scan once a range found
         # the PLC unreachable: one reconnect attempt per scan, not per range
         self.skip_reconnect = False
-        # Requests / answers / response ms (total, max) of the handlers
-        # already replaced or closed (a reconnect creates a new handler)
+        # Requests / answers / response ms (total, max) of handlers already
+        # closed: disconnect() drops the handler, and the statistics are
+        # read after it (a reconnect during a scan keeps the same handler)
         self._request_totals = [0, 0, 0.0, 0.0]
 
     def set_progress_callback(self, callback: Callable[[str, int, int], None]) -> None:
@@ -142,6 +143,13 @@ class PLCDataCollector:
             apply_slmp_identity(self.plc_info, identity)
             self.plc_info.model = model or self.plc_info.model
             self.plc_info.options = options
+        elif isinstance(detected, dict) and detected and not self.plc_info.note:
+            # Settled by a read the PLC answered (no model name answer)
+            from .discovery import slmp_settings_note
+
+            self.plc_info.note = slmp_settings_note(
+                f"{detected['frame']}E", bool(detected["ascii"]), self.plc_info.protocol == Protocol.SLMP_UDP
+            )
 
     def _absorb_request_counts(self) -> None:
         """Add the current handler's request counts to the totals (before it is dropped)"""

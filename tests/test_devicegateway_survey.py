@@ -44,7 +44,6 @@ from plc_discovery.discovery import (
     UNIDENTIFIED_MODEL,
     PLCDiscovery,
     apply_slmp_identity,
-    detect_slmp_settings,
     discover_plcs,
 )
 from plc_discovery.output import CSVExporter
@@ -198,21 +197,6 @@ def test_slmp_identity_fills_the_model_and_the_handler_options(identity, options
     assert plc.options == options and plc.manufacturer == maker
     assert plc.model == identity["model"]
     assert plc.note == f"SLMP {identity['frame']}・{'ASCII' if identity['ascii'] else 'バイナリ'}"
-
-
-def test_a_given_slmp_target_is_read_with_the_settings_its_port_answers():
-    device = SLMPDevice([])
-    with serve(lambda: SLMPASCIIProtocol(device)) as port:
-        plc = PLCInfo("127.0.0.1", protocol=Protocol.SLMP, port=port, model="Line 3")
-        asyncio.run(detect_slmp_settings(plc, FAST))
-    assert plc.options == {"ascii": 1} and plc.model == "Line 3"  # the user's name is kept
-
-
-def test_slmp_settings_given_by_the_user_are_not_probed():
-    plc = PLCInfo("10.0.0.1", protocol=Protocol.SLMP, port=5001, options={"frame": 4})
-    with patch.object(discovery_module, "identify_slmp", side_effect=AssertionError("not expected")):
-        asyncio.run(detect_slmp_settings(plc, FAST))
-    assert plc.options == {"frame": 4}
 
 
 # ---------------------------------------------------------------- SLMP reads
@@ -790,7 +774,7 @@ class _IgnoresModelName(SLMPProtocol):
     """Reads like a PLC, but leaves Read CPU Model Name (0101) unanswered"""
 
     def _process_frame(self, frame):
-        if frame[-6:-4] == b"\x01\x01":  # command 0101 (little-endian), subcommand 0000
+        if frame[-4:] == b"\x01\x01\x00\x00":  # command 0101, subcommand 0000 (no request data)
             return b""
         return super()._process_frame(frame)
 
@@ -843,3 +827,20 @@ def test_cli_targets_are_not_probed_before_connecting():
     with patch.object(discovery_module, "identify_slmp", side_effect=AssertionError("not expected")):
         plc = asyncio.run(plc_scanner.resolve_target("127.0.0.1", Protocol.SLMP, 5001, FAST, MagicMock()))
     assert plc.options == {}
+
+
+def test_settings_settled_by_a_read_are_noted_too():
+    device = SLMPDevice([])
+    config = NetworkConfig(packet_interval_ms=0, retry_interval_ms=0, request_timeout_ms=1000, discovery_timeout_ms=100)
+    with serve(lambda: _IgnoresModelName(device)) as port:
+        plc = PLCInfo("127.0.0.1", protocol=Protocol.SLMP, port=port)
+
+        async def run():
+            collector = PLCDataCollector(plc, config)
+            assert await collector.connect()
+            await collector._handler.read_device_raw(DeviceType.D, 0, 1)
+            await collector.disconnect()
+
+        asyncio.run(run())
+    # No model name, but the settings it answered in are in the note (scan summary)
+    assert plc.model is None and plc.note == "SLMP 3E・バイナリ" and plc.options == {"frame": 3, "ascii": 0}

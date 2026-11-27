@@ -17,10 +17,10 @@ import pytest
 
 from plc_discovery import discovery as discovery_module
 from plc_discovery.broadcast_discovery import BroadcastDiscovery
-from plc_discovery.collector import PROTOCOL_HANDLERS
+from plc_discovery.collector import PROTOCOL_HANDLERS, PLCDataCollector
 from plc_discovery.config import DeviceType, NetworkConfig, PLCInfo, Protocol, StatusCode
 from plc_discovery.config_loader import ConfigLoader
-from plc_discovery.discovery import PLCDiscovery, detect_slmp_settings
+from plc_discovery.discovery import PLCDiscovery
 from plc_discovery.names import parse_protocol
 from plc_discovery.probes import UDP_PROTOCOLS, identify_slmp_udp, slmp_type_name_request
 from plc_discovery.protocols.slmp import SLMPHandler
@@ -178,10 +178,20 @@ def test_discovery_lists_an_slmp_udp_port_with_its_settings():
 
 def test_a_given_slmp_udp_target_is_read_with_the_settings_its_port_answers():
     device = SLMPDevice([])
+    device.write_words("D", 0, [12])
     with udp_serve(lambda: SLMPUDPProtocol(device, True)) as port:
-        plc = PLCInfo("127.0.0.1", protocol=Protocol.SLMP_UDP, port=port)
-        asyncio.run(detect_slmp_settings(plc, FAST))
-    assert plc.options == {"ascii": 1}
+        plc = PLCInfo("127.0.0.1", protocol=Protocol.SLMP_UDP, port=port)  # no frame / ascii given
+
+        async def run():
+            collector = PLCDataCollector(plc, FAST)
+            assert await collector.connect()
+            try:
+                return await collector._handler.read_device_raw(DeviceType.D, 0, 1)
+            finally:
+                await collector.disconnect()
+
+        assert asyncio.run(run()) == ([12], StatusCode.OK)
+    assert plc.options == {"frame": 3, "ascii": 1} and plc.note == "SLMP 3E・ASCII・UDP"
 
 
 def test_broadcast_reply_with_a_model_name():
