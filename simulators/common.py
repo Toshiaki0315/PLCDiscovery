@@ -142,6 +142,23 @@ def log_faults(faults: Optional[Faults], logger: logging.Logger) -> None:
         logger.info("Faults: " + "; ".join(parts))
 
 
+def _send_with_faults(transport: Any, faults: Faults, device: Any, send: Callable[[], None]) -> None:
+    """Send an answer now, later (delay_ms), or not at all (a denied address was touched)"""
+    if device is not None and getattr(device, "_fault_denied_seen", False):
+        # The request touched a denied address: no answer at all
+        device._fault_denied_seen = False
+        return
+    if not faults.delay_ms:
+        send()
+        return
+
+    def late_send() -> None:
+        if not transport.is_closing():
+            send()
+
+    asyncio.get_running_loop().call_later(faults.delay_ms / 1000, late_send)
+
+
 class _FaultyTransport:
     """A connection's transport whose writes are delayed or dropped"""
 
@@ -154,19 +171,14 @@ class _FaultyTransport:
         return getattr(self._transport, name)
 
     def write(self, data: bytes) -> None:
-        if self._device is not None and getattr(self._device, "_fault_denied_seen", False):
-            # The request touched a denied address: no answer at all
-            self._device._fault_denied_seen = False
-            return
-        if not self._faults.delay_ms:
-            self._transport.write(data)
-            return
+        _send_with_faults(self._transport, self._faults, self._device, lambda: self._transport.write(data))
 
-        def late_write() -> None:
-            if not self._transport.is_closing():
-                self._transport.write(data)
 
-        asyncio.get_running_loop().call_later(self._faults.delay_ms / 1000, late_write)
+class _FaultyDatagramTransport(_FaultyTransport):
+    """A UDP endpoint whose answers are delayed or dropped"""
+
+    def sendto(self, data: bytes, addr: Any = None) -> None:
+        _send_with_faults(self._transport, self._faults, self._device, lambda: self._transport.sendto(data, addr))
 
 
 class _FaultyProtocol(asyncio.Protocol):
@@ -207,6 +219,44 @@ class _FaultyProtocol(asyncio.Protocol):
             return
         self._counter[0] -= 1
         self._inner.connection_lost(exc)
+
+
+class _FaultyDatagramProtocol(asyncio.DatagramProtocol):
+    """Wraps a simulator's UDP protocol: late / dropped answers (no connections to limit)"""
+
+    def __init__(self, inner: asyncio.DatagramProtocol, faults: Faults, device: Any) -> None:
+        self._inner = inner
+        self._faults = faults
+        self._device = device
+
+    def connection_made(self, transport: Any) -> None:
+        self._inner.connection_made(_FaultyDatagramTransport(transport, self._faults, self._device))  # type: ignore[arg-type]
+
+    def datagram_received(self, data: bytes, addr: Any) -> None:
+        if self._device is not None:
+            self._device._fault_denied_seen = False
+        self._inner.datagram_received(data, addr)
+
+    def error_received(self, exc: Exception) -> None:
+        self._inner.error_received(exc)
+
+    def connection_lost(self, exc: Optional[Exception]) -> None:
+        self._inner.connection_lost(exc)
+
+
+def with_datagram_faults(
+    factory: Callable[[], asyncio.DatagramProtocol], faults: Optional[Faults], device: Any = None
+) -> Callable[[], asyncio.DatagramProtocol]:
+    """
+    Protocol factory for create_datagram_endpoint() with delay_ms and
+    drop_denied applied (max_connections has no meaning without connections)
+    """
+    if faults is None or not (faults.delay_ms or faults.drop_denied):
+        return factory
+    if faults.drop_denied and device is not None:
+        _watch_denied(device)
+    watched = device if faults.drop_denied else None
+    return lambda: _FaultyDatagramProtocol(factory(), faults, watched)
 
 
 def _watch_denied(device: Any) -> None:

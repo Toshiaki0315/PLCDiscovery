@@ -94,7 +94,7 @@ class TestBroadcastDiscovery:
 
         assert result is not None
         assert result.ip_address == "192.168.1.10"
-        assert result.protocol == Protocol.SLMP
+        assert result.protocol == Protocol.SLMP_UDP
 
     def test_parse_slmp_response_invalid(self):
         """Test parsing invalid SLMP response"""
@@ -185,7 +185,7 @@ class TestBroadcastDiscovery:
 
         assert len(plcs) == 1
         assert plcs[0].ip_address == "192.168.1.10"
-        assert plcs[0].protocol == Protocol.SLMP
+        assert plcs[0].protocol == Protocol.SLMP_UDP
 
     @pytest.mark.asyncio
     async def test_discover_eip_broadcast(self):

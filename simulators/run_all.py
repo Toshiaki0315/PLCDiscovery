@@ -27,14 +27,21 @@ logger = logging.getLogger("PLC-Simulator-Launcher")
 
 # Import simulators (support both direct execution and package import)
 try:
-    from .common import Faults, add_fault_options, faults_from_args, log_faults, with_faults
+    from .common import Faults, add_fault_options, faults_from_args, log_faults, with_datagram_faults, with_faults
     from .ethernet_ip_simulator import EtherNetIPDevice, EtherNetIPProtocol
     from .fins_simulator import FINSSimulator, FINSTCPServerProtocol, FINSUDPServerProtocol
     from .modbus_simulator import ModbusDevice, ModbusProtocol
     from .s7_simulator import COTPProtocol, S7Device
     from .slmp_simulator import SLMPDevice, SLMPProtocol
 except ImportError:
-    from common import Faults, add_fault_options, faults_from_args, log_faults, with_faults  # type: ignore[no-redef]
+    from common import (  # type: ignore[no-redef]
+        Faults,
+        add_fault_options,
+        faults_from_args,
+        log_faults,
+        with_datagram_faults,
+        with_faults,
+    )
     from ethernet_ip_simulator import EtherNetIPDevice, EtherNetIPProtocol  # type: ignore[no-redef]
     from fins_simulator import FINSSimulator, FINSTCPServerProtocol, FINSUDPServerProtocol  # type: ignore[no-redef]
     from modbus_simulator import ModbusDevice, ModbusProtocol  # type: ignore[no-redef]
@@ -147,7 +154,8 @@ class SimulatorManager:
         try:
             fins_simulator = FINSSimulator(self.host, 9600)
             transport, protocol = await loop.create_datagram_endpoint(
-                lambda: FINSUDPServerProtocol(fins_simulator), local_addr=(self.host, 9600)
+                with_datagram_faults(lambda: FINSUDPServerProtocol(fins_simulator), self.faults, fins_simulator),
+                local_addr=(self.host, 9600),
             )
             try:
                 fins_tcp_server = await loop.create_server(

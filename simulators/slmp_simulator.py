@@ -6,7 +6,8 @@ Simulates a Mitsubishi/Keyence PLC that responds to the SLMP / MC protocol
 (binary code, 3E and 4E frames): batch, random and block reads, CPU model
 name and loopback test, and with --writable batch / random writes. With
 --ascii the port answers ASCII code instead (batch read and CPU model name
-only), like a PLC whose communication data code is set to ASCII. Used for
+only), like a PLC whose communication data code is set to ASCII. With --udp
+it answers UDP datagrams (one request, one answer) instead of a TCP port. Used for
 testing PLC Discovery tool, or another SLMP client (e.g. a device gateway),
 without physical hardware.
 
@@ -15,13 +16,13 @@ model name answers "read CPU model" and device numbers end where its do -
 reading past them is answered with C056, like the real CPU.
 
 Usage:
-    python slmp_simulator.py [--host 127.0.0.1] [--port 5001] [--writable] [--cpu R04CPU] [--ascii]
+    python slmp_simulator.py [--host 127.0.0.1] [--port 5001] [--writable] [--cpu R04CPU] [--ascii] [--udp]
 """
 
 import asyncio
 import logging
 import struct
-from typing import Dict, List, NamedTuple, Optional, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("SLMP-Simulator")
@@ -38,6 +39,7 @@ try:
         run_simulator,
         serve_until_stopped,
         simulator_parser,
+        with_datagram_faults,
         with_faults,
     )
 except ImportError:
@@ -51,6 +53,7 @@ except ImportError:
         run_simulator,
         serve_until_stopped,
         simulator_parser,
+        with_datagram_faults,
         with_faults,
     )
 
@@ -340,7 +343,7 @@ class SLMPProtocol(asyncio.Protocol):
 
     def __init__(self, device: SLMPDevice):
         self.device = device
-        self.transport = None
+        self.transport: Any = None
         self.buffer = b""
         # Error lines already logged on this connection: a client polling
         # every few ms repeats the same failing request, logged once here
@@ -716,6 +719,62 @@ class SLMPASCIIProtocol(SLMPProtocol):
         return (prefix_text + route_text + f"{len(answer):04X}" + answer).encode("ascii")
 
 
+class _ClosableEndpoint:
+    """A UDP endpoint with the close() / wait_closed() of a server (serve_until_stopped)"""
+
+    def __init__(self, endpoint: Any) -> None:
+        self._endpoint = endpoint
+
+    def close(self) -> None:
+        self._endpoint.close()
+
+    async def wait_closed(self) -> None:
+        return None
+
+
+class _DatagramReply:
+    """The transport an SLMPProtocol answers one datagram through (to its sender)"""
+
+    def __init__(self, transport: Any, addr: Any) -> None:
+        self._transport = transport
+        self._addr = addr
+
+    def write(self, data: bytes) -> None:
+        self._transport.sendto(data, self._addr)
+
+    def get_extra_info(self, name: str, default: Any = None) -> Any:
+        return self._addr if name == "peername" else default
+
+    def is_closing(self) -> bool:
+        return bool(self._transport.is_closing())
+
+
+class SLMPUDPProtocol(asyncio.DatagramProtocol):
+    """
+    SLMP over UDP: every datagram is one request, answered with one datagram
+    to its sender, in binary or (``ascii_code``) ASCII code.
+    """
+
+    def __init__(self, device: "SLMPDevice", ascii_code: bool = False) -> None:
+        self.device = device
+        self._server = (SLMPASCIIProtocol if ascii_code else SLMPProtocol)(device)
+        self.transport: Any = None
+        self._peers: set = set()
+
+    def connection_made(self, transport: Any) -> None:
+        self.transport = transport
+
+    def datagram_received(self, data: bytes, addr: Any) -> None:
+        if addr not in self._peers and len(self._peers) < MAX_LOGGED_ERRORS:
+            self._peers.add(addr)
+            logger.info(f"UDP request from {addr[0]}:{addr[1]}")
+        # A datagram is a whole request: nothing is carried over to the next one
+        self._server.buffer = b""
+        self._server.transport = _DatagramReply(self.transport, addr)
+        self._server.data_received(data)
+        self._server.buffer = b""
+
+
 async def run_server(
     host: str,
     port: int,
@@ -724,16 +783,24 @@ async def run_server(
     cpu: str = DEFAULT_CPU,
     ascii_code: bool = False,
     faults: Optional[Faults] = None,
+    udp: bool = False,
 ) -> None:
-    """Run SLMP simulator server"""
+    """Run SLMP simulator server (TCP, or with ``udp`` a UDP endpoint)"""
     device = SLMPDevice(denied_ranges, writable=writable, cpu=cpu)
     protocol = SLMPASCIIProtocol if ascii_code else SLMPProtocol
 
     loop = asyncio.get_event_loop()
-    server = await loop.create_server(with_faults(lambda: protocol(device), faults, device), host, port)
-
-    addr = server.sockets[0].getsockname()
-    logger.info(f"SLMP Simulator running on {addr[0]}:{addr[1]}")
+    if udp:
+        endpoint, _ = await loop.create_datagram_endpoint(
+            with_datagram_faults(lambda: SLMPUDPProtocol(device, ascii_code), faults, device), local_addr=(host, port)
+        )
+        addr = endpoint.get_extra_info("sockname")
+        logger.info(f"SLMP Simulator running on {addr[0]}:{addr[1]} (UDP)")
+        server: Any = _ClosableEndpoint(endpoint)
+    else:
+        server = await loop.create_server(with_faults(lambda: protocol(device), faults, device), host, port)
+        addr = server.sockets[0].getsockname()
+        logger.info(f"SLMP Simulator running on {addr[0]}:{addr[1]}")
     logger.info(f"CPU: {cpu} (D0-D{device.limits['D'] - 1}, M0-M{device.limits['M'] - 1})")
     logger.info(f"Denied address ranges: {denied_ranges}")
     logger.info("Writes: " + ("accepted (--writable)" if writable else "refused (read-only; --writable to accept)"))
@@ -758,11 +825,21 @@ def main():
     parser.add_argument(
         "--ascii", action="store_true", help="Answer in ASCII code instead of binary (batch read and CPU model only)"
     )
+    parser.add_argument("--udp", action="store_true", help="Answer UDP datagrams instead of a TCP port")
     add_fault_options(parser)
     args = parser.parse_args()
     denied_ranges = parse_denied_ranges(args.denied)
     run_simulator(
-        run_server(args.host, args.port, denied_ranges, args.writable, args.cpu, args.ascii, faults_from_args(args)),
+        run_server(
+            args.host,
+            args.port,
+            denied_ranges,
+            args.writable,
+            args.cpu,
+            args.ascii,
+            faults_from_args(args),
+            udp=args.udp,
+        ),
         logger,
     )
 

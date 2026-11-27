@@ -142,7 +142,7 @@ python plc_scanner.py --mode discover --ip-range "192.168.1.0/24"
   形名コードを `model`・`cpu_type` 列に記入します。ポートが応答したフレームと交信データコード
   （3E／4E、バイナリ／ASCII）は `note` 列に「SLMP 4E・ASCII」のように記入し、データの読み取りにもその設定を使います
   （`--protocol slmp` で対象を指定した場合も同じ。設定ファイルの `options.frame`・`options.ascii` で指定することもできます）。
-  UDP にだけ設定されたポートは読めません
+  UDP で開いたポートは SLMP over UDP（`SLMP_UDP`）として見つけ、そのまま読めます（下の「SLMP over UDP」）
 - **対応プロトコルに応答しない機器（未対応・要確認）**: PLC のポートが接続を受け付けたのに、どのプロトコルにも
   応答しなかった機器と、MAC アドレスが PLC メーカーの登録になっている機器は、機種「未対応・要確認」として
   探索結果に載せ、`note` 列に理由（開いていたポート）を書きます。横河 FA-M3、JTEKT TOYOPUC、パナソニック MEWTOCOL
@@ -321,7 +321,7 @@ python plc_scanner.py --mode full --target 192.168.1.10 --no-database
 | `--ip-range`, `-r` | スキャン対象IPレンジ（指定時はUDPブロードキャスト探索を行いません） | - |
 | `--discover-protocols` | 探索で確認するプロトコル（カンマ区切り、例: `slmp,modbus`）。省略時は設定ファイルの `discovery.protocols`、なければ全プロトコル | 全プロトコル |
 | `--discover-ports` | 探索で標準ポートのほかに調べるポート（例: `"slmp=5000,5002;modbus=1502"`）。省略時は設定ファイルの `discovery.ports` | - |
-| `--protocol`, `-p` | プロトコル指定 (slmp/eip/modbus/s7/fins/fins-tcp)。fins は FINS/UDP、fins-tcp は FINS/TCP | 自動検出 |
+| `--protocol`, `-p` | プロトコル指定 (slmp/slmp-udp/eip/modbus/s7/fins/fins-tcp)。slmp-udp は UDP で開いた SLMP ポート、fins は FINS/UDP、fins-tcp は FINS/TCP | 自動検出 |
 | `--port` | ポート番号 | プロトコルデフォルト |
 | `--device`, `-d` | デバイス種別（D/M/W/R/ZR/SD/L/TN/CN/X/Y/B/SM、FINS は DM/HR/W/AR/EM/TN/CN など） | D |
 | `--range` | アドレス範囲 (例: 0-1000) | 0-999 |
@@ -415,8 +415,27 @@ logging:
 | SLMP (3E/4Eフレーム) | 三菱電機、キーエンス、パナソニック、東芝、日立産機 | 5001 | バイナリ・ASCII（探索で判別。`options.frame: 4`・`options.ascii: 1` で指定も可）。デバイス D/W/R/ZR/SD/TN/CN（ワード）、M/X/Y/B/L/SM（ビット） |
 | EtherNet/IP | オムロン、ロックウェル、キーエンス、安川電機 | 44818 | |
 | Modbus/TCP | 横河電機、富士電機、IDEC、デルタ電子 | 502 | RTU over TCP（シリアル-Ethernet 変換器）は設定ファイルの `rtu: 1` で対応 |
+| SLMP over UDP | 三菱電機など（UDP で開いたポート） | 5001 | `--protocol slmp-udp`。探索でも調べます（下の「SLMP over UDP」） |
 | S7通信 | シーメンス | 102 | |
 | FINS通信 | オムロン、キーエンス | 9600 | UDP（`fins`）と TCP（`fins-tcp`）に対応。DM/HR/W/CIO（`M`）/AR/EM（バンク0）/TIM（`TN`）/CNT（`CN`） |
+
+### SLMP over UDP
+
+PLC 側で SLMP（MC プロトコル）のポートを UDP で開いている場合（GX Works の「オープン方式」が UDP など）は、
+プロトコル `slmp-udp`（設定ファイルでは `slmp_udp`）で読みます。フレーム・交信データコードは TCP と同じく
+探索で判別し、`options.frame`・`options.ascii` で指定することもできます:
+
+```bash
+python plc_scanner.py --mode range --target 192.168.1.10 --protocol slmp-udp --port 5001 --device D --range 0-99
+```
+
+- 探索では、各機器の 5001 番に UDP で問い合わせます（`--discover-ports "slmp-udp=5000,5002"` で追加のポートも）。
+  UDP には「ポートが開いているか」を先に確かめる方法がないため、応答しない機器でも 1 台につき探索タイムアウト 1 回分
+  待ちます（ほかのプロトコルと同時に問い合わせるので、探索全体はほとんど延びません）。
+  不要なら `--discover-protocols` から外してください
+- UDP ブロードキャスト探索で応答した SLMP 機器も `SLMP_UDP` として載ります（以前は「TCPポート未確認」の `SLMP`）。
+  同じ PLC が TCP のポートでも応答した場合は、`SLMP` と `SLMP_UDP` の 2 行になります
+- 制限事項は「制限事項・注意事項」を参照してください
 
 ### Modbus RTU over TCP（シリアル-Ethernet 変換器）
 
@@ -450,6 +469,39 @@ targets:
 - ネットワーク負荷軽減のため、適切な`--packet-interval`を設定してください。
 - 工場稼働中は`--mode range`で必要な範囲のみを取得することを推奨します。
 - フルスキャンは工場停止時に実施してください。
+
+## 制限事項・注意事項
+
+実機で確かめていないこと、プロトコルの性質による制限です。実機で確認できたら更新してください
+（確認の手順は [実機確認チェックリスト](docs/real_device_checklist.md)）。
+
+### SLMP
+
+- **SLMP over UDP は、シミュレーターでのみ確認済み**です。実機の UDP ポート（オープン設定、応答の大きさ）での確認が必要です
+- UDP には接続がないため、PLC の電源が切れていても「接続」は成功します。読み取りは `NG_TIMEOUT`
+  （同じ PC 内などでポートが閉じていると分かる場合は `NG_COMM_ERROR`）になり、何も読めなかったスキャンは失敗として扱います
+- UDP では、タイムアウトのたびに送受信用のソケットを作り直します。遅れて届いた応答を、次の要求の応答と取り違えないためです
+- UDP の応答は 1 つのデータグラムに収まる必要があります（最大 960 ワードの読み出しでも ASCII で約 3.9 KB で、通常は問題ありません）
+- ASCII コード・4E フレームの読み取りは、シミュレーターでのみ確認済みです
+- SLMP の探索で、開いているのに応答しないポートには、設定を変えて最大 4 回（TCP）問い合わせるため、1 台あたり探索タイムアウトの 4 倍ほどかかります
+- 形名読み出し（0101）に応答しない機種（キーエンス KV など）は、機種名が「SLMP対応PLC」のままです
+
+### 探索
+
+- 「未対応・要確認」は、PLC のポートが開いていた機器と、MAC アドレスが PLC メーカーの登録になっている機器だけです。
+  対応ポートがすべて閉じていて、MAC アドレスも分からない（ルーターの向こうなど）機器は載りません
+- 同じ IP で対応プロトコルの PLC が見つかった場合、その IP の応答しなかったポートは載りません
+
+### スキャンのまとめ
+
+- `scan_summary` の応答時間は、PLC が応答した要求だけの平均・最大です。周期実行では空欄です
+- `readable_ranges` は CSV のアドレスのままです（X・Y・B・W も 10 進数）
+
+### シミュレーター
+
+- 異常の再現（`--delay`・`--drop-denied`・`--max-connections`）は、実機の挙動をまねたもので、実機と同じ時間・順序で起きるとは限りません
+- UDP（SLMP の `--udp`、FINS/UDP）では、接続数の上限は使えません（接続がないため）
+- ASCII モードは一括読み出しと形名読み出しだけです
 
 ## プロジェクト構造
 

@@ -35,6 +35,7 @@ try:
         log_faults,
         run_simulator,
         simulator_parser,
+        with_datagram_faults,
         with_faults,
     )
 except ImportError:
@@ -45,6 +46,7 @@ except ImportError:
         log_faults,
         run_simulator,
         simulator_parser,
+        with_datagram_faults,
         with_faults,
     )
 
@@ -437,7 +439,7 @@ async def run_fins_simulator(host: str, port: int, transport: str = "both", faul
         host: Address to bind
         port: Port for both UDP and TCP (Omron default 9600)
         transport: "udp", "tcp" or "both"
-        faults: late / dropped answers and the connection limit (FINS/TCP only)
+        faults: late / dropped answers (UDP and TCP) and the connection limit (TCP)
     """
     simulator = FINSSimulator(host, port)
 
@@ -447,7 +449,7 @@ async def run_fins_simulator(host: str, port: int, transport: str = "both", faul
 
     if transport in ("udp", "both"):
         udp_transport, _ = await loop.create_datagram_endpoint(
-            lambda: FINSUDPServerProtocol(simulator), local_addr=(host, port)
+            with_datagram_faults(lambda: FINSUDPServerProtocol(simulator), faults, simulator), local_addr=(host, port)
         )
 
     if transport in ("tcp", "both"):

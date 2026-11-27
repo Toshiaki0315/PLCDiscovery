@@ -218,7 +218,7 @@ async def test_broadcast_keeps_both_protocols_of_one_host():
 
     with patch.object(discovery, "_send_broadcast", send):
         plcs = await discovery.discover_all_broadcast()
-    assert sorted(p.protocol.name for p in plcs) == ["ETHERNET_IP", "SLMP"]  # previously one
+    assert sorted(p.protocol.name for p in plcs) == ["ETHERNET_IP", "SLMP_UDP"]  # previously one
     assert len(discovery.get_results()) == 2
 
 
@@ -345,7 +345,7 @@ def test_slmp_broadcast_accepts_real_reply_and_rejects_reversed_bytes():
     discovery = BroadcastDiscovery()
     reply = b"\xd0\x00\x00\xff\xff\x03\x00\x02\x00\x00\x00"  # 3E response, end code 0
     plc = discovery._parse_slmp_response("10.0.0.5", reply)
-    assert plc is not None and plc.protocol == Protocol.SLMP  # previously None
+    assert plc is not None and plc.protocol == Protocol.SLMP_UDP  # previously None (read over UDP)
     assert discovery._parse_slmp_response("10.0.0.5", b"\x00\xd0" + reply[2:]) is None
 
 
@@ -928,9 +928,11 @@ def test_given_port_is_probed_for_every_protocol_one_at_a_time():
     assert probed[-1][0] == Protocol.MODBUS_TCP  # stops at the first protocol that answers
 
 
-def test_broadcast_only_slmp_result_says_the_tcp_port_is_unverified():
+def test_broadcast_only_slmp_result_is_read_over_udp():
+    # Answered on UDP: listed (and read) as SLMP over UDP, not as a TCP port
+    # nobody checked
     plc = BroadcastDiscovery()._parse_slmp_response("10.0.0.5", b"\xd0\x00" + b"\x00" * 12)
-    assert plc is not None and "未確認" in (plc.model or "")
+    assert plc is not None and plc.protocol == Protocol.SLMP_UDP and "UDP" in (plc.model or "")
 
 
 def test_mac_maker_replaces_the_name_the_protocol_implies(monkeypatch):

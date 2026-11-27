@@ -25,6 +25,8 @@ PROTOCOL_NAMES: Dict[str, Protocol] = {
     "fins_udp": Protocol.FINS,
     "fins_tcp": Protocol.FINS_TCP,
     "fins-tcp": Protocol.FINS_TCP,
+    "slmp_udp": Protocol.SLMP_UDP,
+    "slmp-udp": Protocol.SLMP_UDP,
 }
 
 # Byte order names (the ByteOrder values): little, big, little_swap, big_swap

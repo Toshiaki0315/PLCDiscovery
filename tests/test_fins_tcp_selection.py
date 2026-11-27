@@ -137,5 +137,6 @@ async def test_discovery_probes_fins_udp_without_tcp_port():
     ):
         result = await discovery._probe_host("192.0.2.40")
 
-    assert checked == [Protocol.FINS]  # TCP protocols skipped (ports closed)
+    # TCP protocols skipped (ports closed); the UDP ones are probed anyway
+    assert sorted(checked, key=lambda p: p.value) == [Protocol.FINS, Protocol.SLMP_UDP]
     assert result.protocol == Protocol.FINS and result.port == 9600

@@ -7,10 +7,12 @@ Supports:
 - Panasonic, Toshiba, Hitachi, Sharp (SLMP compatible)
 - 3E or 4E frame, binary or ASCII code (targets[].options.frame / ascii;
   discovery finds the setting the PLC's port answers)
+- TCP or UDP (protocol slmp-udp, Protocol.SLMP_UDP): a port opened for UDP
 """
 
 import asyncio
 import logging
+import socket
 from typing import Any, List, Optional, Tuple
 
 from ..config import PROTOCOL_PORTS, DeviceType, Protocol, StatusCode
@@ -89,7 +91,11 @@ _FRAME_LAYOUT = {
 }
 
 
-def _framed_client_class(frame: str, ascii_code: bool = False) -> Any:
+# Largest datagram read over UDP (an answer of 960 words in ASCII is ~3.9 KB)
+SLMP_UDP_MAX_DATAGRAM = 65535
+
+
+def _framed_client_class(frame: str, ascii_code: bool = False, udp: bool = False) -> Any:
     """
     pymcprotocol client whose _recv() reads exactly one complete response.
 
@@ -102,6 +108,13 @@ def _framed_client_class(frame: str, ascii_code: bool = False) -> Any:
     In ASCII code the device number of X/Y/B/W is written in hexadecimal
     (as GX Works shows it); pymcprotocol writes it in decimal, so X1F would
     read X31. The number is formatted here instead.
+
+    Over UDP (pymcprotocol speaks TCP only) one datagram carries one whole
+    answer. UDP has no connection: connect() cannot tell whether the PLC is
+    there, a request that is not answered times out, and an answer that
+    comes late could be taken for the next one - which is why the handler
+    opens a new socket (new local port) after every timeout, as it
+    reconnects TCP.
     """
     if frame == "4E":
         from pymcprotocol import Type4E as Base
@@ -110,6 +123,16 @@ def _framed_client_class(frame: str, ascii_code: bool = False) -> Any:
     header_size, subheader, length_offset, length_size = _FRAME_LAYOUT[(frame, ascii_code)]
 
     class FramedClient(Base):
+        def connect(self, ip: str, port: int) -> None:
+            if not udp:
+                super().connect(ip, port)
+                return
+            self._ip, self._port = ip, port
+            self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self._sock.settimeout(self.soc_timeout)
+            self._sock.connect((ip, port))  # fixes the peer: datagrams from others are dropped
+            self._is_connected = True
+
         def _recv_exact(self, size: int) -> bytes:
             buf = bytearray()
             while len(buf) < size:
@@ -120,6 +143,8 @@ def _framed_client_class(frame: str, ascii_code: bool = False) -> Any:
             return bytes(buf)
 
         def _recv(self) -> bytes:
+            if udp:
+                return self._recv_datagram()
             header = self._recv_exact(header_size)
             if header[: len(subheader)].upper() != subheader:
                 raise ConnectionError(f"unexpected SLMP response header: {header[: len(subheader)].hex()}")
@@ -132,6 +157,19 @@ def _framed_client_class(frame: str, ascii_code: bool = False) -> Any:
             else:
                 length = int.from_bytes(field, "little")
             return header + self._recv_exact(length)
+
+        def _recv_datagram(self) -> bytes:
+            datagram = self._sock.recv(SLMP_UDP_MAX_DATAGRAM)
+            if datagram[: len(subheader)].upper() != subheader or len(datagram) < header_size:
+                raise ConnectionError(f"unexpected SLMP response: {datagram[: len(subheader)].hex()}")
+            field = datagram[length_offset : length_offset + length_size]
+            try:
+                length = int(field.decode("ascii"), 16) if ascii_code else int.from_bytes(field, "little")
+            except ValueError:
+                raise ConnectionError(f"unexpected SLMP response length: {field!r}") from None
+            if len(datagram) != header_size + length:
+                raise ConnectionError(f"SLMP datagram of {len(datagram)} bytes, {header_size + length} expected")
+            return bytes(datagram)
 
         def _make_devicedata(self, device: str) -> bytes:
             # slmp_head_device() names X/Y/B/W with one letter ("B" is
@@ -166,29 +204,41 @@ class SLMPHandler(BaseProtocolHandler):
     # pymcprotocol uses by default (a larger number raises OverflowError)
     MAX_ADDRESS = 0xFFFFFF
 
-    def __init__(self, ip_address: str, port: Optional[int] = None, frame: int = 0, ascii: int = 0, **kwargs: Any):
+    def __init__(
+        self,
+        ip_address: str,
+        port: Optional[int] = None,
+        frame: int = 0,
+        ascii: int = 0,
+        udp: int = 0,
+        **kwargs: Any,
+    ):
         """
         Args:
             frame: 3 or 4 (targets[].options.frame): the frame the PLC's
                 port is set to. 0 keeps the class default (3E).
             ascii: 1 when the port's communication data code is ASCII
                 (targets[].options.ascii); 0 = binary
+            udp: 1 for a port opened for UDP (protocol slmp-udp); 0 = TCP
         """
         super().__init__(ip_address, port or PROTOCOL_PORTS[Protocol.SLMP], **kwargs)
         self._client: Any = None
         if frame:
             self.FRAME = f"{frame}E"
         self._ascii = bool(ascii)
+        self._udp = bool(udp)
+        if self._udp:
+            self.protocol = Protocol.SLMP_UDP
 
     @property
     def settings_text(self) -> str:
-        """The frame and data code, e.g. "3E" or "4E ASCII" """
-        return self.FRAME + (" ASCII" if self._ascii else "")
+        """The frame, data code and transport, e.g. "3E" or "4E ASCII UDP" """
+        return self.FRAME + (" ASCII" if self._ascii else "") + (" UDP" if self._udp else "")
 
     async def connect(self) -> bool:
         """Establish SLMP connection"""
         try:
-            client_class = _framed_client_class(self.FRAME, self._ascii)
+            client_class = _framed_client_class(self.FRAME, self._ascii, self._udp)
 
             def _connect():
                 client = client_class()

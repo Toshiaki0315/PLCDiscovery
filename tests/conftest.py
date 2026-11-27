@@ -28,8 +28,9 @@ from plc_discovery.config import DataPoint, DeviceRange, DeviceType, NetworkConf
 @pytest.fixture(autouse=True)
 def _slmp_identity_follows_a_patched_verify_protocol(monkeypatch):
     """
-    Discovery verifies SLMP with identify_slmp() (frame, data code and CPU
-    model in one probe) and every other protocol with verify_protocol().
+    Discovery verifies SLMP with identify_slmp() / identify_slmp_udp()
+    (frame, data code and CPU model in one probe) and every other protocol
+    with verify_protocol().
     Tests that replace verify_protocol to fake a network expect it to decide
     for SLMP as well: while it is replaced, SLMP follows it (as a 3E binary
     port without a model name). Otherwise the real probe runs, for loopback
@@ -39,17 +40,21 @@ def _slmp_identity_follows_a_patched_verify_protocol(monkeypatch):
     from plc_discovery import discovery as discovery_module
     from plc_discovery import probes
 
-    real = discovery_module.identify_slmp
+    def follow(real, protocol):
+        def identify(ip, port, timeout, interval=0.0):
+            verify = discovery_module.verify_protocol
+            if verify is probes.verify_protocol:
+                return real(ip, port, timeout, interval) if str(ip).startswith("127.") else None
+            if not verify(ip, port, protocol, timeout):
+                return None
+            return {"frame": "3E", "ascii": False, "end_code": 0, "model": None, "model_code": None}
 
-    def identify(ip, port, timeout, interval=0.0):
-        verify = discovery_module.verify_protocol
-        if verify is probes.verify_protocol:
-            return real(ip, port, timeout, interval) if str(ip).startswith("127.") else None
-        if not verify(ip, port, Protocol.SLMP, timeout):
-            return None
-        return {"frame": "3E", "ascii": False, "end_code": 0, "model": None, "model_code": None}
+        return identify
 
-    monkeypatch.setattr(discovery_module, "identify_slmp", identify)
+    monkeypatch.setattr(discovery_module, "identify_slmp", follow(discovery_module.identify_slmp, Protocol.SLMP))
+    monkeypatch.setattr(
+        discovery_module, "identify_slmp_udp", follow(discovery_module.identify_slmp_udp, Protocol.SLMP_UDP)
+    )
 
 
 @pytest.fixture

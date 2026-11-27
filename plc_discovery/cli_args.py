@@ -116,7 +116,7 @@ Examples:
     parser.add_argument(
         "--protocol",
         "-p",
-        choices=["slmp", "eip", "modbus", "s7", "fins", "fins-tcp"],
+        choices=["slmp", "slmp-udp", "eip", "modbus", "s7", "fins", "fins-tcp"],
         help="Force specific protocol (auto-detected if not specified); " "fins = FINS/UDP, fins-tcp = FINS/TCP",
     )
 

@@ -174,7 +174,11 @@ Discovery also lists devices that answer none of the supported protocols
 reason in `note`; they are written to the discovery CSV only, never scanned
 or saved to the database. SLMP discovery reads the CPU model (0101) and the
 frame / data code the port answers (3E/4E, binary/ASCII), kept as handler
-options (`options.frame`, `options.ascii`).
+options (`options.frame`, `options.ascii`). A port opened for UDP is the
+protocol `SLMP_UDP` (`slmp-udp`): probed per host like FINS/UDP, and the
+handler opens a new socket after every timeout so a late answer is never
+taken for the next one. Known limitations are listed in README.md
+("制限事項・注意事項").
 
 ### Critical Safety Requirements
 

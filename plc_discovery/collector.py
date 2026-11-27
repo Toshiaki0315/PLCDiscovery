@@ -42,6 +42,7 @@ PROTOCOL_HANDLERS: Dict[Protocol, Callable[..., BaseProtocolHandler]] = {
     Protocol.S7: S7Handler,
     Protocol.FINS: FINSHandler,
     Protocol.FINS_TCP: functools.partial(FINSHandler, use_tcp=True),
+    Protocol.SLMP_UDP: functools.partial(SLMPHandler, udp=1),
 }
 
 

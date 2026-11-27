@@ -179,6 +179,48 @@ def _exchange_slmp(ip: str, port: int, request: bytes, timeout: float, frame: st
     return data
 
 
+def identify_slmp_udp(ip: str, port: int, timeout: float, interval: float = 0.0) -> Optional[dict]:
+    """
+    identify_slmp() for a port opened for UDP.
+
+    UDP has no connection to check first, so every host costs a wait: the
+    four settings are sent one after another (``interval`` apart) on one
+    socket and the first answer is taken, which keeps a silent host at about
+    one timeout. The PLC answers only the setting its port is set to.
+    """
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    except OSError as e:
+        logger.debug(f"SLMP/UDP probe {ip}:{port}: {e}")
+        return None
+    with sock:
+        try:
+            sock.connect((ip, port))  # answers from other hosts are not taken
+            for i, (frame, ascii_code) in enumerate(SLMP_SETTINGS):
+                if i and interval:
+                    time.sleep(interval)
+                sock.send(slmp_type_name_request(frame, ascii_code))
+            deadline = time.monotonic() + timeout
+            while True:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    return None
+                sock.settimeout(left)
+                reply = sock.recv(4096)
+                for frame, ascii_code in SLMP_SETTINGS:
+                    identity = parse_slmp_type_name(reply, frame, ascii_code)
+                    if identity:
+                        return identity
+        except OSError as e:  # timeout, or nothing listening there (ICMP port unreachable)
+            logger.debug(f"SLMP/UDP probe {ip}:{port}: {e}")
+            return None
+
+
+def probe_slmp_udp(ip: str, port: int, timeout: float) -> bool:
+    """SLMP "Read CPU Model Name" over UDP in any frame / data code"""
+    return identify_slmp_udp(ip, port, timeout) is not None
+
+
 def probe_slmp(ip: str, port: int, timeout: float) -> bool:
     """SLMP "Read CPU Model Name" (0x0101) in any frame / data code; any SLMP answer counts"""
     return identify_slmp(ip, port, timeout) is not None
@@ -375,10 +417,11 @@ PROBES: Dict[Protocol, Callable[[str, int, float], bool]] = {
     Protocol.ETHERNET_IP: probe_ethernet_ip,
     Protocol.FINS: probe_fins_udp,
     Protocol.FINS_TCP: probe_fins_tcp,
+    Protocol.SLMP_UDP: probe_slmp_udp,
 }
 
 # Protocols probed over UDP (no TCP port check beforehand)
-UDP_PROTOCOLS = frozenset({Protocol.FINS})
+UDP_PROTOCOLS = frozenset({Protocol.FINS, Protocol.SLMP_UDP})
 
 
 def verify_protocol(ip: str, port: int, protocol: Protocol, timeout: float) -> bool:

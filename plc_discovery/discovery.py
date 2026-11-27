@@ -13,7 +13,7 @@ import ipaddress
 from typing import Callable, Dict, List, Optional, Tuple
 
 from .config import PROTOCOL_PORTS, NetworkConfig, PLCInfo, Protocol
-from .probes import UDP_PROTOCOLS, identify_slmp, read_eip_identity, verify_protocol
+from .probes import UDP_PROTOCOLS, identify_slmp, identify_slmp_udp, read_eip_identity, verify_protocol
 from .utils import (
     get_local_networks,
     get_manufacturer_from_mac,
@@ -59,13 +59,16 @@ def plc_key(plc: PLCInfo) -> tuple:
 # Descriptive fields filled from a second source when the first lacks them
 _MERGED_FIELDS = ("mac_address", "manufacturer", "model", "cpu_type", "firmware_version", "read_method", "note")
 
+# SLMP over TCP and over UDP (same frames, same handler)
+SLMP_PROTOCOLS = (Protocol.SLMP, Protocol.SLMP_UDP)
+
 # Model column of a device that answered none of the supported protocols
 UNIDENTIFIED_MODEL = "未対応・要確認"
 
 
-def slmp_settings_note(frame: str, ascii_code: bool) -> str:
-    """Note column for an SLMP port: its frame and communication data code"""
-    return f"SLMP {frame}・{'ASCII' if ascii_code else 'バイナリ'}"
+def slmp_settings_note(frame: str, ascii_code: bool, udp: bool = False) -> str:
+    """Note column for an SLMP port: its frame, communication data code (and UDP)"""
+    return f"SLMP {frame}・{'ASCII' if ascii_code else 'バイナリ'}" + ("・UDP" if udp else "")
 
 
 # Makers named by the start of the CPU model name answered to 0101
@@ -83,7 +86,7 @@ def apply_slmp_identity(plc_info: PLCInfo, identity: dict) -> None:
     the port the way it answered.
     """
     frame, ascii_code = identity["frame"], identity["ascii"]
-    plc_info.note = slmp_settings_note(frame, ascii_code)
+    plc_info.note = slmp_settings_note(frame, ascii_code, plc_info.protocol == Protocol.SLMP_UDP)
     options = dict(plc_info.options or {})
     if frame != "3E":
         options["frame"] = int(frame[0])
@@ -209,6 +212,7 @@ MAX_AUTO_SCAN_PREFIX = 22
 # (Modbus/TCP and EtherNet/IP are implemented by many vendors).
 PROTOCOL_IDENTITY_DEFAULTS: Dict[Optional[Protocol], Tuple[Optional[str], Optional[str]]] = {
     Protocol.SLMP: ("三菱電機/キーエンス", "SLMP対応PLC"),
+    Protocol.SLMP_UDP: ("三菱電機/キーエンス", "SLMP対応PLC"),
     Protocol.S7: ("シーメンス", "S7 PLC"),
     Protocol.FINS: ("オムロン", "FINS対応PLC"),
     Protocol.FINS_TCP: ("オムロン", "FINS対応PLC"),
@@ -256,7 +260,7 @@ async def detect_slmp_settings(plc_info: PLCInfo, config: Optional[NetworkConfig
     setting tried; a target that answers none is left unchanged (its
     connection then fails as before).
     """
-    if plc_info.protocol != Protocol.SLMP or not plc_info.port:
+    if plc_info.protocol not in SLMP_PROTOCOLS or not plc_info.port:
         return
     options = plc_info.options or {}
     if "frame" in options or "ascii" in options:
@@ -264,7 +268,7 @@ async def detect_slmp_settings(plc_info: PLCInfo, config: Optional[NetworkConfig
     config = config or NetworkConfig()
     identity = await asyncio.get_running_loop().run_in_executor(
         None,
-        identify_slmp,
+        identify_slmp_udp if plc_info.protocol == Protocol.SLMP_UDP else identify_slmp,
         plc_info.ip_address,
         plc_info.port,
         config.discovery_timeout_ms / 1000,
@@ -628,7 +632,7 @@ class PLCDiscovery:
 
         # SLMP: frame, data code and model found by the probe (no second
         # connection is made for them)
-        slmp_identity: Dict[int, dict] = {}
+        slmp_identity: Dict[Tuple[Protocol, int], dict] = {}
         # TCP ports that accepted the connection but did not answer the
         # protocol (e.g. SLMP set to UDP only, another vendor's protocol)
         silent_ports: List[Tuple[Protocol, int]] = []
@@ -645,12 +649,13 @@ class PLCDiscovery:
                     await asyncio.sleep(self.config.packet_interval_ms / 1000)
                 # An open port is not proof of a PLC (e.g. NAS on 5001):
                 # require a valid protocol reply
-                if protocol == Protocol.SLMP:
+                if protocol in SLMP_PROTOCOLS:
+                    identify = identify_slmp_udp if protocol == Protocol.SLMP_UDP else identify_slmp
                     identity = await loop.run_in_executor(
-                        executor, identify_slmp, ip, port, timeout, self.config.packet_interval_ms / 1000
+                        executor, identify, ip, port, timeout, self.config.packet_interval_ms / 1000
                     )
                     if identity:
-                        slmp_identity[port] = identity
+                        slmp_identity[(protocol, port)] = identity
                     verified = identity is not None
                 else:
                     verified = await loop.run_in_executor(executor, verify_protocol, ip, port, protocol, timeout)
@@ -696,7 +701,7 @@ class PLCDiscovery:
                 port=port,
                 manufacturer=get_manufacturer_from_mac(mac) if mac else None,
             )
-            identity = slmp_identity.get(port) if protocol == Protocol.SLMP else None
+            identity = slmp_identity.get((protocol, port))
             if identity:
                 apply_slmp_identity(plc_info, identity)
             # Try to get detailed info using protocol-specific queries
@@ -710,7 +715,7 @@ class PLCDiscovery:
         Get detailed PLC information using protocol-specific queries.
         """
         try:
-            if plc_info.protocol == Protocol.SLMP:
+            if plc_info.protocol in SLMP_PROTOCOLS:
                 plc_info = await self._query_slmp_info(plc_info)
             elif plc_info.protocol == Protocol.ETHERNET_IP:
                 plc_info = await self._query_eip_info(plc_info)

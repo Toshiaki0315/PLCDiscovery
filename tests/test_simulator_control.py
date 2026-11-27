@@ -245,7 +245,7 @@ def test_clients_and_settings(controller):
         while not controller.clients("slmp") and time.time() < deadline:
             time.sleep(0.01)
         assert controller.clients("slmp") == [f"127.0.0.1:{sock.getsockname()[1]}"]
-    assert controller.settings("slmp") == ("127.0.0.1", port, "0-0", True, "Q03UDVCPU")
+    assert controller.settings("slmp")[:5] == ("127.0.0.1", port, "0-0", True, "Q03UDVCPU")
     assert controller.clients("modbus") == [] and controller.settings("modbus") is None
     with pytest.raises(ValueError, match="cannot accept writes"):
         controller.start("modbus", "127.0.0.1", 0, writable=True)
@@ -283,7 +283,7 @@ def test_state_round_trip_and_apply(controller):
     loaded = SavedState.from_json(state.to_json())
     assert loaded == state
     assert apply_state(controller, loaded) == []
-    assert controller.settings("slmp")[2:] == ("0-0", True, "R04CPU") and not controller.is_running("modbus")
+    assert controller.settings("slmp")[2:5] == ("0-0", True, "R04CPU") and not controller.is_running("modbus")
     assert controller.read("slmp", "D", 3) == 33 and controller.read("logix", "TAG", "Temp") == 21.5
     assert [g.address for g in controller.generators()] == [4]
 

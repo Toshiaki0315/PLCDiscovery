@@ -15,6 +15,10 @@ Areas and addresses follow what plc_scanner.py reads:
 - S7: DB1, M; address = word index (byte offset = address * 2, big-endian)
 - FINS: DM, HR, W (words)
 
+Each simulator can also behave like a slow, picky or busy PLC (Extras:
+late answers, no answer for denied addresses, a connection limit), and the
+SLMP simulator can answer in ASCII code or over UDP.
+
 The GUI's state (settings, values written by hand, automatic changes) can
 be saved to a JSON file and applied again (SavedState, apply_state).
 """
@@ -30,7 +34,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Set, Tuple, Union
 
 try:
-    from .common import parse_denied_ranges, peer_text
+    from .common import Faults, parse_denied_ranges, peer_text, with_datagram_faults, with_faults
     from .ethernet_ip_simulator import EtherNetIPDevice, EtherNetIPProtocol
     from .fins_simulator import (
         FINS_AREA_DM,
@@ -43,9 +47,23 @@ try:
     )
     from .modbus_simulator import ModbusDevice, ModbusProtocol
     from .s7_simulator import COTPProtocol, S7Device
-    from .slmp_simulator import CPU_MODELS, DEFAULT_CPU, SLMPDevice, SLMPError, SLMPProtocol
+    from .slmp_simulator import (
+        CPU_MODELS,
+        DEFAULT_CPU,
+        SLMPASCIIProtocol,
+        SLMPDevice,
+        SLMPError,
+        SLMPProtocol,
+        SLMPUDPProtocol,
+    )
 except ImportError:
-    from common import parse_denied_ranges, peer_text  # type: ignore[no-redef]
+    from common import (  # type: ignore[no-redef]
+        Faults,
+        parse_denied_ranges,
+        peer_text,
+        with_datagram_faults,
+        with_faults,
+    )
     from ethernet_ip_simulator import EtherNetIPDevice, EtherNetIPProtocol  # type: ignore[no-redef]
     from fins_simulator import (  # type: ignore[no-redef]
         FINS_AREA_DM,
@@ -58,7 +76,15 @@ except ImportError:
     )
     from modbus_simulator import ModbusDevice, ModbusProtocol  # type: ignore[no-redef]
     from s7_simulator import COTPProtocol, S7Device  # type: ignore[no-redef]
-    from slmp_simulator import CPU_MODELS, DEFAULT_CPU, SLMPDevice, SLMPError, SLMPProtocol  # type: ignore[no-redef]
+    from slmp_simulator import (  # type: ignore[no-redef]
+        CPU_MODELS,
+        DEFAULT_CPU,
+        SLMPASCIIProtocol,
+        SLMPDevice,
+        SLMPError,
+        SLMPProtocol,
+        SLMPUDPProtocol,
+    )
 
 logger = logging.getLogger("Simulator-Control")
 
@@ -85,6 +111,13 @@ class SimulatorKind:
     writable: bool = False
     # Simulated CPU models to choose from (the first is the default)
     cpus: Tuple[str, ...] = ()
+    # ASCII code and UDP can be chosen (SLMP)
+    codes: bool = False
+
+    @property
+    def can_drop_denied(self) -> bool:
+        """It has addresses that can be left unanswered (denied ranges, FINS' fixed ones)"""
+        return self.denied is not None or self.key == "fins"
 
 
 KINDS: Tuple[SimulatorKind, ...] = (
@@ -97,6 +130,7 @@ KINDS: Tuple[SimulatorKind, ...] = (
         "--mode range --target {host} --protocol slmp --port {port} --device D --range 0-99",
         writable=True,
         cpus=(DEFAULT_CPU, *(name for name in CPU_MODELS if name != DEFAULT_CPU)),
+        codes=True,
     ),
     SimulatorKind(
         "modbus",
@@ -149,6 +183,78 @@ KINDS: Tuple[SimulatorKind, ...] = (
 )
 
 KINDS_BY_KEY: Dict[str, SimulatorKind] = {k.key: k for k in KINDS}
+
+
+@dataclass(frozen=True)
+class Extras:
+    """
+    How a simulator behaves besides its memory: the faults of common.Faults
+    (late answers, no answer for denied addresses, a connection limit) and,
+    for SLMP, ASCII code and UDP.
+    """
+
+    delay_ms: int = 0
+    drop_denied: bool = False
+    max_connections: int = 0
+    ascii: bool = False
+    udp: bool = False
+
+    def faults(self) -> Faults:
+        return Faults(self.delay_ms, self.drop_denied, self.max_connections)
+
+    @property
+    def label(self) -> str:
+        """Short text for the GUI, e.g. "遅延 300 ms・ASCII・UDP" ("" when there are none)"""
+        parts = []
+        if self.delay_ms:
+            parts.append(f"遅延 {self.delay_ms} ms")
+        if self.drop_denied:
+            parts.append("読めないアドレスに応答なし")
+        if self.max_connections:
+            parts.append(f"接続 {self.max_connections} 本まで")
+        if self.ascii:
+            parts.append("ASCII")
+        if self.udp:
+            parts.append("UDP")
+        return "・".join(parts)
+
+    def check(self, kind: SimulatorKind) -> None:
+        """ValueError for a setting the simulator does not have"""
+        if self.delay_ms < 0 or self.delay_ms > MAX_DELAY_MS:
+            raise ValueError(f"delay must be 0-{MAX_DELAY_MS} ms, got {self.delay_ms}")
+        if self.max_connections < 0:
+            raise ValueError(f"connection limit must be 0 or more, got {self.max_connections}")
+        if self.drop_denied and not kind.can_drop_denied:
+            raise ValueError(f"{kind.title} has no denied addresses to leave unanswered")
+        if (self.ascii or self.udp) and not kind.codes:
+            raise ValueError(f"{kind.title} has no ASCII / UDP setting")
+        if self.udp and self.max_connections:
+            raise ValueError("UDP has no connections to limit")
+
+    def to_dict(self) -> Dict[str, Any]:
+        """The settings that differ from the defaults (for the state file)"""
+        default = Extras()
+        return {name: getattr(self, name) for name in EXTRA_FIELDS if getattr(self, name) != getattr(default, name)}
+
+    @classmethod
+    def from_dict(cls, item: Dict[str, Any], where: str) -> "Extras":
+        values: Dict[str, Any] = {}
+        for name in EXTRA_FIELDS:
+            if name not in item:
+                continue
+            value = item[name]
+            if name in ("delay_ms", "max_connections"):
+                if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                    raise ValueError(f"{where}.{name}: integer 0 or more expected, got {value!r}")
+            elif not isinstance(value, bool):
+                raise ValueError(f"{where}.{name}: true or false expected, got {value!r}")
+            values[name] = value
+        return cls(**values)
+
+
+EXTRA_FIELDS = ("delay_ms", "drop_denied", "max_connections", "ascii", "udp")
+# Longest answer delay offered (a minute is far beyond any scanner timeout)
+MAX_DELAY_MS = 60000
 
 
 def scanner_command(kind: SimulatorKind, host: str, port: int) -> str:
@@ -312,6 +418,7 @@ class _Running:
     denied: Optional[str] = None
     writable: bool = False
     cpu: Optional[str] = None
+    extras: Extras = Extras()
     # Values written through the controller (by hand), saved with the state
     written: Dict[Tuple[str, Address], float] = field(default_factory=dict)
 
@@ -322,6 +429,7 @@ class RunningSettings(NamedTuple):
     denied: Optional[str]
     writable: bool
     cpu: Optional[str]
+    extras: Extras = Extras()
 
 
 def _tracked(factory: Callable[[], Any], connections: Set[Any]) -> Callable[[], Any]:
@@ -412,9 +520,12 @@ class SimulatorController:
         denied: Optional[str] = None,
         writable: bool = False,
         cpu: Optional[str] = None,
+        extras: Optional[Extras] = None,
     ) -> int:
         """Start one simulator; returns the port it listens on"""
         kind = KINDS_BY_KEY[key]
+        extras = extras or Extras()
+        extras.check(kind)
         if key in self._running:
             raise ValueError(f"{kind.title} is already running")
         if writable and not kind.writable:
@@ -430,12 +541,14 @@ class SimulatorController:
             denied_ranges = parse_denied_ranges(kind.denied if denied is None else denied)
         except ValueError:
             raise ValueError(f"invalid denied ranges {denied!r} (e.g. 5000-5100,7000-7050)") from None
-        running = self._call(self._start(kind, host, port, denied_ranges, writable, cpu))
+        running = self._call(self._start(kind, host, port, denied_ranges, writable, cpu, extras))
         running.denied = (kind.denied if denied is None else denied) if kind.denied is not None else None
         running.writable = writable
         running.cpu = cpu
+        running.extras = extras
         self._running[key] = running
         details = (f"; CPU {cpu}" if cpu else "") + ("; writes accepted" if writable else "")
+        details += f"; {extras.label}" if extras.label else ""
         logger.info(f"{kind.title} started on {host}:{running.port}{details}")
         return int(running.port)
 
@@ -447,11 +560,14 @@ class SimulatorController:
         denied: List[Tuple[int, int]],
         writable: bool,
         cpu: Optional[str] = None,
+        extras: Optional[Extras] = None,
     ) -> _Running:
         loop = asyncio.get_running_loop()
         closers: List[Callable[[], Any]] = []
         connections: Set[Any] = set()
         device: Any
+        extras = extras or Extras()
+        faults = extras.faults()
         if kind.key == "fins":
             device = FINSSimulator(host, port)
             # UDP and TCP on one port number. With port 0 the system picks a
@@ -459,12 +575,14 @@ class SimulatorController:
             # the local port of some connection): then another one is tried.
             for attempt in range(1 if port else 20):
                 udp, _ = await loop.create_datagram_endpoint(
-                    lambda: FINSUDPServerProtocol(device), local_addr=(host, port)
+                    with_datagram_faults(lambda: FINSUDPServerProtocol(device), faults, device), local_addr=(host, port)
                 )
                 bound = udp.get_extra_info("sockname")[1]
                 try:
                     server = await loop.create_server(
-                        _tracked(lambda: FINSTCPServerProtocol(device), connections), host, bound
+                        _tracked(with_faults(lambda: FINSTCPServerProtocol(device), faults, device), connections),
+                        host,
+                        bound,
                     )
                 except OSError:
                     udp.close()
@@ -493,7 +611,19 @@ class SimulatorController:
         }
         device = factories[kind.key]()
         protocol = protocols[kind.key]
-        server = await loop.create_server(_tracked(lambda: protocol(device), connections), host, port)
+        if kind.key == "slmp" and extras.ascii:
+            protocol = SLMPASCIIProtocol
+        if kind.key == "slmp" and extras.udp:
+            # UDP: no connections (none to list or to limit)
+            endpoint, _ = await loop.create_datagram_endpoint(
+                with_datagram_faults(lambda: SLMPUDPProtocol(device, extras.ascii), faults, device),
+                local_addr=(host, port),
+            )
+            closers.append(endpoint.close)
+            return _Running(kind, host, endpoint.get_extra_info("sockname")[1], device, closers, connections)
+        server = await loop.create_server(
+            _tracked(with_faults(lambda: protocol(device), faults, device), connections), host, port
+        )
         closers.append(server.close)
         return _Running(kind, host, server.sockets[0].getsockname()[1], device, closers, connections)
 
@@ -533,7 +663,9 @@ class SimulatorController:
         running = self._running.get(key)
         if running is None:
             return None
-        return RunningSettings(running.host, running.port, running.denied, running.writable, running.cpu)
+        return RunningSettings(
+            running.host, running.port, running.denied, running.writable, running.cpu, running.extras
+        )
 
     def stop_all(self) -> None:
         for key in list(self._running):
@@ -651,6 +783,7 @@ class SimulatorSetting:
     writable: bool = False
     running: bool = False
     cpu: Optional[str] = None  # SLMP only (None: the default model)
+    extras: Extras = Extras()
 
 
 @dataclass
@@ -673,6 +806,7 @@ class SavedState:
                     "writable": s.writable,
                     "running": s.running,
                     **({"cpu": s.cpu} if s.cpu else {}),
+                    **s.extras.to_dict(),
                 }
                 for key, s in self.simulators.items()
             },
@@ -722,7 +856,14 @@ class SavedState:
             if cpu is not None and cpu not in kind.cpus:
                 choices = ", ".join(kind.cpus) or "none"
                 raise ValueError(f"simulators.{key}.cpu: one of {choices} expected, got {cpu!r}")
-            state.simulators[key] = SimulatorSetting(port, denied, writable, item.get("running", False) is True, cpu)
+            extras = Extras.from_dict(item, f"simulators.{key}")
+            try:
+                extras.check(kind)
+            except ValueError as e:
+                raise ValueError(f"simulators.{key}: {e}") from None
+            state.simulators[key] = SimulatorSetting(
+                port, denied, writable, item.get("running", False) is True, cpu, extras
+            )
         for i, item in enumerate(_items(data, "values")):
             where = f"values[{i}]"
             state.values.append(
@@ -795,7 +936,9 @@ def apply_state(controller: SimulatorController, state: SavedState) -> List[str]
         if not setting.running:
             continue
         try:
-            controller.start(key, state.host, setting.port, setting.denied, setting.writable, setting.cpu)
+            controller.start(
+                key, state.host, setting.port, setting.denied, setting.writable, setting.cpu, setting.extras
+            )
         except (OSError, ValueError) as e:
             problems.append(f"{KINDS_BY_KEY[key].title}: not started: {e}")
     for key, area, address, value in state.values:

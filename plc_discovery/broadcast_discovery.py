@@ -13,7 +13,7 @@ import struct
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from .config import NetworkConfig, PLCInfo, Protocol
-from .probes import parse_eip_identity
+from .probes import parse_eip_identity, parse_slmp_type_name
 from .utils import get_local_networks
 
 logger = logging.getLogger(__name__)
@@ -269,16 +269,22 @@ class BroadcastDiscovery:
             if data[:2] != SLMP_RESPONSE_SUBHEADER:
                 return None
 
-            return PLCInfo(
+            # Answered on UDP: listed as SLMP over UDP, which is how it is
+            # read. A TCP port of the same PLC (found by the TCP scan) is
+            # listed separately as SLMP.
+            plc = PLCInfo(
                 ip_address=ip,
-                protocol=Protocol.SLMP,
+                protocol=Protocol.SLMP_UDP,
                 port=SLMP_DISCOVERY_PORT,
                 manufacturer="三菱電機/SLMP互換",
-                # Answered on UDP only: the TCP port a scan would connect to
-                # was not checked (it is set per PLC; 5001 is this tool's
-                # default). A TCP scan result for the same PLC replaces this.
-                model="SLMP対応PLC（UDP応答のみ・TCPポート未確認）",
+                model="SLMP対応PLC（UDP）",
             )
+            identity = parse_slmp_type_name(data, "3E", False)
+            if identity:
+                from .discovery import apply_slmp_identity
+
+                apply_slmp_identity(plc, identity)
+            return plc
 
         except Exception as e:
             logger.debug(f"SLMP parse error: {e}")

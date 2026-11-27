@@ -25,8 +25,10 @@ if __package__ in (None, ""):
     from control import (
         KINDS,
         KINDS_BY_KEY,
+        MAX_DELAY_MS,
         WAVEFORM_LABELS,
         WAVEFORMS,
+        Extras,
         Generator,
         SavedState,
         SimulatorController,
@@ -39,8 +41,10 @@ else:
     from .control import (
         KINDS,
         KINDS_BY_KEY,
+        MAX_DELAY_MS,
         WAVEFORM_LABELS,
         WAVEFORMS,
+        Extras,
         Generator,
         SavedState,
         SimulatorController,
@@ -84,11 +88,39 @@ class QueueLogHandler(logging.Handler):
             self.handleError(record)
 
 
+def extras_from_fields(kind: SimulatorKind, delay: str, drop: bool, limit: str, ascii_code: bool, udp: bool) -> Extras:
+    """The settings of the 詳細 dialog; ValueError (in Japanese) for an invalid entry"""
+    numbers = []
+    for text, label in ((delay, "応答の遅延"), (limit, "同時接続の上限")):
+        try:
+            number = int(text.strip() or "0")
+        except ValueError:
+            raise ValueError(f"「{label}」には整数を入力してください。") from None
+        if number < 0:
+            raise ValueError(f"「{label}」は 0 以上にしてください。")
+        numbers.append(number)
+    if numbers[0] > MAX_DELAY_MS:
+        raise ValueError(f"「応答の遅延」は {MAX_DELAY_MS} ms 以下にしてください。")
+    extras = Extras(
+        numbers[0],
+        drop and kind.can_drop_denied,
+        numbers[1],
+        ascii_code and kind.codes,
+        udp and kind.codes,
+    )
+    if extras.udp and extras.max_connections:
+        raise ValueError("UDP には接続がないため、「同時接続の上限」は指定できません（0 にしてください）。")
+    return extras
+
+
 class _Row:
-    """One simulator's line: port, denied ranges, writes, state, connections and start/stop"""
+    """One simulator's line: port, denied ranges, writes, state, connections, start/stop and 詳細 settings"""
 
     def __init__(self, app: "SimulatorApp", parent: tk.Misc, row: int, kind: SimulatorKind):
         self.kind = kind
+        # Late answers, no answer for denied addresses, connection limit, ASCII / UDP (詳細…)
+        self.extras = Extras()
+        self.var_extras = tk.StringVar(value="")
         self.var_port = tk.StringVar(value=str(kind.port))
         self.var_denied = tk.StringVar(value=kind.denied or "（固定）")
         self.var_state = tk.StringVar(value="停止中")
@@ -115,6 +147,13 @@ class _Row:
         ttk.Button(parent, text="コマンド", width=8, command=lambda: app.show_command(kind.key)).grid(
             row=row, column=8, padx=4
         )
+        self.btn_extras = ttk.Button(parent, text="詳細…", width=6, command=lambda: app.edit_extras(kind.key))
+        self.btn_extras.grid(row=row, column=9, padx=4)
+        ttk.Label(parent, textvariable=self.var_extras).grid(row=row, column=10, padx=4, sticky=tk.W)
+
+    def set_extras(self, extras: Extras) -> None:
+        self.extras = extras
+        self.var_extras.set(extras.label)
 
     def update(self, running: bool, port: Optional[int]) -> None:
         state = tk.DISABLED if running else tk.NORMAL
@@ -123,6 +162,7 @@ class _Row:
         self.chk_writable.configure(state=tk.DISABLED if running or not self.kind.writable else tk.NORMAL)
         if self.cmb_cpu is not None:
             self.cmb_cpu.configure(state=tk.DISABLED if running else "readonly")
+        self.btn_extras.configure(state=state)
         self.var_state.set(f"実行中（{port}）" if running else "停止中")
         if not running:
             self.var_clients.set("-")
@@ -186,14 +226,25 @@ class SimulatorApp:
         sims = ttk.LabelFrame(main, text="シミュレータ", padding=6)
         sims.pack(fill=tk.X, pady=6)
         for col, text in enumerate(
-            ("種類", "ポート", "読めないアドレス", "書き込み可", "CPU 機種", "状態", "接続中のクライアント")
+            (
+                "種類",
+                "ポート",
+                "読めないアドレス",
+                "書き込み可",
+                "CPU 機種",
+                "状態",
+                "接続中のクライアント",
+                "",
+                "",
+                "異常の再現など",
+            )
         ):
             ttk.Label(sims, text=text).grid(row=0, column=col, sticky=tk.W, padx=4)
         sims.columnconfigure(2, weight=1)
         for i, kind in enumerate(KINDS, start=1):
             self.rows[kind.key] = _Row(self, sims, i, kind)
         cmd = ttk.Frame(sims)
-        cmd.grid(row=len(KINDS) + 1, column=0, columnspan=9, sticky=tk.EW, pady=(6, 0))
+        cmd.grid(row=len(KINDS) + 1, column=0, columnspan=11, sticky=tk.EW, pady=(6, 0))
         ttk.Label(cmd, text="スキャナーのコマンド:").pack(side=tk.LEFT)
         ttk.Entry(cmd, textvariable=self.var_command, state="readonly").pack(
             side=tk.LEFT, fill=tk.X, expand=True, padx=4
@@ -283,7 +334,9 @@ class SimulatorApp:
         writable = row.var_writable.get() and row.kind.writable
         cpu = row.var_cpu.get() if row.kind.cpus else None
         try:
-            self.controller.start(key, self.var_host.get().strip() or "127.0.0.1", port, denied, writable, cpu)
+            self.controller.start(
+                key, self.var_host.get().strip() or "127.0.0.1", port, denied, writable, cpu, row.extras
+            )
         except Exception as e:
             logging.getLogger("Simulator-GUI").error(f"{row.kind.title}: failed to start: {e}")
             messagebox.showerror(
@@ -294,6 +347,61 @@ class SimulatorApp:
             return False
         self.show_command(key)
         return True
+
+    def edit_extras(self, key: str) -> None:
+        """詳細 dialog: late answers, no answer for denied addresses, connection limit, ASCII / UDP"""
+        row = self.rows[key]
+        kind = row.kind
+        dialog = tk.Toplevel(self.root)
+        dialog.title(f"{kind.title} の詳細")
+        dialog.transient(self.root)
+        frame = ttk.Frame(dialog, padding=10)
+        frame.pack(fill=tk.BOTH, expand=True)
+        current = row.extras
+        var_delay = tk.StringVar(value=str(current.delay_ms))
+        var_drop = tk.BooleanVar(value=current.drop_denied)
+        var_limit = tk.StringVar(value=str(current.max_connections))
+        var_ascii = tk.BooleanVar(value=current.ascii)
+        var_udp = tk.BooleanVar(value=current.udp)
+        ttk.Label(frame, text="実機で起きる異常を再現します（起動中は変更できません）").grid(
+            row=0, column=0, columnspan=3, sticky=tk.W, pady=(0, 6)
+        )
+        ttk.Label(frame, text="応答の遅延:").grid(row=1, column=0, sticky=tk.W)
+        ttk.Entry(frame, textvariable=var_delay, width=8).grid(row=1, column=1, sticky=tk.W)
+        ttk.Label(frame, text="ms（スキャナーのタイムアウトより長いと NG_TIMEOUT）").grid(row=1, column=2, sticky=tk.W)
+        chk_drop = ttk.Checkbutton(frame, text="読めないアドレスを含む要求に応答しない", variable=var_drop)
+        chk_drop.grid(row=2, column=0, columnspan=3, sticky=tk.W, pady=2)
+        if not kind.can_drop_denied:
+            chk_drop.configure(state=tk.DISABLED)
+        ttk.Label(frame, text="同時接続の上限:").grid(row=3, column=0, sticky=tk.W)
+        ttk.Entry(frame, textvariable=var_limit, width=8).grid(row=3, column=1, sticky=tk.W)
+        ttk.Label(frame, text="本（0 = 上限なし。超えた接続はすぐ切る）").grid(row=3, column=2, sticky=tk.W)
+        chk_ascii = ttk.Checkbutton(
+            frame, text="ASCII コードで応答する（一括読み出し・形名読み出しのみ）", variable=var_ascii
+        )
+        chk_ascii.grid(row=4, column=0, columnspan=3, sticky=tk.W, pady=(6, 2))
+        chk_udp = ttk.Checkbutton(frame, text="UDP で応答する（TCP では待ち受けない）", variable=var_udp)
+        chk_udp.grid(row=5, column=0, columnspan=3, sticky=tk.W)
+        if not kind.codes:
+            chk_ascii.configure(state=tk.DISABLED)
+            chk_udp.configure(state=tk.DISABLED)
+
+        def ok() -> None:
+            try:
+                extras = extras_from_fields(
+                    kind, var_delay.get(), var_drop.get(), var_limit.get(), var_ascii.get(), var_udp.get()
+                )
+            except ValueError as e:
+                messagebox.showwarning("入力エラー", str(e), parent=dialog)
+                return
+            row.set_extras(extras)
+            dialog.destroy()
+
+        buttons = ttk.Frame(frame)
+        buttons.grid(row=6, column=0, columnspan=3, sticky=tk.E, pady=(10, 0))
+        ttk.Button(buttons, text="OK", command=ok).pack(side=tk.RIGHT, padx=2)
+        ttk.Button(buttons, text="キャンセル", command=dialog.destroy).pack(side=tk.RIGHT, padx=2)
+        dialog.grab_set()
 
     def toggle(self, key: str) -> None:
         if self.controller.is_running(key):
@@ -321,7 +429,12 @@ class SimulatorApp:
             settings = self.controller.settings(key)
             if settings is not None:
                 state.simulators[key] = SimulatorSetting(
-                    settings.port, settings.denied, settings.writable, running=True, cpu=settings.cpu
+                    settings.port,
+                    settings.denied,
+                    settings.writable,
+                    running=True,
+                    cpu=settings.cpu,
+                    extras=settings.extras,
                 )
                 continue
             try:
@@ -330,7 +443,9 @@ class SimulatorApp:
                 port = row.kind.port
             denied = row.var_denied.get().strip() if row.kind.denied is not None else None
             cpu = row.var_cpu.get() if row.kind.cpus else None
-            state.simulators[key] = SimulatorSetting(port, denied, bool(row.var_writable.get()), running=False, cpu=cpu)
+            state.simulators[key] = SimulatorSetting(
+                port, denied, bool(row.var_writable.get()), running=False, cpu=cpu, extras=row.extras
+            )
         state.values = self.controller.written_values()
         state.generators = self.controller.generators()
         return state
@@ -368,6 +483,7 @@ class SimulatorApp:
             row.var_writable.set(setting.writable)
             if row.kind.cpus:
                 row.var_cpu.set(setting.cpu or row.kind.cpus[0])
+            row.set_extras(setting.extras)
         problems = apply_state(self.controller, state)
         self._refresh_rows()
         logging.getLogger("Simulator-GUI").info(f"state loaded: {path}")

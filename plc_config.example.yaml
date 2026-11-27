@@ -38,6 +38,7 @@ discovery:
     - s7
     - fins        # FINS/UDP
     - fins_tcp    # FINS/TCP
+    - slmp_udp    # SLMP over UDP (a PLC port opened for UDP)
 
   # Ports probed besides each protocol's standard port, for PLCs set to
   # another port (--discover-ports on the command line overrides)

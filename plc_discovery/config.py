@@ -42,6 +42,7 @@ class Protocol(Enum):
         S7: Siemens S7通信
         FINS: Omron FINS/UDP
         FINS_TCP: Omron FINS/TCP
+        SLMP_UDP: 三菱電機 SLMP/MCプロトコル over UDP（UDP で開いたポート）
 
     Example:
         >>> protocol = Protocol.SLMP
@@ -54,6 +55,7 @@ class Protocol(Enum):
     S7 = auto()
     FINS = auto()  # FINS over UDP
     FINS_TCP = auto()  # FINS over TCP (same port, node address handshake)
+    SLMP_UDP = auto()  # SLMP over UDP (a PLC port opened for UDP)
 
 
 class DeviceType(Enum):
@@ -150,6 +152,8 @@ PROTOCOL_PORTS: Dict[Protocol, int] = {
     Protocol.S7: 102,
     Protocol.FINS: 9600,
     Protocol.FINS_TCP: 9600,
+    # No standard number: set per PLC like the TCP port (this tool's default)
+    Protocol.SLMP_UDP: 5001,
 }
 
 # Largest number of addresses in one user-specified range. Every address
@@ -177,6 +181,7 @@ MAX_READ_WORDS: Dict[Protocol, int] = {
     Protocol.S7: 200,
     Protocol.FINS: 500,
     Protocol.FINS_TCP: 500,
+    Protocol.SLMP_UDP: 960,
 }
 
 # Recommended safe values for read requests
@@ -190,6 +195,7 @@ SAFE_READ_WORDS: Dict[Protocol, int] = {
     Protocol.S7: 111,
     Protocol.FINS: 400,
     Protocol.FINS_TCP: 400,
+    Protocol.SLMP_UDP: 900,
 }
 
 # Manufacturer OUI prefixes (MAC address first 3 bytes).
@@ -579,3 +585,4 @@ DEFAULT_DEVICE_RANGES: Dict[Protocol, List[DeviceRange]] = {
 }
 # FINS/TCP reads the same memory areas as FINS/UDP
 DEFAULT_DEVICE_RANGES[Protocol.FINS_TCP] = DEFAULT_DEVICE_RANGES[Protocol.FINS]
+DEFAULT_DEVICE_RANGES[Protocol.SLMP_UDP] = DEFAULT_DEVICE_RANGES[Protocol.SLMP]

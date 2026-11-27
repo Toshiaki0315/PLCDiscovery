@@ -47,7 +47,7 @@ DEFAULT_CONFIG = {
         "ip_ranges": [],  # List of IP ranges to scan
         "scan_same_segment": True,  # accepted for older files; not used
         # Protocols probed during discovery (applies only when set in the file)
-        "protocols": ["slmp", "ethernet_ip", "modbus", "s7", "fins", "fins_tcp"],
+        "protocols": ["slmp", "ethernet_ip", "modbus", "s7", "fins", "fins_tcp", "slmp_udp"],
     },
     # Target PLCs (for direct connection without discovery)
     "targets": [
@@ -122,8 +122,10 @@ TARGET_OPTION_RANGES: Dict[Optional[Protocol], Dict[str, tuple]] = {
     # RTU frames through), 0 (default) = Modbus/TCP
     Protocol.MODBUS_TCP: {"unit_id": (0, 255), "contiguous": (0, 1), "rtu": (0, 1)},
     # frame: 3 = 3E (default), 4 = 4E; ascii: 1 = ASCII code, 0 (default) =
-    # binary - as set for the PLC's port (GX Works: 交信データコード)
+    # binary - as set for the PLC's port (GX Works: 交信データコード).
+    # A port opened for UDP is the protocol slmp-udp.
     Protocol.SLMP: {"frame": (3, 4), "ascii": (0, 1)},
+    Protocol.SLMP_UDP: {"frame": (3, 4), "ascii": (0, 1)},
 }
 TARGET_OPTIONS: Dict[Optional[Protocol], set] = {
     protocol: set(ranges) for protocol, ranges in TARGET_OPTION_RANGES.items()
