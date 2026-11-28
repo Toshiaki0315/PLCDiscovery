@@ -1105,3 +1105,52 @@ def test_a_silent_slmp_port_gets_no_tls_handshake(monkeypatch):
         assert asyncio.run(discovery._probe_host_all("127.0.0.1")) == []
     assert tried == []
     assert "対応プロトコルの応答なし" in discovery.unidentified["127.0.0.1"].note
+
+
+# ---------------------------------------------------------------- review fixes
+
+
+def test_hex_addresses_for_slmp_over_udp_too():
+    from plc_discovery.scan_runner import ResultWriter
+
+    def hex_flag(protocol):
+        exporter = MagicMock(hex_addresses=True)
+        ResultWriter(PLCInfo("10.0.0.1", protocol=protocol, port=5001), exporter).export_points(
+            _points(("X31", StatusCode.OK))
+        )
+        return exporter.export_plc_data.call_args.kwargs["hex_addresses"]
+
+    assert hex_flag(Protocol.SLMP) is True
+    assert hex_flag(Protocol.SLMP_UDP) is True  # was False: X/Y/B/W shown in decimal only
+    assert hex_flag(Protocol.MODBUS_TCP) is False
+
+
+def test_reconnect_time_is_not_counted_as_response_time():
+    from plc_discovery.protocols.base import BaseProtocolHandler
+
+    class Handler(BaseProtocolHandler):
+        protocol = Protocol.SLMP
+
+        async def connect(self):
+            await asyncio.sleep(0.3)  # e.g. TCP connect and SLMP settings detection
+            self._connected = True
+            return True
+
+        async def disconnect(self):
+            self._connected = False
+
+        async def read_device_raw(self, device_type, start_address, count):
+            if not await self._ensure_fresh_connection():
+                return None, StatusCode.NG_COMM_ERROR
+            return [0] * count, StatusCode.OK
+
+    async def run():
+        handler = Handler("127.0.0.1", 5001, FAST, use_circuit_breaker=False)
+        handler._connected = True
+        handler.mark_needs_reconnect()
+        await handler._tracked_read(DeviceType.D, 0, 1)
+        return handler
+
+    handler = asyncio.run(run())
+    assert handler.answered_count == 1
+    assert handler.response_ms_max < 100  # was ~300: the reconnect was taken for the PLC's answer

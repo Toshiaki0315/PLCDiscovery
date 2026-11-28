@@ -124,6 +124,7 @@ class BaseProtocolHandler(ABC):
         self.answered_count = 0
         self.response_ms_total = 0.0
         self.response_ms_max = 0.0
+        self._reconnect_seconds = 0.0
 
         # Set when a blocking request timed out while its worker thread may
         # still be using the client; the connection is re-established before
@@ -437,6 +438,10 @@ class BaseProtocolHandler(ABC):
             return None, StatusCode.NG_ILLEGAL_ADDR
 
         started = time.monotonic()
+        # Time read_device_raw() spends re-establishing the connection
+        # (_ensure_fresh_connection: TCP connect, SLMP settings detection) is
+        # not the PLC's response time and is left out of it
+        self._reconnect_seconds = 0.0
         try:
             data, status = await self.read_device_raw(device_type, start_address, count)
         except Exception as e:
@@ -451,7 +456,7 @@ class BaseProtocolHandler(ABC):
         if status != StatusCode.NG_UNSUPPORTED:
             self.request_count += 1
         if plc_answered and status != StatusCode.NG_UNSUPPORTED:
-            elapsed_ms = (time.monotonic() - started) * 1000
+            elapsed_ms = max(0.0, time.monotonic() - started - self._reconnect_seconds) * 1000
             self.answered_count += 1
             self.response_ms_total += elapsed_ms
             self.response_ms_max = max(self.response_ms_max, elapsed_ms)
@@ -795,6 +800,7 @@ class BaseProtocolHandler(ABC):
             return True
         self._needs_reconnect = False
         logger.info(f"Reconnecting to {self.ip_address}")
+        started = time.monotonic()
         try:
             await self.disconnect()
         except Exception as e:
@@ -804,6 +810,9 @@ class BaseProtocolHandler(ABC):
         except Exception as e:
             logger.debug(f"Reconnect failed: {e}")
             ok = False
+        finally:
+            # Left out of the response time of the read that reconnected
+            self._reconnect_seconds += time.monotonic() - started
         if not ok:
             # Try again on the next request
             self._needs_reconnect = True

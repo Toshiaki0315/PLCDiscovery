@@ -133,7 +133,8 @@ class ResultWriter:
             tag = f"{self.protocol}_{self.port}" if self.shared_ip else None
             if tag and self.instance:
                 tag = f"{tag}_{self.instance}"
-            hex_addresses = self.exporter.hex_addresses and self.protocol == "SLMP"
+            # MELSEC numbers X/Y/B/W in hexadecimal: SLMP over TCP and UDP
+            hex_addresses = self.exporter.hex_addresses and self.protocol in ("SLMP", "SLMP_UDP")
             if self.daily:
                 path = self.exporter.append_plc_data(points, self.ip, target_tag=tag, hex_addresses=hex_addresses)
             else:

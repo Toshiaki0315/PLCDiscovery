@@ -1286,7 +1286,7 @@ class PLCScannerApp(SettingsTabsMixin):
         points = self._last_points
         if self.var_ng_only.get():
             points = [p for p in points if p.status != StatusCode.OK]
-        show_hex = self.var_hex_addresses.get() and self._last_protocol == Protocol.SLMP
+        show_hex = self.var_hex_addresses.get() and self._last_protocol in (Protocol.SLMP, Protocol.SLMP_UDP)
         for i, p in enumerate(points[:MAX_DISPLAY_ROWS]):
             ng = p.status != StatusCode.OK
             address = p.address
