@@ -892,6 +892,9 @@ def test_broadcast_only_for_requested_protocols():
 
     assert asyncio.run(run([Protocol.MODBUS_TCP])) == []
     assert asyncio.run(run([Protocol.ETHERNET_IP])) == [44818]
+    # SLMP replies are listed as SLMP over UDP: sent for slmp-udp, not for slmp (TCP)
+    assert asyncio.run(run([Protocol.SLMP_UDP])) == [5001]
+    assert asyncio.run(run([Protocol.SLMP])) == []
     assert len(asyncio.run(run(None))) == 2
 
 

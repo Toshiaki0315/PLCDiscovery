@@ -424,6 +424,19 @@ async def test_cli_discovery_keeps_tcp_identity_over_broadcast():
 
 
 @pytest.mark.asyncio
+async def test_cli_discovery_lists_an_unidentified_host_once_for_overlapping_ranges():
+    async def discover(ip_range, config, unidentified=None, **kwargs):
+        unidentified.append(PLCInfo("10.0.0.7", model="未対応・要確認", note="ポートは開いているが…"))
+        return []
+
+    exporter = MagicMock()
+    with patch.object(plc_scanner, "discover_plcs", discover):
+        await plc_scanner.run_discovery(["10.0.0.0/29", "10.0.0.4/30"], NetworkConfig(), exporter, Display())
+    written = exporter.export_discovery_results.call_args.args[0]
+    assert [p.ip_address for p in written] == ["10.0.0.7"]  # was listed once per range
+
+
+@pytest.mark.asyncio
 async def test_cli_report_lists_failed_targets(tmp_path, monkeypatch):
     async def scan(plc_info, *a, **k):
         if plc_info.ip_address == "10.0.0.2":

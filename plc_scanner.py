@@ -186,8 +186,9 @@ async def run_discovery(
     # so its entries win; broadcast adds hosts the scan did not reach.
     plcs = merge_discovery_results(tcp_plcs, plcs)
     # A host listed through a broadcast reply is not unidentified
+    # and overlapping IP ranges list a host once
     found_ips = {p.ip_address for p in plcs}
-    unidentified = [u for u in unidentified if u.ip_address not in found_ips]
+    unidentified = list({u.ip_address: u for u in unidentified if u.ip_address not in found_ips}.values())
 
     # Log and display results
     audit.log_discovery_result(len(plcs), [p.to_dict() for p in plcs])

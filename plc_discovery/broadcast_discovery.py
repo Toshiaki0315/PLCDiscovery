@@ -145,7 +145,10 @@ class BroadcastDiscovery:
         self._report_progress("Starting UDP broadcast discovery for all protocols...")
 
         methods = []
-        if protocols is None or Protocol.SLMP in protocols:
+        # SLMP replies come over UDP and are listed as SLMP_UDP: sent when
+        # that is asked for (not for SLMP over TCP, whose answers would be
+        # dropped by the protocol filter)
+        if protocols is None or Protocol.SLMP_UDP in protocols:
             methods.append(self.discover_slmp_broadcast())
         if protocols is None or Protocol.ETHERNET_IP in protocols:
             methods.append(self.discover_eip_broadcast())
