@@ -138,10 +138,12 @@ def identify_slmp(
         reply = _exchange_slmp(ip, port, slmp_type_name_request(frame, ascii_code), timeout, frame, ascii_code, state)
         if reply is None:
             return None  # no connection: the other settings cannot be answered either
+        # Any reply, even one that is not SLMP, means the device talked:
+        # not a PLC whose connections are all in use
+        closed.append(not reply and bool(state.get("closed")))
+        if report is not None:
+            report["closed"] = all(closed)
         if not reply:
-            closed.append(bool(state.get("closed")))
-            if report is not None:
-                report["closed"] = all(closed)
             continue  # connected, not answered in this setting
         identity = parse_slmp_type_name(reply, frame, ascii_code)
         if identity:

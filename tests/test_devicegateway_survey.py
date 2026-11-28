@@ -878,6 +878,41 @@ def test_discovery_says_the_connections_may_be_in_use():
     assert "対応プロトコルの応答なし" not in note
 
 
+def test_slmp_probe_answered_with_something_else_is_not_busy(monkeypatch):
+    """A device that answered anything at all (not SLMP) is not a PLC with its connections in use"""
+    replies = iter([b"HTTP/1.1 400 Bad Request\r\n\r\n", b"", b"", b""])
+
+    def exchange(ip, port, request, timeout, frame, ascii_code, state=None):
+        reply = next(replies)
+        if not reply and state is not None:
+            state["closed"] = True
+        return reply
+
+    from plc_discovery import probes
+
+    monkeypatch.setattr(probes, "_exchange_slmp", exchange)
+    report = {}
+    assert identify_slmp("10.0.0.1", 5001, 1, report=report) is None
+    assert report == {"closed": False}
+
+
+def test_a_plc_found_by_another_protocol_says_its_slmp_port_is_busy(monkeypatch):
+    """E.g. a Keyence KV read over EtherNet/IP while a gateway holds every SLMP connection"""
+
+    def modbus(request):
+        return request[:4] + b"\x00\x05" + request[6:7] + b"\x03\x02\x00\x00"
+
+    with serve(_ClosesAtOnce) as slmp_port, answering(modbus) as modbus_port:
+        ports = {Protocol.SLMP: [slmp_port], Protocol.MODBUS_TCP: [modbus_port]}
+        discovery = PLCDiscovery(FAST, protocols=[Protocol.SLMP, Protocol.MODBUS_TCP])
+        monkeypatch.setattr(discovery, "_candidate_ports", lambda ip, protocol: ports[protocol])
+        found = asyncio.run(discovery._probe_host_all("127.0.0.1"))
+    assert [plc.protocol for plc in found] == [Protocol.MODBUS_TCP]
+    assert found[0].note.startswith(f"接続はすぐ切られた: {slmp_port}（SLMP）")
+    assert "DeviceGateway" in found[0].note
+    assert discovery.unidentified == {}
+
+
 def test_both_kinds_of_unanswered_ports_are_noted():
     discovery = PLCDiscovery(FAST)
     discovery._note_unidentified("10.0.0.5", None, [(Protocol.MODBUS_TCP, 502)], [(Protocol.SLMP, 5001)])

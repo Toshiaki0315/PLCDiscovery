@@ -69,6 +69,11 @@ CLOSED_PORT_HINT = "PLC の接続数が上限に達している可能性（Devic
 UNIDENTIFIED_MODEL = "未対応・要確認"
 
 
+def ports_text(ports: Sequence[Tuple[Protocol, int]]) -> str:
+    """'5001（SLMP）, 44818（ETHERNET_IP）' for a note"""
+    return ", ".join(f"{port}（{protocol.name}）" for protocol, port in sorted(ports, key=lambda x: x[1]))
+
+
 def slmp_settings_note(frame: str, ascii_code: bool, udp: bool = False) -> str:
     """Note column for an SLMP port: its frame, communication data code (and UDP)"""
     return f"SLMP {frame}・{'ASCII' if ascii_code else 'バイナリ'}" + ("・UDP" if udp else "")
@@ -552,9 +557,6 @@ class PLCDiscovery:
         if not silent_ports and not closed_ports and not maker:
             return
 
-        def ports_text(ports: Sequence[Tuple[Protocol, int]]) -> str:
-            return ", ".join(f"{port}（{protocol.name}）" for protocol, port in sorted(ports, key=lambda x: x[1]))
-
         notes = []
         if closed_ports:
             notes.append(f"接続はすぐ切られた: {ports_text(closed_ports)}。{CLOSED_PORT_HINT}")
@@ -712,7 +714,14 @@ class PLCDiscovery:
             # Try to get detailed info using protocol-specific queries
             # (another connection to the device: after the packet interval)
             await asyncio.sleep(self.config.packet_interval_ms / 1000)
-            results.append(await self._get_detailed_info(plc_info))
+            plc_info = await self._get_detailed_info(plc_info)
+            if closed_ports and not first_only:
+                # Found through another protocol (e.g. EtherNet/IP of a
+                # Keyence KV) while its SLMP port closed every connection:
+                # say so, a gateway reading it over SLMP needs a free one
+                busy = f"接続はすぐ切られた: {ports_text(closed_ports)}。{CLOSED_PORT_HINT}"
+                plc_info.note = "／".join(part for part in (plc_info.note, busy) if part)
+            results.append(plc_info)
         return results
 
     async def _get_detailed_info(self, plc_info: PLCInfo) -> PLCInfo:

@@ -73,7 +73,7 @@ def address_runs(points: Iterable[DataPoint]) -> List[AddressRun]:
             and last_number is not None
             and number == last_number + 1
         ):
-            run.end = str(number) if number is not None else point.address
+            run.end = str(number)
             run.count += 1
         else:
             start = str(number) if number is not None else point.address
