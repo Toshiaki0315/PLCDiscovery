@@ -123,7 +123,9 @@ def identify_slmp(
     ``report`` (when given) gets "closed": True when the device closed every
     connection without answering - typically a PLC whose connections are
     all in use (a gateway or a GOT already connected), not a device that
-    speaks another protocol.
+    speaks another protocol - and "reacted": True when it replied anything
+    or closed a connection (a device that stays silent is not a TLS
+    service: see speaks_tls).
 
     Returns:
         {"frame": "3E"/"4E", "ascii": bool, "end_code": int,
@@ -143,6 +145,9 @@ def identify_slmp(
         closed.append(not reply and bool(state.get("closed")))
         if report is not None:
             report["closed"] = all(closed)
+            # The device reacted at all (any reply, or a close): a TLS
+            # server does so at once, on the first byte of an SLMP request
+            report["reacted"] = report.get("reacted", False) or bool(reply) or bool(state.get("closed"))
         if not reply:
             continue  # connected, not answered in this setting
         identity = parse_slmp_type_name(reply, frame, ascii_code)

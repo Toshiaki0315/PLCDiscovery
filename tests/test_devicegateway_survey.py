@@ -862,11 +862,11 @@ def test_slmp_probe_reports_a_port_that_closes_every_connection():
     report = {}
     with serve(_ClosesAtOnce) as port:
         assert identify_slmp("127.0.0.1", port, 0.5, report=report) is None
-    assert report == {"closed": True}
+    assert report == {"closed": True, "reacted": True}
     report = {}
     with serve(SilentProtocol) as port:  # keeps the connection, never answers
         assert identify_slmp("127.0.0.1", port, 0.2, report=report) is None
-    assert report == {"closed": False}
+    assert report == {"closed": False, "reacted": False}  # silent: not a TLS service either
 
 
 def test_discovery_says_the_connections_may_be_in_use():
@@ -893,7 +893,7 @@ def test_slmp_probe_answered_with_something_else_is_not_busy(monkeypatch):
     monkeypatch.setattr(probes, "_exchange_slmp", exchange)
     report = {}
     assert identify_slmp("10.0.0.1", 5001, 1, report=report) is None
-    assert report == {"closed": False}
+    assert report == {"closed": False, "reacted": True}
 
 
 def test_a_plc_found_by_another_protocol_says_its_slmp_port_is_busy(monkeypatch):
@@ -1094,3 +1094,14 @@ def test_a_tls_service_that_answers_with_an_alert_is_not_listed(monkeypatch):
         discovery = PLCDiscovery(FAST, protocols=[Protocol.SLMP], port=port)
         assert asyncio.run(discovery._probe_host_all("127.0.0.1")) == []
     assert discovery.unidentified == {}
+
+
+def test_a_silent_slmp_port_gets_no_tls_handshake(monkeypatch):
+    """A PLC that stays silent is not sent a TLS handshake (nor waited for once more)"""
+    tried = []
+    monkeypatch.setattr(discovery_module, "speaks_tls", lambda *args: tried.append(args) or True)
+    with serve(SilentProtocol) as port:
+        discovery = PLCDiscovery(FAST, protocols=[Protocol.SLMP], port=port)
+        assert asyncio.run(discovery._probe_host_all("127.0.0.1")) == []
+    assert tried == []
+    assert "対応プロトコルの応答なし" in discovery.unidentified["127.0.0.1"].note
