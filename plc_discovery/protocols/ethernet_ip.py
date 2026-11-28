@@ -475,16 +475,16 @@ class EtherNetIPHandler(BaseProtocolHandler):
 
                 replies = await self._run_blocking(_read)
             except asyncio.TimeoutError:
-                self._audit_tag_read(batch, StatusCode.NG_TIMEOUT, started)
+                self._record_tag_read(batch, StatusCode.NG_TIMEOUT, started)
                 results += [_tag_point(split_element_count(t)[0], StatusCode.NG_TIMEOUT) for t in batch]
                 continue
             except Exception as e:
                 self._needs_reconnect = True
                 logger.debug(f"EtherNet/IP tag read error: {e}")
-                self._audit_tag_read(batch, StatusCode.NG_COMM_ERROR, started)
+                self._record_tag_read(batch, StatusCode.NG_COMM_ERROR, started)
                 results += [_tag_point(split_element_count(t)[0], StatusCode.NG_COMM_ERROR) for t in batch]
                 continue
-            self._audit_tag_read(batch, StatusCode.OK, started)
+            self._record_tag_read(batch, StatusCode.OK, started)
             definitions = getattr(self._client, "data_types", None)
             for name, reply in zip(batch, replies):
                 results.extend(_tag_points(name, reply, definitions if isinstance(definitions, dict) else None))
@@ -556,18 +556,18 @@ class EtherNetIPHandler(BaseProtocolHandler):
                 else:
                     results, supported = await self._run_blocking(read)
             except asyncio.TimeoutError:
-                self._audit_tag_read(names, StatusCode.NG_TIMEOUT, started)
+                self._record_tag_read(names, StatusCode.NG_TIMEOUT, started)
                 for index, tag in group:
                     outcomes[index] = [_tag_point(split_element_count(tag)[0], StatusCode.NG_TIMEOUT)]
                 continue
             except Exception as e:
                 self._needs_reconnect = True
                 logger.debug(f"EtherNet/IP tag read error: {e}")
-                self._audit_tag_read(names, StatusCode.NG_COMM_ERROR, started)
+                self._record_tag_read(names, StatusCode.NG_COMM_ERROR, started)
                 for index, tag in group:
                     outcomes[index] = [_tag_point(split_element_count(tag)[0], StatusCode.NG_COMM_ERROR)]
                 continue
-            self._audit_tag_read(names, StatusCode.OK, started)
+            self._record_tag_read(names, StatusCode.OK, started)
             if not supported:
                 logger.info("Multiple Service not supported by the controller: reading one tag per request")
                 self._multiple_service_ok = False

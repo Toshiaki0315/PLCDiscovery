@@ -454,12 +454,7 @@ class BaseProtocolHandler(ABC):
         # (a device type the protocol does not have): not counted, so the
         # PLC's response times are not lowered by answers it never gave
         if status != StatusCode.NG_UNSUPPORTED:
-            self.request_count += 1
-        if plc_answered and status != StatusCode.NG_UNSUPPORTED:
-            elapsed_ms = max(0.0, time.monotonic() - started - self._reconnect_seconds) * 1000
-            self.answered_count += 1
-            self.response_ms_total += elapsed_ms
-            self.response_ms_max = max(self.response_ms_max, elapsed_ms)
+            self._count_request(plc_answered, time.monotonic() - started - self._reconnect_seconds)
 
         if status == StatusCode.OK:
             if data is None or len(data) < count:
@@ -482,6 +477,15 @@ class BaseProtocolHandler(ABC):
 
         return data, status
 
+    def _count_request(self, answered: bool, elapsed_seconds: float) -> None:
+        """Count one request sent to the PLC and, when it answered, its response time"""
+        self.request_count += 1
+        if answered:
+            elapsed_ms = max(0.0, elapsed_seconds) * 1000
+            self.answered_count += 1
+            self.response_ms_total += elapsed_ms
+            self.response_ms_max = max(self.response_ms_max, elapsed_ms)
+
     def _audit_read(self, device: str, start_address: int, count: int, status: StatusCode, started: float) -> None:
         """Record one read request and its outcome in the audit log (when one is open)"""
         audit = get_audit_logger()
@@ -497,8 +501,14 @@ class BaseProtocolHandler(ABC):
             round((time.monotonic() - started) * 1000, 1),
         )
 
-    def _audit_tag_read(self, tags: List[str], status: StatusCode, started: float) -> None:
-        """Record one tag read request and its outcome in the audit log"""
+    def _record_tag_read(self, tags: List[str], status: StatusCode, started: float) -> None:
+        """
+        Count one tag read request (requests and response times of the scan
+        summary, as for address reads) and record it in the audit log. A
+        request whose transport failed (timeout, communication error) was
+        not answered; any other reply was, its per-tag errors included.
+        """
+        self._count_request(status not in self._TRANSIENT_FAILURES, time.monotonic() - started)
         audit = get_audit_logger()
         if not audit.active:
             return

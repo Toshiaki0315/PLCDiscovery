@@ -1143,6 +1143,33 @@ def test_survey_files_use_hex_addresses_for_slmp_when_asked(tmp_path):
     assert survey(Protocol.MODBUS_TCP, True)[0] == "X0-31, D10"
 
 
+def test_tag_reads_count_requests_and_response_times():
+    from plc_discovery.protocols.ethernet_ip import EtherNetIPHandler
+
+    handler = EtherNetIPHandler("10.0.0.1", config=NetworkConfig(packet_interval_ms=0))
+    client = MagicMock()
+
+    def read(*tags):
+        time.sleep(0.02)
+        return [MagicMock(tag=t, value=1, type="INT", error=None) for t in tags]
+
+    client.read.side_effect = read
+    handler._client, handler._connected, handler._plc_type = client, True, "logix"
+    points = asyncio.run(handler.read_tags(["A", "B"]))
+    assert [p.status for p in points] == [StatusCode.OK] * 2
+    # Was 0 requests and no response time: a tag survey (Logix, Omron NJ/NX)
+    # told nothing about how long a DeviceGateway cycle would take
+    assert (handler.request_count, handler.answered_count) == (1, 1)
+    assert handler.response_ms_max >= 15
+
+    async def slow(func, timeout=None):
+        raise asyncio.TimeoutError()
+
+    handler._run_blocking = slow
+    asyncio.run(handler.read_tags(["A"]))
+    assert (handler.request_count, handler.answered_count) == (2, 1)  # unanswered: no response time
+
+
 def test_reconnect_time_is_not_counted_as_response_time():
     from plc_discovery.protocols.base import BaseProtocolHandler
 
