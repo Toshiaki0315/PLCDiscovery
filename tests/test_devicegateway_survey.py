@@ -1070,9 +1070,8 @@ def tls_port(tmp_path):
 def test_tls_check(tls_port):
     from plc_discovery.probes import speaks_tls
 
-    report = {}
-    assert identify_slmp("127.0.0.1", tls_port, 0.5, report=report) is None
-    assert report == {"closed": True}  # looks like a PLC with its connections in use...
+    # Closed at once (with a TLS alert from OpenSSL, or without): no SLMP answer...
+    assert identify_slmp("127.0.0.1", tls_port, 0.5) is None
     assert speaks_tls("127.0.0.1", tls_port, 1.0)  # ...but it is a TLS service
     with serve(_ClosesAtOnce) as port:
         assert not speaks_tls("127.0.0.1", port, 0.5)  # a busy PLC: no handshake either
@@ -1085,3 +1084,13 @@ def test_a_tls_service_on_a_plc_port_is_not_listed(tls_port):
     # A PLC maker's MAC is still listed, for the MAC
     asyncio.run(discovery._probe_host_all("127.0.0.1", mac="00:26:92:00:00:01"))
     assert "MACアドレス" in discovery.unidentified["127.0.0.1"].note
+
+
+def test_a_tls_service_that_answers_with_an_alert_is_not_listed(monkeypatch):
+    """OpenSSL answers data that is not TLS with an alert, then closes: still left out"""
+    alert = b"\x15\x03\x01\x00\x02\x02\x32"
+    monkeypatch.setattr(discovery_module, "speaks_tls", lambda ip, port, timeout: True)
+    with answering(lambda request: alert) as port:
+        discovery = PLCDiscovery(FAST, protocols=[Protocol.SLMP], port=port)
+        assert asyncio.run(discovery._probe_host_all("127.0.0.1")) == []
+    assert discovery.unidentified == {}

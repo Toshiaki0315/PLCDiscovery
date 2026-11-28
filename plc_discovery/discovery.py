@@ -664,14 +664,17 @@ class PLCDiscovery:
                 logger.debug(f"Open port {ip}:{port} did not answer as {protocol.name}")
                 if protocol in UDP_PROTOCOLS:
                     pass
-                elif not report.get("closed"):
-                    silent_ports.append((protocol, port))
-                elif await loop.run_in_executor(executor, speaks_tls, ip, port, timeout):
+                elif protocol in SLMP_PROTOCOLS and await loop.run_in_executor(executor, speaks_tls, ip, port, timeout):
                     # HTTPS or another TLS service on the PLC port number
-                    # (e.g. a Synology NAS on 5001): not a PLC
+                    # (e.g. a Synology NAS on 5001): not a PLC. Checked for
+                    # every unanswered SLMP port: a TLS server closes on
+                    # data that is not TLS, after a TLS alert (OpenSSL) or
+                    # without one, or waits for the rest of a "record"
                     logger.debug(f"{ip}:{port} is a TLS service, not {protocol.name}")
-                else:
+                elif report.get("closed"):
                     closed_ports.append((protocol, port))
+                else:
+                    silent_ports.append((protocol, port))
             except Exception as e:
                 logger.debug(f"Port scan error {ip}:{port}: {e}")
             return False
