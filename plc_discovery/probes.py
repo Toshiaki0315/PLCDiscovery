@@ -242,6 +242,31 @@ def probe_slmp_udp(ip: str, port: int, timeout: float) -> bool:
     return identify_slmp_udp(ip, port, timeout) is not None
 
 
+def speaks_tls(ip: str, port: int, timeout: float) -> bool:
+    """
+    Whether a port completes a TLS handshake (HTTPS and the like).
+
+    Used for a port that closed every SLMP probe without answering: a TLS
+    server does that with any data that is not TLS, just like a PLC whose
+    connections are all in use - but only the TLS server then accepts a
+    handshake (e.g. a Synology NAS, whose HTTPS port is 5001 as well).
+    The certificate is not checked: only the protocol matters here.
+    """
+    import ssl
+
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    try:
+        with socket.create_connection((ip, port), timeout=timeout) as sock:
+            sock.settimeout(timeout)
+            with context.wrap_socket(sock):
+                return True  # handshake completed
+    except (OSError, ValueError) as e:  # ssl.SSLError is an OSError
+        logger.debug(f"TLS check {ip}:{port}: {e}")
+        return False
+
+
 def probe_slmp(ip: str, port: int, timeout: float) -> bool:
     """SLMP "Read CPU Model Name" (0x0101) in any frame / data code; any SLMP answer counts"""
     return identify_slmp(ip, port, timeout) is not None

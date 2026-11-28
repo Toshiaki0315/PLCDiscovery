@@ -13,7 +13,7 @@ import ipaddress
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from .config import PROTOCOL_PORTS, NetworkConfig, PLCInfo, Protocol
-from .probes import UDP_PROTOCOLS, identify_slmp, identify_slmp_udp, read_eip_identity, verify_protocol
+from .probes import UDP_PROTOCOLS, identify_slmp, identify_slmp_udp, read_eip_identity, speaks_tls, verify_protocol
 from .utils import (
     get_local_networks,
     get_manufacturer_from_mac,
@@ -660,8 +660,16 @@ class PLCDiscovery:
                     logger.debug(f"Verified {protocol.name} on {ip}:{port}")
                     return True
                 logger.debug(f"Open port {ip}:{port} did not answer as {protocol.name}")
-                if protocol not in UDP_PROTOCOLS:
-                    (closed_ports if report.get("closed") else silent_ports).append((protocol, port))
+                if protocol in UDP_PROTOCOLS:
+                    pass
+                elif not report.get("closed"):
+                    silent_ports.append((protocol, port))
+                elif await loop.run_in_executor(executor, speaks_tls, ip, port, timeout):
+                    # HTTPS or another TLS service on the PLC port number
+                    # (e.g. a Synology NAS on 5001): not a PLC
+                    logger.debug(f"{ip}:{port} is a TLS service, not {protocol.name}")
+                else:
+                    closed_ports.append((protocol, port))
             except Exception as e:
                 logger.debug(f"Port scan error {ip}:{port}: {e}")
             return False

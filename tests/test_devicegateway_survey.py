@@ -982,3 +982,71 @@ def test_parallel_scanner_results_carry_the_request_statistics():
     [result] = results.values()
     stats = result.statistics
     assert stats["requests"] >= 1 and stats["avg_response_ms"] is not None and "scan_seconds" in stats
+
+
+# ---------------------------------------------------------------- TLS services on a PLC port
+
+
+@pytest.fixture
+def tls_port(tmp_path):
+    """A TLS server (like a NAS's HTTPS page) on a free loopback port: answers the handshake only"""
+    import shutil
+    import ssl
+    import subprocess
+
+    if not shutil.which("openssl"):
+        pytest.skip("openssl is needed to make a test certificate")
+    key, cert = tmp_path / "k.pem", tmp_path / "c.pem"
+    subprocess.run(
+        ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", str(key), "-out", str(cert)]
+        + ["-days", "1", "-subj", "/CN=localhost"],
+        check=True,
+        capture_output=True,
+    )
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(str(cert), str(key))
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen()
+    stop = threading.Event()
+
+    def run():
+        srv.settimeout(0.05)
+        while not stop.is_set():
+            try:
+                conn, _ = srv.accept()
+            except OSError:
+                continue
+            try:
+                with context.wrap_socket(conn, server_side=True) as tls:
+                    tls.settimeout(0.5)
+                    tls.recv(64)
+            except (OSError, ValueError):
+                conn.close()  # not TLS (an SLMP probe): closed without an answer
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    yield srv.getsockname()[1]
+    stop.set()
+    thread.join(2)
+    srv.close()
+
+
+def test_tls_check(tls_port):
+    from plc_discovery.probes import speaks_tls
+
+    report = {}
+    assert identify_slmp("127.0.0.1", tls_port, 0.5, report=report) is None
+    assert report == {"closed": True}  # looks like a PLC with its connections in use...
+    assert speaks_tls("127.0.0.1", tls_port, 1.0)  # ...but it is a TLS service
+    with serve(_ClosesAtOnce) as port:
+        assert not speaks_tls("127.0.0.1", port, 0.5)  # a busy PLC: no handshake either
+
+
+def test_a_tls_service_on_a_plc_port_is_not_listed(tls_port):
+    discovery = PLCDiscovery(FAST, protocols=[Protocol.SLMP], port=tls_port)
+    assert asyncio.run(discovery._probe_host_all("127.0.0.1")) == []
+    assert discovery.unidentified == {}  # e.g. a Synology NAS (HTTPS on 5001): not a PLC
+    # A PLC maker's MAC is still listed, for the MAC
+    asyncio.run(discovery._probe_host_all("127.0.0.1", mac="00:26:92:00:00:01"))
+    assert "MACアドレス" in discovery.unidentified["127.0.0.1"].note

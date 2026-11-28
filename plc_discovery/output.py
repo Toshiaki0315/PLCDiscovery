@@ -473,67 +473,6 @@ class CSVExporter:
             logger.error(f"Failed to export denied addresses: {e}")
             raise
 
-    def export_summary_report(
-        self, plc_list: List[PLCInfo], collection_stats: Dict[str, Dict], filename: Optional[str] = None
-    ) -> str:
-        """
-        Export summary report with collection statistics.
-
-        Args:
-            plc_list: List of scanned PLCs
-            collection_stats: Dictionary mapping IP to statistics
-            filename: Optional custom filename
-
-        Returns:
-            Path to the created file
-        """
-        if not filename:
-            timestamp = get_file_timestamp()
-            filename = f"scan_summary_{timestamp}.csv"
-            filepath = _unique_path(self.output_dir / filename)
-        else:
-            filepath = self.output_dir / filename
-
-        summary_headers = [
-            "ip_address",
-            "manufacturer",
-            "model",
-            "protocol",
-            "total_points",
-            "success_count",
-            "error_count",
-            "success_rate",
-            "denied_addresses",
-        ]
-
-        try:
-            with self._open_csv(filepath, "w") as f:
-                writer = _SafeDictWriter(f, fieldnames=summary_headers)
-                writer.writeheader()
-
-                for plc in plc_list:
-                    stats = collection_stats.get(plc.ip_address, {})
-                    writer.writerow(
-                        {
-                            "ip_address": plc.ip_address,
-                            "manufacturer": plc.manufacturer or "",
-                            "model": plc.model or "",
-                            "protocol": plc.protocol_label or "",
-                            "total_points": stats.get("total_points", 0),
-                            "success_count": stats.get("success_count", 0),
-                            "error_count": stats.get("error_count", 0),
-                            "success_rate": stats.get("success_rate", "N/A"),
-                            "denied_addresses": stats.get("denied_addresses", 0),
-                        }
-                    )
-
-            logger.info(f"Summary report exported to: {filepath}")
-            return str(filepath)
-
-        except Exception as e:
-            logger.error(f"Failed to export summary report: {e}")
-            raise
-
     def export_survey_summary(
         self, targets: Sequence[Tuple[str, Optional[PLCInfo], Sequence[DataPoint], Optional[Dict[str, Any]]]]
     ) -> Tuple[str, str]:

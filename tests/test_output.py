@@ -102,41 +102,6 @@ class TestCSVExporter:
         assert "192.168.1.10" in ips
         assert "192.168.1.20" in ips
 
-    def test_export_summary_report(self, temp_output_dir, sample_plc_list):
-        """Test exporting summary report"""
-        exporter = CSVExporter(temp_output_dir)
-
-        stats = {
-            "192.168.1.10": {
-                "total_points": 1000,
-                "success_count": 990,
-                "error_count": 10,
-                "success_rate": "99.00%",
-                "denied_addresses": 5,
-            },
-            "192.168.1.20": {
-                "total_points": 500,
-                "success_count": 450,
-                "error_count": 50,
-                "success_rate": "90.00%",
-                "denied_addresses": 20,
-            },
-        }
-
-        filepath = exporter.export_summary_report(sample_plc_list, stats)
-
-        assert os.path.exists(filepath)
-        assert "scan_summary_" in filepath
-
-        # Verify content
-        with open(filepath, "r", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            rows = list(reader)
-
-        assert len(rows) == 3
-        assert rows[0]["total_points"] == "1000"
-        assert rows[0]["success_rate"] == "99.00%"
-
 
 class TestLoadDeniedAddresses:
     """Tests for load_denied_addresses function"""
