@@ -253,10 +253,12 @@ def speaks_tls(ip: str, port: int, timeout: float) -> bool:
     """
     Whether a port completes a TLS handshake (HTTPS and the like).
 
-    Used for a port that closed every SLMP probe without answering: a TLS
-    server does that with any data that is not TLS, just like a PLC whose
-    connections are all in use - but only the TLS server then accepts a
-    handshake (e.g. a Synology NAS, whose HTTPS port is 5001 as well).
+    Used for an SLMP port that did not answer SLMP but reacted at once
+    (identify_slmp report "reacted": some reply, or a close): a TLS server
+    does that with any data that is not TLS - an alert (OpenSSL) or a close,
+    the latter just like a PLC whose connections are all in use - but only
+    the TLS server then accepts a handshake (e.g. a Synology NAS, whose
+    HTTPS port is 5001 as well). A port that stays silent is not checked.
     The certificate is not checked: only the protocol matters here.
     """
     import ssl

@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from .config import DataPoint, DeviceType, PLCInfo, StatusCode
+from .utils import MELSEC_HEX_DEVICES
 
 # "D100", "ZR32767": a device of the tool, then the number. Anything else (a
 # tag name such as "Motor1", "ALL") is kept as it is, one run per run of
@@ -47,13 +48,16 @@ class AddressRun:
         return f"{self.device}{self.start}-{self.end}"
 
 
-def address_runs(points: Iterable[DataPoint]) -> List[AddressRun]:
+def address_runs(points: Iterable[DataPoint], hex_addresses: bool = False) -> List[AddressRun]:
     """
     The points as runs of consecutive addresses with the same status, in
     the order read. Numbered device addresses join when the number is one
     higher. Tags (DataPoint.is_tag) and anything else that is not a device
     address of the tool get a row each: a tag named "D0" is not device D0,
     and joining tags hid the names between the first and the last.
+
+    ``hex_addresses``: X/Y/B/W numbers in hexadecimal (MELSEC notation, as
+    GX Works and DeviceGateway show them: "X0-1FFF" rather than "X0-8191").
     """
     runs: List[AddressRun] = []
     last_number: Optional[int] = None
@@ -79,6 +83,10 @@ def address_runs(points: Iterable[DataPoint]) -> List[AddressRun]:
             start = str(number) if number is not None else point.address
             runs.append(AddressRun(device, start, start, 1, status))
         last_number = number
+    if hex_addresses:
+        for run in runs:
+            if run.device in MELSEC_HEX_DEVICES:
+                run.start, run.end = f"{int(run.start):X}", f"{int(run.end):X}"
     return runs
 
 
@@ -95,9 +103,13 @@ def readable_text(runs: Sequence[AddressRun], limit: int = MAX_READABLE_TEXT) ->
 
 
 def summary_row(
-    label: str, plc: Optional[PLCInfo], points: Sequence[DataPoint], statistics: Optional[Dict[str, Any]] = None
+    label: str,
+    plc: Optional[PLCInfo],
+    points: Sequence[DataPoint],
+    statistics: Optional[Dict[str, Any]] = None,
+    hex_addresses: bool = False,
 ) -> Dict[str, Any]:
-    """One row of the scan summary for a target"""
+    """One row of the scan summary for a target (``hex_addresses``: see address_runs)"""
     statistics = statistics or {}
     counts = {status: 0 for status in StatusCode}
     for point in points:
@@ -120,7 +132,7 @@ def summary_row(
         "ng_comm_error": counts[StatusCode.NG_COMM_ERROR],
         "ng_unsupported": counts[StatusCode.NG_UNSUPPORTED],
         "success_rate": f"{ok / total * 100:.1f}%" if total else "N/A",
-        "readable_ranges": readable_text(address_runs(points)),
+        "readable_ranges": readable_text(address_runs(points, hex_addresses)),
         "requests": _blank(statistics.get("requests")),
         "avg_response_ms": _blank(statistics.get("avg_response_ms")),
         "max_response_ms": _blank(statistics.get("max_response_ms")),

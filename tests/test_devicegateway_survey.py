@@ -1125,6 +1125,24 @@ def test_hex_addresses_for_slmp_over_udp_too():
     assert hex_flag(Protocol.MODBUS_TCP) is False
 
 
+def test_survey_files_use_hex_addresses_for_slmp_when_asked(tmp_path):
+    points = [DataPoint(address=f"X{n}", status=StatusCode.OK) for n in range(32)] + _points(("D10", StatusCode.OK))
+
+    def survey(protocol, hex_addresses):
+        summary, ranges = CSVExporter(str(tmp_path), hex_addresses=hex_addresses).export_survey_summary(
+            [("10.0.0.1", PLCInfo("10.0.0.1", protocol=protocol, port=5001), points, None)]
+        )
+        row = list(csv.DictReader(open(summary, encoding="utf-8-sig")))[0]
+        runs = [(r["device"], r["start"], r["end"]) for r in csv.DictReader(open(ranges, encoding="utf-8-sig"))]
+        return row["readable_ranges"], runs
+
+    # As in the data file and GX Works: X0-1F, not X0-31 (D stays decimal)
+    assert survey(Protocol.SLMP, True) == ("X0-1F, D10", [("X", "0", "1F"), ("D", "10", "10")])
+    assert survey(Protocol.SLMP_UDP, True)[0] == "X0-1F, D10"
+    assert survey(Protocol.SLMP, False)[0] == "X0-31, D10"
+    assert survey(Protocol.MODBUS_TCP, True)[0] == "X0-31, D10"
+
+
 def test_reconnect_time_is_not_counted_as_response_time():
     from plc_discovery.protocols.base import BaseProtocolHandler
 

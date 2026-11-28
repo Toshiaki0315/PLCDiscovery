@@ -354,7 +354,7 @@ python plc_scanner.py --mode full --target 192.168.1.10 --no-database
 | `--byte-order` | 複数ワード値の並び。little=CDAB（下位ワード先頭）、big=ABCD、little_swap=DCBA、big_swap=BADC（ワード内バイト入替）。指定すると設定ファイルの値より優先（`byte_order` を書いていない型マッピングにも適用） | little |
 | `--type-mapping` | 型マッピングファイルパス | - |
 | `--tags` | EtherNet/IP（Logix・オムロン NJ/NX）で読むタグ（カンマ区切り。`配列[0]{10}` で10要素）。設定ファイルでは `scan.tags` | - |
-| `--hex-addresses` | 三菱（SLMP）の X/Y/B/W を16進数表記でも出力（CSV に `address_hex` 列。例: X31 → X1F）。設定ファイルでは `output.hex_addresses` | オフ |
+| `--hex-addresses` | 三菱（SLMP）の X/Y/B/W を16進数表記でも出力（CSV に `address_hex` 列。例: X31 → X1F。調査サマリ `scan_summary`・`readable_ranges` の範囲も16進数表記）。設定ファイルでは `output.hex_addresses` | オフ |
 | `--periodic-csv` | 周期実行の CSV：`per_cycle`（周期ごとに1ファイル）／`daily`（1日1ファイルに追記。途中で文字コードを変えると、その日の残りは `…_YYYYMMDD_cp932.csv` のような別ファイルに続きます）。設定ファイルでは `output.periodic_csv` | per_cycle |
 
 ## 設定ファイル

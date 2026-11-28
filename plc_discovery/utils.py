@@ -523,7 +523,7 @@ def sorted_addresses(addresses: Iterable[str]) -> List[str]:
 
 
 # MELSEC devices numbered in hexadecimal (GX Works notation)
-_MELSEC_HEX_DEVICES = ("X", "Y", "B", "W")
+MELSEC_HEX_DEVICES = ("X", "Y", "B", "W")
 
 
 def melsec_address(address: str) -> str:
@@ -533,7 +533,7 @@ def melsec_address(address: str) -> str:
     itself numbers every device in decimal.
     """
     match = _ADDRESS_PARTS.fullmatch(address or "")
-    if not match or match.group(1).upper() not in _MELSEC_HEX_DEVICES:
+    if not match or match.group(1).upper() not in MELSEC_HEX_DEVICES:
         return address
     return f"{match.group(1).upper()}{int(match.group(2)):X}"
 

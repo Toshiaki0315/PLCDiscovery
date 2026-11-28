@@ -13,7 +13,7 @@ import logging
 from pathlib import Path
 from typing import IO, Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
-from .config import DataPoint, PLCInfo, StatusCode
+from .config import DataPoint, PLCInfo, Protocol, StatusCode
 from .survey import RANGES_HEADERS, SUMMARY_HEADERS, address_runs, summary_row
 from .utils import get_file_timestamp, get_timestamp, melsec_address
 
@@ -473,6 +473,14 @@ class CSVExporter:
             logger.error(f"Failed to export denied addresses: {e}")
             raise
 
+    def _hex_for(self, plc: Optional[PLCInfo]) -> bool:
+        """
+        Whether a target's addresses are written in MELSEC notation (X/Y/B/W
+        in hexadecimal): with hex_addresses on, for SLMP targets only, as in
+        the data file
+        """
+        return self.hex_addresses and plc is not None and plc.protocol in (Protocol.SLMP, Protocol.SLMP_UDP)
+
     def export_survey_summary(
         self, targets: Sequence[Tuple[str, Optional[PLCInfo], Sequence[DataPoint], Optional[Dict[str, Any]]]]
     ) -> Tuple[str, str]:
@@ -495,12 +503,12 @@ class CSVExporter:
             writer = _SafeDictWriter(f, fieldnames=SUMMARY_HEADERS)
             writer.writeheader()
             for label, plc, points, statistics in targets:
-                writer.writerow(summary_row(label, plc, points, statistics))
+                writer.writerow(summary_row(label, plc, points, statistics, self._hex_for(plc)))
         with self._open_csv(ranges_path, "w") as f:
             writer = _SafeDictWriter(f, fieldnames=RANGES_HEADERS)
             writer.writeheader()
-            for label, _, points, _ in targets:
-                for run in address_runs(points):
+            for label, plc, points, _ in targets:
+                for run in address_runs(points, self._hex_for(plc)):
                     writer.writerow(
                         {
                             "target": label,
